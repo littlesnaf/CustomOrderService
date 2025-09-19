@@ -1,2 +1,2 @@
-# Mugeditor
+
 # Mugeditor
