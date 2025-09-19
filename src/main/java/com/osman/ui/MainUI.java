@@ -37,7 +37,6 @@ public class MainUI {
         frame.setSize(980, 720);
         frame.setLayout(new BorderLayout(8, 8));
 
-        // NORTH
         JPanel topPanel = new JPanel(new BorderLayout(8, 8));
         JPanel fontRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 8));
         chooseFontBtn = new JButton("Choose Font Folder…");
@@ -47,15 +46,14 @@ public class MainUI {
         fontPathLabel = new JLabel(shortenPath(fontDirectory, 70));
         fontRow.add(fontPathLabel);
         topPanel.add(fontRow, BorderLayout.NORTH);
+        frame.add(topPanel, BorderLayout.NORTH);
 
-        // CENTER
         logArea = new JTextArea();
         logArea.setEditable(false);
         logArea.setFont(new Font("Monospaced", Font.PLAIN, 12));
         JScrollPane scrollPane = new JScrollPane(logArea);
         frame.add(scrollPane, BorderLayout.CENTER);
 
-        // SOUTH
         JPanel bottomPanel = new JPanel(new BorderLayout(8, 8));
         JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 8));
         processButton = new JButton("Select ‘Orders’ Folder or Zip Files…");
@@ -167,7 +165,11 @@ public class MainUI {
                 int total = selected.length;
                 int idx = 0;
 
-                for (File item : selected) {
+                // STEP 1: Normalize selections → unzip first (delete zips) → folders only
+                List<File> workItems = preprocessSelectedItems(selected);
+
+                // STEP 2: Process folders as usual
+                for (File item : workItems) {
                     if (cancelRequested) break;
 
                     idx++;
@@ -178,15 +180,11 @@ public class MainUI {
 
                     if (item.isDirectory()) {
                         handleBaseDirectory(item);
-                    } else if (item.isFile() && item.getName().toLowerCase(Locale.ROOT).endsWith(".zip")) {
-                        File baseDir = item.getParentFile();
-                        File outputDirectory = new File(baseDir, "photos");
-                        if (!outputDirectory.exists()) outputDirectory.mkdirs();
-                        handleZipFile(item, outputDirectory);
                     } else {
-                        publish("Skipped unsupported file: " + item.getName());
+                        publish("Skipped (not a directory): " + item.getName());
                     }
                 }
+
                 publish("\n>>> ALL TASKS COMPLETED <<<");
                 return null;
             }
@@ -209,12 +207,91 @@ public class MainUI {
         }.execute();
     }
 
+    // -------------------- ZIP PRE-PROCESSING --------------------
+
+    private File unzipToSiblingFolder(File zipFile) throws java.io.IOException {
+        String base = zipFile.getName().replaceAll("(?i)\\.zip$", "");
+        File target = new File(zipFile.getParentFile(), base);
+        int i = 2;
+        while (target.exists()) {
+            target = new File(zipFile.getParentFile(), base + " (" + i + ")");
+            i++;
+        }
+        log("  -> Unzipping to: " + target.getAbsolutePath());
+        unzip(zipFile, target);
+        if (!zipFile.delete()) {
+            log("  -> Warning: could not delete zip: " + zipFile.getName());
+        } else {
+            log("  -> Deleted zip: " + zipFile.getName());
+        }
+        return target;
+    }
+
+    private void preprocessZipsInDirectory(File root) {
+        if (root == null || !root.isDirectory()) return;
+        boolean found;
+        do {
+            found = false;
+            try (var s = Files.walk(root.toPath(), 8)) {
+                List<File> zips = new ArrayList<>();
+                s.filter(Files::isRegularFile)
+                        .map(Path::toFile)
+                        .forEach(f -> {
+                            String n = f.getName().toLowerCase(Locale.ROOT);
+                            if (n.endsWith(".zip")) zips.add(f);
+                        });
+                for (File z : zips) {
+                    if (cancelRequested) return;
+                    found = true;
+                    log("  -> Found zip: " + z.getAbsolutePath());
+                    try {
+                        unzipToSiblingFolder(z);
+                    } catch (Exception ex) {
+                        log("  -> ERROR unzipping " + z.getName() + ": " + ex.getMessage());
+                    }
+                }
+            } catch (Exception e) {
+                log("  -> ERROR scanning for zips under " + root.getAbsolutePath() + ": " + e.getMessage());
+                return;
+            }
+        } while (found);
+    }
+
+    private List<File> preprocessSelectedItems(File[] selectedItems) {
+        List<File> normalized = new ArrayList<>();
+        for (File item : selectedItems) {
+            if (cancelRequested) break;
+
+            if (item.isFile() && item.getName().toLowerCase(Locale.ROOT).endsWith(".zip")) {
+                log("-> Selected ZIP: " + item.getName() + " (unzip first)");
+                try {
+                    File extracted = unzipToSiblingFolder(item);
+                    // Also expand nested zips inside the extracted folder
+                    preprocessZipsInDirectory(extracted);
+                    normalized.add(extracted);
+                } catch (Exception ex) {
+                    log("  -> ERROR unzipping " + item.getName() + ": " + ex.getMessage());
+                }
+            } else if (item.isDirectory()) {
+                // Expand any zips inside this folder (recursively), then use the folder
+                preprocessZipsInDirectory(item);
+                normalized.add(item);
+            } else {
+                log("Skipped unsupported file: " + item.getName());
+            }
+        }
+        return normalized;
+    }
+
+    // -------------------- FOLDER WORKFLOW --------------------
+
     private void handleBaseDirectory(File base) {
         File[] customerFolders = base.listFiles(File::isDirectory);
 
         if (customerFolders != null && customerFolders.length > 0) {
             for (File customerFolder : customerFolders) {
                 if (cancelRequested) return;
+                if (customerFolder.getName().equalsIgnoreCase("photos")) continue;
                 File outputDirectory = new File(customerFolder, "photos");
                 if (!outputDirectory.exists()) outputDirectory.mkdirs();
                 handleFolder(customerFolder, outputDirectory, customerFolder.getName());
@@ -293,29 +370,7 @@ public class MainUI {
         }
     }
 
-    private void handleZipFile(File zipFile, File outputDirectory) {
-        log("\n--- Processing Zip: " + zipFile.getName() + " ---");
-        Path tempDir = null;
-        try {
-            tempDir = Files.createTempDirectory("order-unzip-");
-            log("  -> Extracting to temporary folder…");
-            unzip(zipFile, tempDir.toFile());
-
-            File unzippedCustomerFolder = findFirstDirectory(tempDir.toFile());
-            File processingDirectory = (unzippedCustomerFolder != null) ? unzippedCustomerFolder : tempDir.toFile();
-
-            String customerName = zipFile.getName().replaceAll("(?i)\\.zip$", "");
-            handleFolder(processingDirectory, outputDirectory, customerName);
-
-        } catch (Exception ex) {
-            log("  -> CRITICAL (" + zipFile.getName() + "): " + ex.getMessage());
-        } finally {
-            if (tempDir != null) {
-                log("  -> Cleaning temporary files: " + zipFile.getName());
-                deleteDirectory(tempDir.toFile());
-            }
-        }
-    }
+    // -------------------- LOW-LEVEL HELPERS --------------------
 
     private void unzip(File zipFile, File destDir) throws java.io.IOException {
         byte[] buffer = new byte[8192];
@@ -347,22 +402,6 @@ public class MainUI {
                 zipEntry = zis.getNextEntry();
             }
         }
-    }
-
-    private void deleteDirectory(File directory) {
-        File[] allContents = directory.listFiles();
-        if (allContents != null) {
-            for (File file : allContents) {
-                if (file.isDirectory()) deleteDirectory(file);
-                else file.delete();
-            }
-        }
-        directory.delete();
-    }
-
-    private File findFirstDirectory(File directory) {
-        File[] files = directory.listFiles(f -> f.isDirectory() && !f.getName().startsWith(".") && !f.getName().equalsIgnoreCase("__MACOSX"));
-        return (files != null && files.length > 0) ? files[0] : null;
     }
 
     private boolean isSamePath(File a, File b) {

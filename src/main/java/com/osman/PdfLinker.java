@@ -13,10 +13,19 @@ public class PdfLinker {
 
     private static final Pattern ORDER_ID_PATTERN = Pattern.compile("\\b\\d{3}-\\d{7}-\\d{7}\\b");
     private static final Pattern PACKING_SLIP_PATTERN = Pattern.compile("^11[PRWB](\\s*\\(\\d+\\))?\\.pdf$", Pattern.CASE_INSENSITIVE);
+    private static final Pattern PACKING_SLIP_FOLDER_PATTERN = Pattern.compile("^11\\s*[PRWB].*", Pattern.CASE_INSENSITIVE);
 
     private static boolean isPackingSlipFile(File pdfFile) {
         if (pdfFile == null) return false;
-        return PACKING_SLIP_PATTERN.matcher(pdfFile.getName()).matches();
+        String name = pdfFile.getName();
+        if (PACKING_SLIP_PATTERN.matcher(name).matches()) return true;
+        if (name.equalsIgnoreCase("Amazon.pdf")) {
+            File parent = pdfFile.getParentFile();
+            if (parent != null && PACKING_SLIP_FOLDER_PATTERN.matcher(parent.getName()).matches()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public static Map<String, List<Integer>> buildOrderIdToPagesMap(File labelsPdf) throws IOException {

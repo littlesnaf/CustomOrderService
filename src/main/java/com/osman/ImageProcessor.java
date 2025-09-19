@@ -482,7 +482,50 @@ public class ImageProcessor {
         if (s == null) return "";
         return s.replaceAll("^[ _-]+|[ _-]+$", "");
     }
+    private static String autoFitTextToClipShrinkOnly(String svg, String clipId, String familyName) {
+        try {
+            java.util.regex.Matcher mRect = java.util.regex.Pattern.compile(
+                    "<clipPath\\s+id=\"" + java.util.regex.Pattern.quote(clipId) + "\"[\\s\\S]*?<rect[^>]*?width=\"([\\-0-9.]+)\"[^>]*?height=\"([\\-0-9.]+)\"",
+                    java.util.regex.Pattern.CASE_INSENSITIVE
+            ).matcher(svg);
+            if (!mRect.find()) return svg;
+            double rectW = Double.parseDouble(mRect.group(1));
+            double rectH = Double.parseDouble(mRect.group(2));
 
+            java.util.regex.Matcher mText = java.util.regex.Pattern.compile(
+                    "<text[^>]*?font-family=\"([^\"]+)\"[^>]*?font-size=\"([\\-0-9.]+)\"[\\s\\S]*?><tspan[^>]*?x=\"([\\-0-9.]+)\"[^>]*?y=\"([\\-0-9.]+)\"[^>]*?>([\\s\\S]*?)</tspan>\\s*</text>",
+                    java.util.regex.Pattern.CASE_INSENSITIVE
+            ).matcher(svg);
+            if (!mText.find()) return svg;
+
+            double fontSize  = Double.parseDouble(mText.group(2));
+            String textValue = mText.group(5);
+
+            java.awt.Font font = new java.awt.Font(familyName, java.awt.Font.PLAIN, Math.max(1, (int)Math.round(fontSize)));
+            java.awt.font.FontRenderContext frc = new java.awt.font.FontRenderContext(new java.awt.geom.AffineTransform(), true, true);
+            java.awt.font.GlyphVector gv = font.createGlyphVector(frc, textValue);
+            java.awt.geom.Rectangle2D vb = gv.getVisualBounds();
+            double textW = vb.getWidth();
+            double textH = vb.getHeight();
+
+            double sW = rectW / Math.max(1e-6, textW);
+            double sH = rectH / Math.max(1e-6, textH);
+            double scale = Math.min(Math.min(sW, sH), 1.0);
+
+            if (scale > 0.995) return svg;
+
+            double newFontSize = fontSize * scale;
+
+            String before = mText.group(0);
+            String after  = before.replace(
+                    "font-size=\"" + mText.group(2) + "\"",
+                    "font-size=\"" + String.format(java.util.Locale.US, "%.4f", newFontSize) + "\""
+            );
+            return svg.replace(before, after);
+        } catch (Exception ignore) {
+            return svg;
+        }
+    }
     private static String sanitizeName(String s) {
         if (s == null) return "";
         String out = s.replaceAll("[^a-zA-Z0-9._-]", "_");

@@ -214,12 +214,17 @@ public class LabelFinderUI extends JFrame {
         }
 
         Pattern packingSlipName = Pattern.compile("(?i)^11[PRWB](\\s*\\(\\d+\\))?\\.pdf$");
+        Pattern packingSlipFolder = Pattern.compile("(?i)^11\\s*[PRWB].*");
 
         for (File pdf : pdfs) {
             String name = pdf.getName();
-            if (name.equalsIgnoreCase("Amazon.pdf")) continue;
+            File parent = pdf.getParentFile();
+            String parentName = parent != null ? parent.getName() : "";
+            boolean looksLikePackingSlip =
+                    packingSlipName.matcher(name).matches() ||
+                    (name.equalsIgnoreCase("Amazon.pdf") && packingSlipFolder.matcher(parentName).matches());
 
-            if (packingSlipName.matcher(name).matches()) {
+            if (looksLikePackingSlip) {
                 try {
                     Map<String, List<Integer>> m = PackSlipExtractor.indexOrderToPages(pdf);
                     for (Map.Entry<String, List<Integer>> e : m.entrySet()) {
@@ -291,6 +296,15 @@ public class LabelFinderUI extends JFrame {
             try {
                 findAllMatchingPhotos(baseDir.toPath(), orderId).forEach(photosModel::addElement);
             } catch (IOException ignored) {}
+        }
+        selectAndPreviewFirstPhotos();
+
+        if (photosModel.isEmpty()) {
+            if (currentLabelLocation != null) statusLabel.setText("Label found, but NO matching photo found for: " + orderId);
+        } else if (photosModel.size() == 1) {
+            statusLabel.setText("Auto-selected 1 photo for preview.");
+        } else {
+            statusLabel.setText("Auto-selected first 2 photos for preview.");
         }
     }
 
@@ -547,6 +561,15 @@ public class LabelFinderUI extends JFrame {
         LabelRef(File file, int page1Based) { this.file = file; this.page1Based = page1Based; }
         String toDisplayString() { return file.getName() + "  —  p." + page1Based; }
         @Override public String toString() { return toDisplayString(); }
+    }
+    private void selectAndPreviewFirstPhotos() {
+        if (photosModel.isEmpty()) {
+            photoView.setImages(null, null);
+            return;
+        }
+        int last = Math.min(1, photosModel.size() - 1); // 1 veya 2 fotoğraf
+        photosList.setSelectionInterval(0, last);
+        renderSelectedPhotos(); // ön-izlemeyi hemen güncelle
     }
 
     // Printable: BufferedImage’i sayfaya sığdırarak yazdırır (tek sayfa)
