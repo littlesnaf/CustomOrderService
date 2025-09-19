@@ -37,7 +37,6 @@ public class MainUI {
         frame.setSize(980, 720);
         frame.setLayout(new BorderLayout(8, 8));
 
-        // NORTH
         JPanel topPanel = new JPanel(new BorderLayout(8, 8));
         JPanel fontRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 8));
         chooseFontBtn = new JButton("Choose Font Folder…");
@@ -48,14 +47,12 @@ public class MainUI {
         fontRow.add(fontPathLabel);
         topPanel.add(fontRow, BorderLayout.NORTH);
 
-        // CENTER
         logArea = new JTextArea();
         logArea.setEditable(false);
         logArea.setFont(new Font("Monospaced", Font.PLAIN, 12));
         JScrollPane scrollPane = new JScrollPane(logArea);
         frame.add(scrollPane, BorderLayout.CENTER);
 
-        // SOUTH
         JPanel bottomPanel = new JPanel(new BorderLayout(8, 8));
         JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 8));
         processButton = new JButton("Select ‘Orders’ Folder or Zip Files…");
@@ -296,19 +293,23 @@ public class MainUI {
     private void handleZipFile(File zipFile, File outputDirectory) {
         log("\n--- Zip Dosyası İşleniyor: " + zipFile.getName() + " ---");
 
-        Path tempDir = null;
+        boolean processedOk = false;
+        File extractRoot = null;
+
         try {
-            tempDir = Files.createTempDirectory("order-unzip-");
-            log("  -> Geçici klasöre çıkarılıyor...");
-            unzip(zipFile, tempDir.toFile());
+            String baseName = zipFile.getName().replaceAll("(?i)\\.zip$", "");
+            extractRoot = new File(zipFile.getParentFile(), baseName);
+            if (!extractRoot.exists() && !extractRoot.mkdirs()) {
+                throw new RuntimeException("Klasör oluşturulamadı: " + extractRoot.getAbsolutePath());
+            }
+            log("  -> Zip, adıyla aynı klasöre çıkarılıyor: " + extractRoot.getAbsolutePath());
 
-            // Zip adı, çıktı dosya isimlerinde müşteri/sipariş kökü olsun
-            String customerName = zipFile.getName().replaceAll("(?i)\\.zip$", "");
+            unzip(zipFile, extractRoot);
 
-            // 1) Zip’in tamamını tarama kökü olarak kabul et
-            File scanRoot = tempDir.toFile();
+            String customerName = baseName;
 
-            // 2) Yaprak sipariş klasörlerini bul (içinde .json VE .svg olanlar)
+            File scanRoot = extractRoot;
+
             List<File> leafOrders = findOrderLeafFolders(scanRoot, 6);
 
             if (!leafOrders.isEmpty()) {
@@ -334,8 +335,8 @@ public class MainUI {
                     }
                 }
                 log("  -> Özet: " + ok + " başarılı, " + fail + " hatalı.");
+                processedOk = true;
             } else {
-                // 3) Yaprak yoksa, kökü çoklu sipariş olarak dene (kökte dosyalar olabilir)
                 log("  -> Yaprak klasör bulunamadı; zip kökü çoklu sipariş olarak deneniyor...");
                 try {
                     List<String> results = com.osman.ImageProcessor
@@ -343,6 +344,7 @@ public class MainUI {
                     for (String path : results) {
                         log("  -> BAŞARILI: " + new File(path).getName());
                     }
+                    processedOk = true;
                 } catch (Exception ex) {
                     log("  -> KRİTİK HATA (fallback): " + ex.getMessage());
                     ex.printStackTrace();
@@ -352,9 +354,14 @@ public class MainUI {
             log("  -> KRİTİK HATA (" + zipFile.getName() + "): " + ex.getMessage());
             ex.printStackTrace();
         } finally {
-            if (tempDir != null) {
-                log("  -> Geçici dosyalar temizleniyor: " + zipFile.getName());
-                deleteDirectory(tempDir.toFile());
+            if (processedOk) {
+                if (zipFile.delete()) {
+                    log("  -> İşlem tamamlandı: Orijinal zip silindi: " + zipFile.getName());
+                } else {
+                    log("  -> UYARI: Zip silinemedi (manuel silinebilir): " + zipFile.getName());
+                }
+            } else {
+                log("  -> Zip silinmedi (işlem hatalı bitti): " + zipFile.getName());
             }
         }
     }
@@ -367,9 +374,12 @@ public class MainUI {
                 if (cancelRequested) return;
 
                 File newFile = new File(destDir, zipEntry.getName());
-                if (!newFile.getCanonicalPath().startsWith(destDir.getCanonicalPath() + File.separator)) {
+                String destPath = destDir.getCanonicalPath() + File.separator;
+                String newPath = newFile.getCanonicalPath();
+                if (!newPath.startsWith(destPath)) {
                     throw new java.io.IOException("Zip entry is outside target folder: " + zipEntry.getName());
                 }
+
                 if (zipEntry.isDirectory()) {
                     if (!newFile.isDirectory() && !newFile.mkdirs()) {
                         throw new java.io.IOException("Could not create folder: " + newFile);
@@ -430,8 +440,6 @@ public class MainUI {
     public static void main(String[] args) {
         SwingUtilities.invokeLater(MainUI::new);
     }
-
-    // ------------ Order folder discovery helpers ------------
 
     private static List<File> findOrderLeafFolders(File scanRoot, int maxDepth) {
         List<File> out = new ArrayList<>();
