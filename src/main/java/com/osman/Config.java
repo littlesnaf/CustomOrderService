@@ -2,7 +2,12 @@ package com.osman;
 
 import java.io.File;
 
-public final class Config {
+/**
+ * Central application configuration that exposes default file-system locations
+ * for fonts and shipping label PDFs.
+ */
+public final class
+Config {
     private Config() {}
 
     // Varsayılan font klasörü: kullanıcı isterse burayı proje çalışırken değiştirebilir.

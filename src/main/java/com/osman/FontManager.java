@@ -6,8 +6,14 @@ import java.awt.GraphicsEnvironment;
 import java.io.File;
 import java.io.IOException;
 
+/**
+ * Registers custom font files so the rendering pipeline can use the same typography Amazon displays.
+ */
 public class FontManager {
 
+    /**
+     * Loads all TrueType and OpenType fonts from the given directory into the JVM graphics environment.
+     */
     public static int loadFontsFromDirectory(String fontFolderPath) throws IOException, FontFormatException {
         File fontDir = new File(fontFolderPath);
         if (!fontDir.isDirectory()) {

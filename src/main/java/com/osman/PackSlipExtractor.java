@@ -11,8 +11,15 @@ import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+/**
+ * Extracts structured order data from Amazon packing slip PDFs so they can be linked with
+ * matching shipping labels and images.
+ */
 public class PackSlipExtractor {
 
+    /**
+     * Represents a single line item captured from the packing slip table.
+     */
     public static class Item {
         public String quantity = "";
         public String productDetails = "";
@@ -21,6 +28,9 @@ public class PackSlipExtractor {
         public Map<String, String> customizations = new LinkedHashMap<>();
     }
 
+    /**
+     * Container for the information parsed from an individual packing slip page.
+     */
     public static class PackSlipData {
         public String orderId = "";
         public String orderDate = "";
@@ -49,6 +59,9 @@ public class PackSlipExtractor {
         }
     }
 
+    /**
+     * Parses each page of the supplied packing slip PDF and returns merged order metadata.
+     */
     public List<PackSlipData> extract(File packingSlipPdf) throws IOException {
         List<PackSlipData> allPagesData = new ArrayList<>();
         try (PDDocument doc = PDDocument.load(packingSlipPdf)) {
@@ -66,6 +79,9 @@ public class PackSlipExtractor {
         return mergeConsecutiveOrders(allPagesData);
     }
 
+    /**
+     * Builds an order payload for a single page using tokenized text positions.
+     */
     private PackSlipData parsePage(List<Token> tokens) {
         if (tokens.isEmpty()) return null;
 
@@ -124,6 +140,9 @@ public class PackSlipExtractor {
         return isAllBlank(data) ? null : data;
     }
 
+    /**
+     * Converts token lines into structured table items by honoring detected column boundaries.
+     */
     private List<Item> collectItems(List<Token> tokens, Map<String, Float> columnX) {
         float qL = columnX.get("qty"), qR = columnX.get("prod");
         float pL = columnX.get("prod"), pR = columnX.get("unit");
@@ -154,6 +173,9 @@ public class PackSlipExtractor {
         return items;
     }
 
+    /**
+     * Groups text tokens into visual rows so that table cells can be reconstructed.
+     */
     private List<List<Token>> groupByLine(List<Token> tokens) {
         Map<Float, List<Token>> linesMap = new TreeMap<>();
         for (Token t : tokens) {
@@ -162,20 +184,32 @@ public class PackSlipExtractor {
         return new ArrayList<>(linesMap.values());
     }
 
+    /**
+     * Safely concatenates token text while preserving whitespace between fragments.
+     */
     private static String appendToken(String base, String add) {
         if (base.isEmpty()) return add;
         return base + " " + add;
     }
 
+    /**
+     * Normalizes text so comparisons are consistent across different encodings.
+     */
     private static String normalize(String s) {
         s = s.replace('–', '-').replace('—', '-');
         return Normalizer.normalize(s, Normalizer.Form.NFKC);
     }
 
+    /**
+     * Determines whether the page data contains any useful fields.
+     */
     private boolean isAllBlank(PackSlipData d) {
         return d.orderId.isBlank() && d.shippingAddress.isBlank() && d.items.isEmpty();
     }
 
+    /**
+     * Merges adjacent pages that belong to the same order into a single structure.
+     */
     private List<PackSlipData> mergeConsecutiveOrders(List<PackSlipData> pages) {
         List<PackSlipData> merged = new ArrayList<>();
         if (pages.isEmpty()) return merged;
@@ -196,6 +230,9 @@ public class PackSlipExtractor {
     private static final Pattern ORDER_ID_RE =
             Pattern.compile("\\b\\d{3}-\\d{7}-\\d{7}\\b");
 
+    /**
+     * Normalizes page text to simplify order ID matching.
+     */
     private static String normalizePageText(String raw) {
         if (raw == null) return "";
         String s = normalize(raw);
@@ -204,6 +241,9 @@ public class PackSlipExtractor {
         return s;
     }
 
+    /**
+     * Produces a map of order IDs to the pages in the packing slip PDF where they appear.
+     */
     public static Map<String, List<Integer>> indexOrderToPages(File packingSlipPdf) throws IOException {
         Map<String, List<Integer>> out = new LinkedHashMap<>();
         try (PDDocument doc = PDDocument.load(packingSlipPdf)) {
@@ -229,6 +269,9 @@ public class PackSlipExtractor {
         return out;
     }
 
+    /**
+     * Attempts to locate an order identifier within the supplied page text.
+     */
     private static String findOrderIdInPage(String text) {
         if (text == null || text.isEmpty()) return null;
 
@@ -245,6 +288,9 @@ public class PackSlipExtractor {
         return null;
     }
 
+    /**
+     * Case-insensitive implementation of {@link String#indexOf(String)} used during order scanning.
+     */
     private static int indexOfIgnoreCase(String s, String needle) {
         return s.toLowerCase(Locale.ROOT).indexOf(needle.toLowerCase(Locale.ROOT));
     }

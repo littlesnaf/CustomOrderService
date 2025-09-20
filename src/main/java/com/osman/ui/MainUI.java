@@ -40,6 +40,7 @@ public class MainUI {
         frame.setLayout(new BorderLayout(8, 8));
 
         JPanel topPanel = new JPanel(new BorderLayout(8, 8));
+        frame.add(topPanel, BorderLayout.NORTH);
         JPanel fontRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 8));
         chooseFontBtn = new JButton("Choose Font Folder…");
         chooseFontBtn.addActionListener(e -> chooseFontDir());

@@ -76,7 +76,9 @@ public class ImageProcessor {
             outputs.add(outPath);
         }
         return outputs;
-    }private static BufferedImage readImageAny(String href, File baseDir) throws IOException {
+    }
+
+    private static BufferedImage readImageAny(String href, File baseDir) throws IOException {
         String lower = href.toLowerCase(Locale.ROOT);
         if (lower.startsWith("data:image/")) {
             int i = href.indexOf("base64,");
@@ -139,6 +141,42 @@ public class ImageProcessor {
         return sb.toString();
     }
 
+    private static String removeNonSrgbPngImagesInSvg(String svg, File baseDir) {
+        Pattern p = Pattern.compile("<image\\b([^>]*?)(?:xlink:href|href)=\"([^\"]+)\"([^>]*)>", Pattern.CASE_INSENSITIVE);
+        Matcher m = p.matcher(svg);
+        StringBuffer sb = new StringBuffer();
+        while (m.find()) {
+            String before = m.group(1);
+            String href   = m.group(2);
+            String after  = m.group(3);
+            String lower  = href.toLowerCase(Locale.ROOT);
+            boolean keep = lower.endsWith("__srgb.png");
+            String replaced = keep ? m.group(0)
+                    : "<image" + before + "xlink:href=\"" + TRANSPARENT_PIXEL_DATA_URI + "\"" + after + ">";
+            m.appendReplacement(sb, Matcher.quoteReplacement(replaced));
+        }
+        m.appendTail(sb);
+        return sb.toString();
+    }
+    // ImageProcessor class içine (diğer yardımcıların yanına)
+    private static void deleteIfExists(File f) {
+        try { if (f != null && f.exists()) Files.delete(f.toPath()); }
+        catch (Exception ignore) { if (f != null) f.delete(); }
+    }
+
+    private static void cleanupSrgbAndOrientedFiles(File dir) {
+        if (dir == null || !dir.isDirectory()) return;
+        File[] files = dir.listFiles();
+        if (files == null) return;
+        for (File f : files) {
+            String name = f.getName().toLowerCase(Locale.ROOT);
+            if (name.endsWith("__srgb.png")
+                    || name.endsWith("__oriented.png")
+                    || name.endsWith("__oriented.jpg")) {
+                deleteIfExists(f);
+            }
+        }
+    }
 
     private static String renderFromJson(File jsonFile,
                                          File orderRoot,
@@ -173,7 +211,7 @@ public class ImageProcessor {
 
         modifiedSvgContent = fixExifOrientationInSvg(modifiedSvgContent, svgFile.getParentFile());
         modifiedSvgContent = normalizeAllImagesToLocalPNG(modifiedSvgContent, svgFile.getParentFile());
-
+        modifiedSvgContent = removeNonSrgbPngImagesInSvg(modifiedSvgContent, svgFile.getParentFile());
 
         BufferedImage finalCanvas = new BufferedImage(FINAL_WIDTH, FINAL_HEIGHT, BufferedImage.TYPE_INT_RGB);
 
@@ -212,14 +250,14 @@ public class ImageProcessor {
         }
 
         ImageIO.write(finalCanvas, "png", finalOutputFile);
+        // >>> SADE TEMİZLİK: Sadece SVG klasöründeki __srgb / __oriented dosyalarını sil
+        cleanupSrgbAndOrientedFiles(svgFile.getParentFile());
+
         return finalOutputFile.getAbsolutePath();
     }
 
     private static String detectOrderType(File dir) {
-        File[] imageFiles = dir.listFiles((d, name) -> {
-            String s = name.toLowerCase(Locale.ROOT);
-            return s.endsWith(".jpg") || s.endsWith(".jpeg") || s.endsWith(".png");
-        });
+        File[] imageFiles = dir.listFiles((d, name) -> name.toLowerCase(Locale.ROOT).endsWith("__srgb.png"));
         return (imageFiles != null && imageFiles.length > 0) ? "PHOTO_MUG" : "TEXT_ONLY";
     }
 
@@ -259,31 +297,46 @@ public class ImageProcessor {
         if (isSwapOrientation(ori)) return w >= h;
         return false;
     }
-
     private static BufferedImage applyExifOrientation(BufferedImage src, int orientation) {
+        final boolean hasAlpha = src.getColorModel().hasAlpha();
         int w = src.getWidth(), h = src.getHeight();
         AffineTransform tx = new AffineTransform();
         int newW = w, newH = h;
 
         switch (orientation) {
             case 1: return src;
-            case 2: tx.scale(-1, 1); tx.translate(-w, 0); break;
-            case 3: tx.translate(w, h); tx.rotate(Math.PI); break;
-            case 4: tx.scale(1, -1); tx.translate(0, -h); break;
-            case 5: tx.rotate(-Math.PI/2); tx.scale(-1, 1); tx.translate(-w, 0); newW = h; newH = w; break;
-            case 6: tx.translate(h, 0); tx.rotate(Math.PI/2); newW = h; newH = w; break;
-            case 7: tx.rotate(Math.PI/2); tx.scale(-1, 1); tx.translate(-w, 0); newW = h; newH = w; break;
-            case 8: tx.translate(0, w); tx.rotate(-Math.PI/2); newW = h; newH = w; break;
+            case 2: tx.scale(-1, 1); tx.translate(-w, 0); break;                 // mirror X
+            case 3: tx.translate(w, h); tx.rotate(Math.PI); break;               // 180°
+            case 4: tx.scale(1, -1); tx.translate(0, -h); break;                 // mirror Y
+            case 5: tx.rotate(-Math.PI/2); tx.scale(-1, 1); newW = h; newH = w; break; // -90° + mirror X
+            case 6: tx.translate(h, 0); tx.rotate(Math.PI/2); newW = h; newH = w; break; // +90°
+            case 7: tx.rotate(Math.PI/2); tx.scale(-1, 1); newW = h; newH = w; break;    // +90° + mirror X
+            case 8: tx.translate(0, w); tx.rotate(-Math.PI/2); newW = h; newH = w; break; // -90°
+            default: return src;
         }
 
-        BufferedImage dst = new BufferedImage(newW, newH, BufferedImage.TYPE_INT_ARGB);
+        // Hedef tuvali oluştur (alfa yoksa beyazla doldur)
+        int type = hasAlpha ? BufferedImage.TYPE_INT_ARGB : BufferedImage.TYPE_INT_RGB;
+        BufferedImage dst = new BufferedImage(newW, newH, type);
+
+        // Arkaplan doldurması (JPEG’e gidecekler için önemli)
+        Graphics2D gBg = dst.createGraphics();
+        if (!hasAlpha) {
+            gBg.setColor(Color.WHITE);
+            gBg.fillRect(0, 0, newW, newH);
+        }
+        gBg.dispose();
+
+        // AffineTransformOp ile dönüşüm (bicubic önerilir)
         AffineTransformOp op = new AffineTransformOp(tx, AffineTransformOp.TYPE_BICUBIC);
         op.filter(src, dst);
         return dst;
     }
 
+    // 2) EXIF’e göre <image> kaynaklarını yerinde düzelten sürüm (href ve xlink:href destekli).
+//    Alfa yoksa JPEG, varsa PNG üretir.
     private static String fixExifOrientationInSvg(String svg, File baseDir) {
-        Pattern p = Pattern.compile("<image\\b([^>]*?)xlink:href=\"([^\"]+)\"([^>]*)>", Pattern.CASE_INSENSITIVE);
+        Pattern p = Pattern.compile("<image\\b([^>]*?)(?:xlink:href|href)=\"([^\"]+)\"([^>]*)>", Pattern.CASE_INSENSITIVE);
         Matcher m = p.matcher(svg);
         StringBuffer sb = new StringBuffer();
 
@@ -318,10 +371,17 @@ public class ImageProcessor {
                 }
 
                 BufferedImage fixed = applyExifOrientation(raw, ori);
+                boolean hasAlpha = fixed.getColorModel().hasAlpha();
 
-                String newName = href.replaceAll("\\.(?i)(jpe?g|png)$", "") + "__oriented.png";
+                String stem = href.replaceAll("\\.(?i)(jpe?g|png|tif?f|webp|heic)$", "");
+                String newName = stem + "__oriented." + (hasAlpha ? "png" : "jpg");
                 File temp = new File(baseDir, newName);
-                ImageIO.write(fixed, "png", temp);
+
+                if (hasAlpha) {
+                    ImageIO.write(fixed, "png", temp);
+                } else {
+                    writeJpeg(fixed, temp, 0.9f);
+                }
                 temp.deleteOnExit();
 
                 String replaced = "<image" + before + "xlink:href=\"" + newName + "\"" + after + ">";
@@ -333,6 +393,35 @@ public class ImageProcessor {
         m.appendTail(sb);
         return sb.toString();
     }
+
+    // 3) JPEG yazıcı (kalite parametreli). Girdi ARGB ise önce RGB’ye düşürür.
+    private static void writeJpeg(BufferedImage src, File out, float quality) throws IOException {
+        BufferedImage rgb = src.getType() == BufferedImage.TYPE_INT_RGB ? src
+                : new BufferedImage(src.getWidth(), src.getHeight(), BufferedImage.TYPE_INT_RGB);
+        if (rgb != src) {
+            Graphics2D g = rgb.createGraphics();
+            try {
+                g.setColor(Color.WHITE);
+                g.fillRect(0, 0, rgb.getWidth(), rgb.getHeight());
+                g.drawImage(src, 0, 0, null);
+            } finally {
+                g.dispose();
+            }
+        }
+
+        javax.imageio.ImageWriter w = ImageIO.getImageWritersByFormatName("jpeg").next();
+        javax.imageio.ImageWriteParam prm = w.getDefaultWriteParam();
+        prm.setCompressionMode(javax.imageio.ImageWriteParam.MODE_EXPLICIT);
+        prm.setCompressionQuality(Math.max(0f, Math.min(1f, quality)));
+
+        try (var ios = ImageIO.createImageOutputStream(out)) {
+            w.setOutput(ios);
+            w.write(null, new javax.imageio.IIOImage(rgb, null, null), prm);
+        } finally {
+            w.dispose();
+        }
+    }
+
 
     public static void drawSingleDesignOnCanvas(BufferedImage canvas, String path, int x1, int y1, int w1, int h1,
                                                 int x2, int y2, int w2, int h2, OrderInfo orderInfo) throws IOException {
@@ -488,11 +577,8 @@ public class ImageProcessor {
             return stream.filter(Files::isRegularFile)
                     .map(Path::toFile)
                     .map(File::getName)
-                    .filter(n -> {
-                        String l = n.toLowerCase(Locale.ROOT);
-                        return (l.endsWith(".png") || l.endsWith(".jpg") || l.endsWith(".jpeg"))
-                                && l.contains(orderId.toLowerCase(Locale.ROOT));
-                    })
+                    .filter(n -> n.toLowerCase(Locale.ROOT).endsWith("__srgb.png")
+                            && n.toLowerCase(Locale.ROOT).contains(orderId.toLowerCase(Locale.ROOT)))
                     .map(ImageProcessor::extractNameAroundOrderId)
                     .filter(s -> s != null && !s.isBlank())
                     .findFirst()
@@ -531,50 +617,7 @@ public class ImageProcessor {
         if (s == null) return "";
         return s.replaceAll("^[ _-]+|[ _-]+$", "");
     }
-    private static String autoFitTextToClipShrinkOnly(String svg, String clipId, String familyName) {
-        try {
-            java.util.regex.Matcher mRect = java.util.regex.Pattern.compile(
-                    "<clipPath\\s+id=\"" + java.util.regex.Pattern.quote(clipId) + "\"[\\s\\S]*?<rect[^>]*?width=\"([\\-0-9.]+)\"[^>]*?height=\"([\\-0-9.]+)\"",
-                    java.util.regex.Pattern.CASE_INSENSITIVE
-            ).matcher(svg);
-            if (!mRect.find()) return svg;
-            double rectW = Double.parseDouble(mRect.group(1));
-            double rectH = Double.parseDouble(mRect.group(2));
 
-            java.util.regex.Matcher mText = java.util.regex.Pattern.compile(
-                    "<text[^>]*?font-family=\"([^\"]+)\"[^>]*?font-size=\"([\\-0-9.]+)\"[\\s\\S]*?><tspan[^>]*?x=\"([\\-0-9.]+)\"[^>]*?y=\"([\\-0-9.]+)\"[^>]*?>([\\s\\S]*?)</tspan>\\s*</text>",
-                    java.util.regex.Pattern.CASE_INSENSITIVE
-            ).matcher(svg);
-            if (!mText.find()) return svg;
-
-            double fontSize  = Double.parseDouble(mText.group(2));
-            String textValue = mText.group(5);
-
-            java.awt.Font font = new java.awt.Font(familyName, java.awt.Font.PLAIN, Math.max(1, (int)Math.round(fontSize)));
-            java.awt.font.FontRenderContext frc = new java.awt.font.FontRenderContext(new java.awt.geom.AffineTransform(), true, true);
-            java.awt.font.GlyphVector gv = font.createGlyphVector(frc, textValue);
-            java.awt.geom.Rectangle2D vb = gv.getVisualBounds();
-            double textW = vb.getWidth();
-            double textH = vb.getHeight();
-
-            double sW = rectW / Math.max(1e-6, textW);
-            double sH = rectH / Math.max(1e-6, textH);
-            double scale = Math.min(Math.min(sW, sH), 1.0);
-
-            if (scale > 0.995) return svg;
-
-            double newFontSize = fontSize * scale;
-
-            String before = mText.group(0);
-            String after  = before.replace(
-                    "font-size=\"" + mText.group(2) + "\"",
-                    "font-size=\"" + String.format(java.util.Locale.US, "%.4f", newFontSize) + "\""
-            );
-            return svg.replace(before, after);
-        } catch (Exception ignore) {
-            return svg;
-        }
-    }
     private static String sanitizeName(String s) {
         if (s == null) return "";
         String out = s.replaceAll("[^a-zA-Z0-9._-]", "_");

@@ -7,8 +7,20 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 
+/**
+ * Utility responsible for reading Amazon customization JSON files and translating them into
+ * {@link OrderInfo} instances that drive the mug rendering pipeline.
+ */
 public class JsonDataReader {
 
+    /**
+     * Parses a single customization JSON file and builds an {@link OrderInfo} with the required metadata.
+     *
+     * @param jsonFile        the customization descriptor found under the order folder
+     * @param orderDirectory  directory used to infer a fallback customer name
+     * @return populated {@link OrderInfo}
+     * @throws IOException if any of the mandatory fields are missing or unreadable
+     */
     public static OrderInfo parse(File jsonFile, File orderDirectory) throws IOException {
         String content = Files.readString(jsonFile.toPath());
         JSONObject root = new JSONObject(content);
@@ -31,6 +43,9 @@ public class JsonDataReader {
         return new OrderInfo(orderId, customerName, fontName, quantity, orderItemId, label);
     }
 
+    /**
+     * Locates the visible label text in the customization tree.
+     */
     private static String findLabelInCustomization(JSONObject root) {
         if (root.has("customizationData")) {
             JSONObject customizationData = root.getJSONObject("customizationData");
@@ -45,6 +60,9 @@ public class JsonDataReader {
         return null;
     }
 
+    /**
+     * Traverses the customization structure to locate the selected font family.
+     */
     private static String findFontFamilyInCustomization(JSONObject root) {
         if (root.has("customizationData")) {
             JSONObject customizationData = root.getJSONObject("customizationData");
@@ -55,6 +73,9 @@ public class JsonDataReader {
         return null;
     }
 
+    /**
+     * Recursively scans the customization nodes for a font selection entry.
+     */
     private static String findFontRecursively(JSONArray jsonArray) {
         for (int i = 0; i < jsonArray.length(); i++) {
             JSONObject currentObject = jsonArray.getJSONObject(i);
