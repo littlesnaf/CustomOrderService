@@ -15,7 +15,6 @@ import org.apache.batik.transcoder.image.PNGTranscoder;
 import javax.imageio.ImageIO;
 import java.awt.*;
 import java.awt.geom.AffineTransform;
-import java.awt.image.AffineTransformOp;
 import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.FileOutputStream;
@@ -39,11 +38,11 @@ public class ImageProcessor {
     static final int FINAL_HEIGHT = 1410;
     static final int RENDER_SIZE = 3200;
 
-    static final int area1X = 144,  area1Y = 78,  area1Width = 952,  area1Height = 974;
-    static final int area2X = 1524, area2Y = 75,  area2Width = 944,  area2Height = 975;
+    static final int area1X = 144,  area1Y = 78,  area1Width = 952,  area1Height = 974;   // LEFT (FRONT)
+    static final int area2X = 1524, area2Y = 75,  area2Width = 944,  area2Height = 975;   // RIGHT (BACK)
 
-    static final int crop1X = 336,  crop1Y = 1048, crop1Width = 1016, crop1Height = 1040;
-    static final int crop2X = 1808, crop2Y = 1048, crop2Width = 1016, crop2Height = 1040;
+    static final int crop1X = 336,  crop1Y = 1048, crop1Width = 1016, crop1Height = 1040; // LEFT crop
+    static final int crop2X = 1808, crop2Y = 1048, crop2Width = 1016, crop2Height = 1040; // RIGHT crop
 
     public static List<String> processOrderFolderMulti(File orderDirectory,
                                                        File outputDirectory,
@@ -185,6 +184,9 @@ public class ImageProcessor {
                                          String fileNameSuffix) throws Exception {
         OrderInfo orderInfo = JsonDataReader.parse(jsonFile, orderRoot);
 
+        // >>> NEW: Read "Design Side" decision
+        String designSide = JsonDataReader.readDesignSide(jsonFile); // "BOTH" | "FRONT_ONLY" | "BACK_ONLY"
+
         String baseName = deriveNameFromPhotos(jsonFile.getParentFile(), orderInfo.getOrderId());
         if (isBlank(baseName)) {
             String folderCandidate = sanitizeName(orderRoot.getName());
@@ -215,11 +217,10 @@ public class ImageProcessor {
 
         BufferedImage finalCanvas = new BufferedImage(FINAL_WIDTH, FINAL_HEIGHT, BufferedImage.TYPE_INT_RGB);
 
-        String orderType = detectOrderType(jsonFile.getParentFile());
         String rnd = UUID.randomUUID().toString();
         File tempMaster = new File(outputDirectory, "temp_master_" + rnd + ".png");
-        File tempCrop1  = new File(outputDirectory, "temp_crop1_"  + rnd + ".png");
-        File tempCrop2  = new File(outputDirectory, "temp_crop2_"  + rnd + ".png");
+        File tempCrop1  = new File(outputDirectory, "temp_crop1_"  + rnd + ".png"); // LEFT
+        File tempCrop2  = new File(outputDirectory, "temp_crop2_"  + rnd + ".png"); // RIGHT
         try {
             convertSvgToHighResPng(modifiedSvgContent, svgFile.getParentFile(),
                     tempMaster.getAbsolutePath(), RENDER_SIZE, RENDER_SIZE);
@@ -229,9 +230,28 @@ public class ImageProcessor {
             cropImage(tempMaster.getAbsolutePath(), tempCrop2.getAbsolutePath(),
                     crop2X, crop2Y, crop2Width, crop2Height);
 
+            // >>> NEW: Place according to "Design Side"
+            String leftOverlayPath  = null; // FRONT (left)
+            String rightOverlayPath = null; // BACK  (right)
+            switch (designSide) {
+                case "FRONT_ONLY":
+                    leftOverlayPath  = tempCrop1.getAbsolutePath();
+                    rightOverlayPath = null; // blank right
+                    break;
+                case "BACK_ONLY":
+                    leftOverlayPath  = null; // blank left
+                    rightOverlayPath = tempCrop2.getAbsolutePath();
+                    break;
+                default: // BOTH
+                    leftOverlayPath  = tempCrop1.getAbsolutePath();
+                    rightOverlayPath = tempCrop2.getAbsolutePath();
+                    break;
+            }
+
             drawPhotoMugOnCanvas(finalCanvas,
-                    tempCrop1.getAbsolutePath(), area1X, area1Y, area1Width, area1Height,
-                    tempCrop2.getAbsolutePath(), area2X, area2Y, area2Width, area2Height, orderInfo);
+                    leftOverlayPath,  area1X, area1Y, area1Width, area1Height,
+                    rightOverlayPath, area2X, area2Y, area2Width, area2Height,
+                    orderInfo);
 
         } finally {
             tempMaster.delete();
@@ -241,6 +261,7 @@ public class ImageProcessor {
 
         ImageIO.write(finalCanvas, "png", finalOutputFile);
         cleanupSrgbAndOrientedFiles(svgFile.getParentFile());
+
         return finalOutputFile.getAbsolutePath();
     }
 
@@ -256,118 +277,17 @@ public class ImageProcessor {
         g2d.setColor(Color.WHITE);
         g2d.fillRect(0, 0, canvas.getWidth(), canvas.getHeight());
 
-        BufferedImage o1 = ImageIO.read(new File(overlay1Path));
-        BufferedImage o2 = ImageIO.read(new File(overlay2Path));
-        g2d.drawImage(o1, x1, y1, w1, h1, null);
-        g2d.drawImage(o2, x2, y2, w2, h2, null);
-
-        boolean leftHasPhoto  = rasterPhotoPresent(canvas, x1, y1, w1, h1);
-        boolean rightHasPhoto = rasterPhotoPresent(canvas, x2, y2, w2, h2);
-
-        if (!leftHasPhoto)  paintMissingBadge(canvas, x1, y1, w1, h1);
-        if (!rightHasPhoto) paintMissingBadge(canvas, x2, y2, w2, h2);
-
-        Graphics2D gInfo = canvas.createGraphics();
-        setupHighQualityRendering(gInfo);
-        drawMirroredInfoText(gInfo, orderInfo);
-        gInfo.dispose();
-        g2d.dispose();
-    }
-
-    public static void drawSingleDesignOnCanvas(BufferedImage canvas, String path, int x1, int y1, int w1, int h1,
-                                                int x2, int y2, int w2, int h2, OrderInfo orderInfo) throws IOException {
-        Graphics2D g2d = canvas.createGraphics();
-        setupHighQualityRendering(g2d);
-        g2d.setColor(Color.WHITE);
-        g2d.fillRect(0, 0, canvas.getWidth(), canvas.getHeight());
-
-        BufferedImage img = ImageIO.read(new File(path));
-        g2d.drawImage(img, x1, y1, w1, h1, null);
-        g2d.drawImage(img, x2, y2, w2, h2, null);
-
-        boolean leftHasPhoto  = rasterPhotoPresent(canvas, x1, y1, w1, h1);
-        boolean rightHasPhoto = rasterPhotoPresent(canvas, x2, y2, w2, h2);
-
-        if (!leftHasPhoto)  paintMissingBadge(canvas, x1, y1, w1, h1);
-        if (!rightHasPhoto) paintMissingBadge(canvas, x2, y2, w2, h2);
-
-        Graphics2D gInfo = canvas.createGraphics();
-        setupHighQualityRendering(gInfo);
-        drawMirroredInfoText(gInfo, orderInfo);
-        gInfo.dispose();
-        g2d.dispose();
-    }
-
-    private static boolean rasterPhotoPresent(BufferedImage canvas, int x, int y, int w, int h) {
-        int sx = Math.max(0, x), sy = Math.max(0, y);
-        int ex = Math.min(canvas.getWidth(), x + w), ey = Math.min(canvas.getHeight(), y + h);
-        if (ex <= sx || ey <= sy) return false;
-
-        int width = ex - sx, height = ey - sy;
-
-        int grid = Math.max(1, Math.min(Math.min(width, height) / 64, 8));
-        double opaqueCount = 0;
-        double totalCount = 0;
-        double sum = 0;
-        double sum2 = 0;
-
-        for (int j = sy; j < ey; j += grid) {
-            for (int i = sx; i < ex; i += grid) {
-                int rgb = canvas.getRGB(i, j);
-                int a = (rgb >> 24) & 0xFF;
-                int r = (rgb >> 16) & 0xFF;
-                int g = (rgb >> 8) & 0xFF;
-                int b = rgb & 0xFF;
-
-                double lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-
-                if (a > 5) opaqueCount++;
-                sum += lum;
-                sum2 += lum * lum;
-                totalCount++;
-            }
+        if (overlay1Path != null) {
+            BufferedImage o1 = ImageIO.read(new File(overlay1Path));
+            g2d.drawImage(o1, x1, y1, w1, h1, null);
+        }
+        if (overlay2Path != null) {
+            BufferedImage o2 = ImageIO.read(new File(overlay2Path));
+            g2d.drawImage(o2, x2, y2, w2, h2, null);
         }
 
-        if (totalCount == 0) return false;
-
-        double opaqueRatio = opaqueCount / totalCount;
-        double mean = sum / totalCount;
-        double variance = Math.max(0, (sum2 / totalCount) - (mean * mean));
-        double stddev = Math.sqrt(variance);
-
-        boolean enoughOpaque = opaqueRatio >= 0.20;
-        boolean enoughVar    = stddev >= 18.0;
-
-        return enoughOpaque && enoughVar;
-    }
-
-    private static void paintMissingBadge(BufferedImage canvas, int x, int y, int w, int h) {
-        Graphics2D g = canvas.createGraphics();
-        setupHighQualityRendering(g);
-        int cx = x + w / 2;
-        int cy = y + h / 2;
-
-        int r = Math.max(6, Math.min(w, h) / 40);
-        g.setColor(new Color(200, 0, 0));
-        g.fillOval(cx - r, cy - r, r * 2, r * 2);
-
-        int pad = Math.max(6, r);
-        int boxW = Math.min(w, 320);
-        int boxH = Math.min(h / 6, 56);
-        int bx = x + (w - boxW) / 2;
-        int by = y + h - boxH - pad;
-
-        g.setColor(new Color(200, 0, 0, 220));
-        g.fillRoundRect(bx, by, boxW, boxH, 12, 12);
-
-        g.setColor(Color.WHITE);
-        g.setFont(new Font("Arial", Font.BOLD, Math.max(12, boxH - 20)));
-        FontMetrics fm = g.getFontMetrics();
-        String msg = "MISSING PHOTO";
-        int tx = bx + (boxW - fm.stringWidth(msg)) / 2;
-        int ty = by + (boxH + fm.getAscent() - fm.getDescent()) / 2;
-        g.drawString(msg, tx, ty);
-        g.dispose();
+        drawMirroredInfoText(g2d, orderInfo);
+        g2d.dispose();
     }
 
     private static int readExifOrientation(File f) {
@@ -517,6 +437,21 @@ public class ImageProcessor {
         }
     }
 
+    public static void drawSingleDesignOnCanvas(BufferedImage canvas, String path, int x1, int y1, int w1, int h1,
+                                                int x2, int y2, int w2, int h2, OrderInfo orderInfo) throws IOException {
+        Graphics2D g2d = canvas.createGraphics();
+        setupHighQualityRendering(g2d);
+        g2d.setColor(Color.WHITE);
+        g2d.fillRect(0, 0, canvas.getWidth(), canvas.getHeight());
+
+        BufferedImage img = ImageIO.read(new File(path));
+        g2d.drawImage(img, x1, y1, w1, h1, null);
+        g2d.drawImage(img, x2, y2, w2, h2, null);
+
+        drawMirroredInfoText(g2d, orderInfo);
+        g2d.dispose();
+    }
+
     private static BufferedImage generateBarcodeWithText(String text, int width, int height) {
         try {
             Code128Writer writer = new Code128Writer();
@@ -579,7 +514,7 @@ public class ImageProcessor {
                 .substring(Math.max(0, orderInfo.getOrderItemId().length() - 4));
         String rightLine1 = "ID: " + itemIdLast4 + "   ID Q-ty: " + orderInfo.getQuantity();
         String rightLine2 = orderInfo.getLabel();
-        drawMirroredString(g2d, rightLine1, rightEdge, yLine1, infoFont, true);
+        drawMirroredString(g2d, rightLine1, yLine1, yLine1, infoFont, true); // keep as-is if you already used
         drawMirroredString(g2d, rightLine2, rightEdge, yLine2, infoFont, true);
 
         int barcodeWidth = 1000;
