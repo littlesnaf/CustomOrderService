@@ -297,39 +297,44 @@ public class ImageProcessor {
         if (isSwapOrientation(ori)) return w >= h;
         return false;
     }
+    // 1) EXIF yön düzeltme: AffineTransformOp yok, RGB/ARGB seçimi + beyaz zemin
     private static BufferedImage applyExifOrientation(BufferedImage src, int orientation) {
-        final boolean hasAlpha = src.getColorModel().hasAlpha();
+        boolean hasAlpha = src.getColorModel().hasAlpha();
         int w = src.getWidth(), h = src.getHeight();
-        AffineTransform tx = new AffineTransform();
         int newW = w, newH = h;
 
+        AffineTransform tx = new AffineTransform();
         switch (orientation) {
-            case 1: return src;
-            case 2: tx.scale(-1, 1); tx.translate(-w, 0); break;                 // mirror X
-            case 3: tx.translate(w, h); tx.rotate(Math.PI); break;               // 180°
-            case 4: tx.scale(1, -1); tx.translate(0, -h); break;                 // mirror Y
-            case 5: tx.rotate(-Math.PI/2); tx.scale(-1, 1); newW = h; newH = w; break; // -90° + mirror X
-            case 6: tx.translate(h, 0); tx.rotate(Math.PI/2); newW = h; newH = w; break; // +90°
-            case 7: tx.rotate(Math.PI/2); tx.scale(-1, 1); newW = h; newH = w; break;    // +90° + mirror X
-            case 8: tx.translate(0, w); tx.rotate(-Math.PI/2); newW = h; newH = w; break; // -90°
+            case 1:  return src;
+            case 2:  tx.scale(-1, 1); tx.translate(-w, 0); break;
+            case 3:  tx.translate(w, h); tx.rotate(Math.PI); break;
+            case 4:  tx.scale(1, -1); tx.translate(0, -h); break;
+            case 5:  tx.rotate(-Math.PI/2); tx.scale(-1, 1); tx.translate(-w, 0); newW = h; newH = w; break;
+            case 6:  tx.translate(h, 0); tx.rotate(Math.PI/2);                         newW = h; newH = w; break;
+            case 7:  tx.rotate(Math.PI/2); tx.scale(-1, 1); tx.translate(-w, 0);      newW = h; newH = w; break;
+            case 8:  tx.translate(0, w); tx.rotate(-Math.PI/2);                       newW = h; newH = w; break;
             default: return src;
         }
 
-        // Hedef tuvali oluştur (alfa yoksa beyazla doldur)
         int type = hasAlpha ? BufferedImage.TYPE_INT_ARGB : BufferedImage.TYPE_INT_RGB;
         BufferedImage dst = new BufferedImage(newW, newH, type);
 
-        // Arkaplan doldurması (JPEG’e gidecekler için önemli)
-        Graphics2D gBg = dst.createGraphics();
-        if (!hasAlpha) {
-            gBg.setColor(Color.WHITE);
-            gBg.fillRect(0, 0, newW, newH);
-        }
-        gBg.dispose();
+        Graphics2D g = dst.createGraphics();
+        try {
+            g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+            g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
+            g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
 
-        // AffineTransformOp ile dönüşüm (bicubic önerilir)
-        AffineTransformOp op = new AffineTransformOp(tx, AffineTransformOp.TYPE_BICUBIC);
-        op.filter(src, dst);
+            if (!hasAlpha) {
+                g.setColor(Color.WHITE);
+                g.fillRect(0, 0, newW, newH);
+            }
+
+            g.setTransform(tx);
+            g.drawImage(src, 0, 0, null);
+        } finally {
+            g.dispose();
+        }
         return dst;
     }
 
