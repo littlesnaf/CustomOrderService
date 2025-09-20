@@ -217,21 +217,32 @@ public class ImageProcessor {
 
         String orderType = detectOrderType(jsonFile.getParentFile());
         if ("TEXT_ONLY".equals(orderType)) {
-            File tempTextRender = new File(outputDirectory, "temp_text_render_" + UUID.randomUUID() + ".png");
+            String rnd = UUID.randomUUID().toString();
+            File tempMaster = new File(outputDirectory, "temp_master_" + rnd + ".png");
+            File tempCrop1  = new File(outputDirectory, "temp_crop1_"  + rnd + ".png");
+            File tempCrop2  = new File(outputDirectory, "temp_crop2_"  + rnd + ".png");
             try {
                 convertSvgToHighResPng(modifiedSvgContent, svgFile.getParentFile(),
-                        tempTextRender.getAbsolutePath(), RENDER_SIZE, RENDER_SIZE);
-                drawSingleDesignOnCanvas(finalCanvas, tempTextRender.getAbsolutePath(),
-                        area1X, area1Y, area1Width, area1Height,
-                        area2X, area2Y, area2Width, area2Height, orderInfo);
+                        tempMaster.getAbsolutePath(), RENDER_SIZE, RENDER_SIZE);
+
+                cropImage(tempMaster.getAbsolutePath(), tempCrop1.getAbsolutePath(),
+                        crop1X, crop1Y, crop1Width, crop1Height);
+                cropImage(tempMaster.getAbsolutePath(), tempCrop2.getAbsolutePath(),
+                        crop2X, crop2Y, crop2Width, crop2Height);
+
+                drawPhotoMugOnCanvas(finalCanvas,
+                        tempCrop1.getAbsolutePath(), area1X, area1Y, area1Width, area1Height,
+                        tempCrop2.getAbsolutePath(), area2X, area2Y, area2Width, area2Height, orderInfo);
             } finally {
-                tempTextRender.delete();
+                tempMaster.delete();
+                tempCrop1.delete();
+                tempCrop2.delete();
             }
         } else {
             String rnd = UUID.randomUUID().toString();
             File tempMaster = new File(outputDirectory, "temp_master_" + rnd + ".png");
-            File tempCrop1 = new File(outputDirectory, "temp_crop1_" + rnd + ".png");
-            File tempCrop2 = new File(outputDirectory, "temp_crop2_" + rnd + ".png");
+            File tempCrop1  = new File(outputDirectory, "temp_crop1_"  + rnd + ".png");
+            File tempCrop2  = new File(outputDirectory, "temp_crop2_"  + rnd + ".png");
             try {
                 convertSvgToHighResPng(modifiedSvgContent, svgFile.getParentFile(),
                         tempMaster.getAbsolutePath(), RENDER_SIZE, RENDER_SIZE);

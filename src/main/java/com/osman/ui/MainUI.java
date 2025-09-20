@@ -160,7 +160,9 @@ public class MainUI {
         processButton.setEnabled(false);
         progressBar.setIndeterminate(true);
         progressBar.setString("Processing…");
-
+        failedItems.clear(); // Listeyi burada temizle
+        cancelRequested = false;
+        processButton.setEnabled(false);
         new SwingWorker<Void, String>() {
             @Override
             protected Void doInBackground() {
@@ -204,6 +206,16 @@ public class MainUI {
                 processButton.setEnabled(true);
                 if (cancelRequested) {
                     log("\n>>> CANCELED BY USER <<<");
+                }
+                // Hata listesini sonda göster
+                if (!failedItems.isEmpty()) {
+                    log("\n==========================================");
+                    log(">>> İŞLEM SONU HATALARI (" + failedItems.size() + " adet) <<<");
+                    log("==========================================");
+                    for (String failureMessage : failedItems) {
+                        log(" - " + failureMessage);
+                    }
+                    log("==========================================");
                 }
             }
         }.execute();
@@ -378,8 +390,10 @@ public class MainUI {
                             ok++;
                         }
                     } catch (Exception ex) {
-                        log("    -> HATA: " + subFolder.getName() + " işlenirken: " + ex.getMessage());
-                        ex.printStackTrace();
+                        String errorMessage = "    -> ERROR processing " + subFolder.getName() + ": " + ex.getMessage();
+                        log(errorMessage);
+                        // Hatayı listeye ekle
+                        failedItems.add(subFolder.getName() + " -> " + ex.getMessage());
                         fail++;
                     }
                 }
