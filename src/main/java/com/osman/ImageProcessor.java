@@ -76,22 +76,69 @@ public class ImageProcessor {
             outputs.add(outPath);
         }
         return outputs;
+    }private static BufferedImage readImageAny(String href, File baseDir) throws IOException {
+        String lower = href.toLowerCase(Locale.ROOT);
+        if (lower.startsWith("data:image/")) {
+            int i = href.indexOf("base64,");
+            if (i > 0) {
+                byte[] bytes = Base64.getDecoder().decode(href.substring(i + 7));
+                try (var in = new java.io.ByteArrayInputStream(bytes)) {
+                    return ImageIO.read(in);
+                }
+            }
+            return null;
+        }
+        if (lower.startsWith("http://") || lower.startsWith("https://")) {
+            try (var in = new java.net.URL(href).openStream()) {
+                return ImageIO.read(in);
+            }
+        }
+        File f = new File(baseDir, href);
+        return f.isFile() ? ImageIO.read(f) : null;
     }
 
-    public static String processOrderFolder(File orderDirectory,
-                                            File outputDirectory,
-                                            String customerNameForFile,
-                                            String fileNameSuffix) throws Exception {
-        if (!orderDirectory.isDirectory())
-            throw new IllegalArgumentException("Provided order path is not a directory: " + orderDirectory.getAbsolutePath());
-        if (!outputDirectory.isDirectory())
-            throw new IllegalArgumentException("Provided output path is not a directory: " + outputDirectory.getAbsolutePath());
+    private static String normalizeAllImagesToLocalPNG(String svg, File baseDir) {
+        Pattern p = Pattern.compile("<image\\b([^>]*?)(?:xlink:href|href)=\"([^\"]+)\"([^>]*)>", Pattern.CASE_INSENSITIVE);
+        Matcher m = p.matcher(svg);
+        StringBuffer sb = new StringBuffer();
 
-        File jsonFile = findFileByExtension(orderDirectory, ".json");
-        if (jsonFile == null) throw new IOException("JSON file not found in: " + orderDirectory.getName());
+        while (m.find()) {
+            String before = m.group(1);
+            String href   = m.group(2);
+            String after  = m.group(3);
 
-        return renderFromJson(jsonFile, orderDirectory, outputDirectory, customerNameForFile, fileNameSuffix);
+            try {
+                BufferedImage in = readImageAny(href, baseDir);
+                if (in == null) {
+                    m.appendReplacement(sb, Matcher.quoteReplacement(m.group(0)));
+                    continue;
+                }
+
+                int type = in.getColorModel().hasAlpha() ? BufferedImage.TYPE_INT_ARGB : BufferedImage.TYPE_INT_RGB;
+                BufferedImage rgb = new BufferedImage(in.getWidth(), in.getHeight(), type);
+                Graphics2D g = rgb.createGraphics();
+                g.setComposite(AlphaComposite.Src);
+                g.drawImage(in, 0, 0, null);
+                g.dispose();
+
+                String safe = href.replaceAll("[^a-zA-Z0-9._-]", "_");
+                if (safe.length() > 80) safe = safe.substring(safe.length() - 80);
+                String newName = safe.replaceAll("\\.(?i)(jpe?g|png|tif?f|webp|heic)$", "") + "__srgb.png";
+
+                File out = new File(baseDir, newName);
+                ImageIO.write(rgb, "png", out);
+                out.deleteOnExit();
+
+                String replaced = "<image" + before + "xlink:href=\"" + newName + "\"" + after + ">";
+                m.appendReplacement(sb, Matcher.quoteReplacement(replaced));
+            } catch (Exception ex) {
+                m.appendReplacement(sb, Matcher.quoteReplacement(m.group(0)));
+            }
+        }
+        m.appendTail(sb);
+        return sb.toString();
     }
+
 
     private static String renderFromJson(File jsonFile,
                                          File orderRoot,
@@ -125,6 +172,8 @@ public class ImageProcessor {
         }
 
         modifiedSvgContent = fixExifOrientationInSvg(modifiedSvgContent, svgFile.getParentFile());
+        modifiedSvgContent = normalizeAllImagesToLocalPNG(modifiedSvgContent, svgFile.getParentFile());
+
 
         BufferedImage finalCanvas = new BufferedImage(FINAL_WIDTH, FINAL_HEIGHT, BufferedImage.TYPE_INT_RGB);
 

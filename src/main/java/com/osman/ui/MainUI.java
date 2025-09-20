@@ -8,14 +8,15 @@ import javax.swing.*;
 import javax.swing.filechooser.FileNameExtensionFilter;
 import java.awt.*;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.*;
+import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
-import java.util.zip.ZipInputStream;
 
 public class MainUI {
 
@@ -28,6 +29,7 @@ public class MainUI {
 
     private volatile boolean cancelRequested = false;
     private String fontDirectory;
+    private final List<String> failedItems = Collections.synchronizedList(new ArrayList<>());
 
     public MainUI() {
         fontDirectory = Config.DEFAULT_FONT_DIR;
@@ -236,6 +238,8 @@ public class MainUI {
                 return;
             }
 
+            extractZipArchives(customerFolder);
+
             File scanRoot = new File(customerFolder, "images");
             if (!scanRoot.isDirectory()) {
                 scanRoot = new File(customerFolder, "img");
@@ -287,6 +291,50 @@ public class MainUI {
             }
         } catch (Exception ex) {
             log("  -> CRITICAL (" + customerFolder.getName() + "): " + ex.getMessage());
+        }
+    }
+
+    private void extractZipArchives(File rootFolder) {
+        List<File> zipFiles = new ArrayList<>();
+        try (Stream<Path> stream = Files.walk(rootFolder.toPath(), 6)) {
+            stream.filter(Files::isRegularFile)
+                    .filter(p -> p.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".zip"))
+                    .forEach(p -> zipFiles.add(p.toFile()));
+        } catch (IOException e) {
+            log("  -> Error scanning for zip files: " + e.getMessage());
+            return;
+        }
+
+        if (zipFiles.isEmpty()) return;
+
+        log("  -> Found " + zipFiles.size() + " zip file(s) inside folder. Extracting...");
+        for (File zip : zipFiles) {
+            if (cancelRequested) return;
+
+            File parent = zip.getParentFile();
+            if (parent != null && parent.getName().equalsIgnoreCase("photos")) {
+                continue; // skip output folder
+            }
+
+            String baseName = zip.getName().replaceAll("(?i)\\.zip$", "");
+            File extractDir = new File(parent, baseName);
+
+            if (!extractDir.exists() && !extractDir.mkdirs()) {
+                log("  -> ERROR creating folder for zip: " + extractDir.getAbsolutePath());
+                continue;
+            }
+
+            log("  -> Extracting zip: " + zip.getName());
+            try {
+                unzip(zip, extractDir);
+                if (zip.delete()) {
+                    log("    -> Extracted and deleted: " + zip.getName());
+                } else {
+                    log("    -> WARNING: Extracted but could not delete zip: " + zip.getName());
+                }
+            } catch (IOException ex) {
+                log("  -> ERROR extracting " + zip.getName() + ": " + ex.getMessage());
+            }
         }
     }
 
@@ -367,38 +415,68 @@ public class MainUI {
     }
 
     private void unzip(File zipFile, File destDir) throws java.io.IOException {
-        byte[] buffer = new byte[8192];
-        try (ZipInputStream zis = new ZipInputStream(new FileInputStream(zipFile))) {
-            ZipEntry zipEntry = zis.getNextEntry();
-            while (zipEntry != null) {
-                if (cancelRequested) return;
+        log("  -> Starting extraction for: " + zipFile.getName());
+        int extractedCount = 0;
+        int errorCount = 0;
 
-                File newFile = new File(destDir, zipEntry.getName());
-                String destPath = destDir.getCanonicalPath() + File.separator;
-                String newPath = newFile.getCanonicalPath();
-                if (!newPath.startsWith(destPath)) {
-                    throw new java.io.IOException("Zip entry is outside target folder: " + zipEntry.getName());
-                }
+        try (java.util.zip.ZipFile zf = new java.util.zip.ZipFile(zipFile)) {
+            Enumeration<? extends ZipEntry> entries = zf.entries();
 
-                if (zipEntry.isDirectory()) {
-                    if (!newFile.isDirectory() && !newFile.mkdirs()) {
-                        throw new java.io.IOException("Could not create folder: " + newFile);
-                    }
-                } else {
-                    File parent = newFile.getParentFile();
-                    if (!parent.isDirectory() && !parent.mkdirs()) {
-                        throw new java.io.IOException("Could not create folder: " + parent);
-                    }
-                    try (FileOutputStream fos = new FileOutputStream(newFile)) {
-                        int len;
-                        while ((len = zis.read(buffer)) > 0) {
-                            fos.write(buffer, 0, len);
-                        }
-                    }
-                }
-                zipEntry = zis.getNextEntry();
+            if (!entries.hasMoreElements()) {
+                log("  -> WARNING: Zip file appears to be empty. No entries found.");
             }
+
+            while (entries.hasMoreElements()) {
+                if (cancelRequested) {
+                    log("  -> Unzip canceled by user.");
+                    break;
+                }
+
+                ZipEntry zipEntry = entries.nextElement();
+
+                if (zipEntry.getName().startsWith("__MACOSX/") || zipEntry.getName().contains("/._")) {
+                    continue;
+                }
+
+                try {
+                    File newFile = new File(destDir, zipEntry.getName());
+
+                    String destPath = destDir.getCanonicalPath() + File.separator;
+                    String newPath = newFile.getCanonicalPath();
+                    if (!newPath.startsWith(destPath)) {
+                        throw new java.io.IOException("Zip entry is outside target folder: " + zipEntry.getName());
+                    }
+
+                    if (zipEntry.isDirectory()) {
+                        if (!newFile.isDirectory() && !newFile.mkdirs()) {
+                            throw new java.io.IOException("Could not create folder: " + newFile);
+                        }
+                    } else {
+                        File parent = newFile.getParentFile();
+                        if (!parent.isDirectory() && !parent.mkdirs()) {
+                            throw new java.io.IOException("Could not create folder: " + parent);
+                        }
+
+                        byte[] buffer = new byte[8192];
+                        try (InputStream is = zf.getInputStream(zipEntry);
+                             FileOutputStream fos = new FileOutputStream(newFile)) {
+                            int len;
+                            while ((len = is.read(buffer)) > 0) {
+                                fos.write(buffer, 0, len);
+                            }
+                        }
+                        extractedCount++;
+                    }
+                } catch (Exception e) {
+                    log("  -> SKIPPED (error): Could not extract entry '" + zipEntry.getName() + "'. Reason: " + e.getMessage());
+                    errorCount++;
+                }
+            }
+        } catch (java.util.zip.ZipException e) {
+            log("  -> CRITICAL ERROR: Failed to open zip file. It may be corrupt or not a valid zip archive. " + e.getMessage());
+            throw e;
         }
+        log("  -> Extraction finished. " + extractedCount + " files extracted, " + errorCount + " errors.");
     }
 
     private void deleteDirectory(File directory) {
@@ -440,7 +518,6 @@ public class MainUI {
     public static void main(String[] args) {
         SwingUtilities.invokeLater(MainUI::new);
     }
-
     private static List<File> findOrderLeafFolders(File scanRoot, int maxDepth) {
         List<File> out = new ArrayList<>();
         collectOrderLeafFolders(scanRoot, out, 0, Math.max(1, maxDepth));
