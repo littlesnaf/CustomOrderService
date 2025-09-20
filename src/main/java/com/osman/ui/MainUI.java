@@ -30,6 +30,7 @@ public class MainUI {
     private volatile boolean cancelRequested = false;
     private String fontDirectory;
     private final List<String> failedItems = Collections.synchronizedList(new ArrayList<>());
+    private static final String OUTPUT_FOLDER_NAME = "ready design";
 
     public MainUI() {
         fontDirectory = Config.DEFAULT_FONT_DIR;
@@ -156,13 +157,12 @@ public class MainUI {
         File[] selected = chooser.getSelectedFiles();
         if (selected == null || selected.length == 0) return;
 
+        failedItems.clear();
         cancelRequested = false;
         processButton.setEnabled(false);
         progressBar.setIndeterminate(true);
         progressBar.setString("Processing…");
-        failedItems.clear(); // Listeyi burada temizle
-        cancelRequested = false;
-        processButton.setEnabled(false);
+
         new SwingWorker<Void, String>() {
             @Override
             protected Void doInBackground() {
@@ -182,7 +182,7 @@ public class MainUI {
                         handleBaseDirectory(item);
                     } else if (item.isFile() && item.getName().toLowerCase(Locale.ROOT).endsWith(".zip")) {
                         File baseDir = item.getParentFile();
-                        File outputDirectory = new File(baseDir, "photos");
+                        File outputDirectory = new File(baseDir, OUTPUT_FOLDER_NAME);
                         if (!outputDirectory.exists()) outputDirectory.mkdirs();
                         handleZipFile(item, outputDirectory);
                     } else {
@@ -207,7 +207,7 @@ public class MainUI {
                 if (cancelRequested) {
                     log("\n>>> CANCELED BY USER <<<");
                 }
-                // Hata listesini sonda göster
+
                 if (!failedItems.isEmpty()) {
                     log("\n==========================================");
                     log(">>> İŞLEM SONU HATALARI (" + failedItems.size() + " adet) <<<");
@@ -227,13 +227,13 @@ public class MainUI {
         if (customerFolders != null && customerFolders.length > 0) {
             for (File customerFolder : customerFolders) {
                 if (cancelRequested) return;
-                File outputDirectory = new File(customerFolder, "photos");
+                File outputDirectory = new File(customerFolder, OUTPUT_FOLDER_NAME);
                 if (!outputDirectory.exists()) outputDirectory.mkdirs();
                 handleFolder(customerFolder, outputDirectory, customerFolder.getName());
             }
         } else {
             log("-> No subfolders. Processing the folder itself as a single job: " + base.getName());
-            File outputDirectory = new File(base, "photos");
+            File outputDirectory = new File(base, OUTPUT_FOLDER_NAME);
             if (!outputDirectory.exists()) outputDirectory.mkdirs();
             handleFolder(base, outputDirectory, base.getName());
         }
@@ -242,8 +242,8 @@ public class MainUI {
     private void handleFolder(File customerFolder, File outputDirectory, String customerNameForFile) {
         log("\n--- Processing folder: " + customerFolder.getName() + " ---");
         try {
-            if (customerFolder.getName().equalsIgnoreCase("photos")) {
-                log("  -> Skipped 'photos' folder.");
+            if (customerFolder.getName().equalsIgnoreCase(OUTPUT_FOLDER_NAME)) {
+                log("  -> Skipped '" + OUTPUT_FOLDER_NAME + "' folder.");
                 return;
             }
             if (isSamePath(customerFolder, outputDirectory)) {
@@ -272,7 +272,7 @@ public class MainUI {
                     if (cancelRequested) return;
 
                     String n = subFolder.getName();
-                    if (n.equalsIgnoreCase("photos") || n.equalsIgnoreCase("images") || n.equalsIgnoreCase("img")) {
+                    if (n.equalsIgnoreCase(OUTPUT_FOLDER_NAME) || n.equalsIgnoreCase("images") || n.equalsIgnoreCase("img")) {
                         log("    -> Container folder skipped: " + n);
                         continue;
                     }
@@ -285,7 +285,9 @@ public class MainUI {
                             ok++;
                         }
                     } catch (Exception ex) {
-                        log("    -> ERROR processing " + subFolder.getName() + ": " + ex.getMessage());
+                        String errorMsg = "    -> ERROR processing " + subFolder.getName() + ": " + ex.getMessage();
+                        log(errorMsg);
+                        failedItems.add(customerFolder.getName() + "/" + subFolder.getName() + " - Sebep: " + ex.getMessage());
                         fail++;
                     }
                 }
@@ -299,11 +301,15 @@ public class MainUI {
                         log("  -> OK: " + new File(path).getName());
                     }
                 } catch (Exception ex) {
-                    log("  -> CRITICAL (" + customerFolder.getName() + "): " + ex.getMessage());
+                    String errorMsg = "  -> CRITICAL (" + customerFolder.getName() + "): " + ex.getMessage();
+                    log(errorMsg);
+                    failedItems.add(customerFolder.getName() + " - Sebep: " + ex.getMessage());
                 }
             }
         } catch (Exception ex) {
-            log("  -> CRITICAL (" + customerFolder.getName() + "): " + ex.getMessage());
+            String errorMsg = "  -> CRITICAL (" + customerFolder.getName() + "): " + ex.getMessage();
+            log(errorMsg);
+            failedItems.add(customerFolder.getName() + " - Sebep: " + ex.getMessage());
         }
     }
 
@@ -325,7 +331,7 @@ public class MainUI {
             if (cancelRequested) return;
 
             File parent = zip.getParentFile();
-            if (parent != null && parent.getName().equalsIgnoreCase("photos")) {
+            if (parent != null && parent.getName().equalsIgnoreCase(OUTPUT_FOLDER_NAME)) {
                 continue; // skip output folder
             }
 
@@ -346,7 +352,9 @@ public class MainUI {
                     log("    -> WARNING: Extracted but could not delete zip: " + zip.getName());
                 }
             } catch (IOException ex) {
-                log("  -> ERROR extracting " + zip.getName() + ": " + ex.getMessage());
+                String errorMsg = "  -> ERROR extracting " + zip.getName() + ": " + ex.getMessage();
+                log(errorMsg);
+                failedItems.add(zip.getName() + " - Sebep: " + ex.getMessage());
             }
         }
     }
@@ -378,7 +386,7 @@ public class MainUI {
                 int ok = 0, fail = 0;
                 for (File subFolder : leafOrders) {
                     String n = subFolder.getName();
-                    if (n.equalsIgnoreCase("photos") || n.equalsIgnoreCase("images") || n.equalsIgnoreCase("img")) {
+                    if (n.equalsIgnoreCase(OUTPUT_FOLDER_NAME) || n.equalsIgnoreCase("images") || n.equalsIgnoreCase("img")) {
                         log("    -> Konteyner klasör atlandı: " + n);
                         continue;
                     }
@@ -390,10 +398,10 @@ public class MainUI {
                             ok++;
                         }
                     } catch (Exception ex) {
-                        String errorMessage = "    -> ERROR processing " + subFolder.getName() + ": " + ex.getMessage();
-                        log(errorMessage);
-                        // Hatayı listeye ekle
-                        failedItems.add(subFolder.getName() + " -> " + ex.getMessage());
+                        String errorMsg = "    -> HATA: " + subFolder.getName() + " işlenirken: " + ex.getMessage();
+                        log(errorMsg);
+                        failedItems.add(zipFile.getName() + "/" + subFolder.getName() + " - Sebep: " + ex.getMessage());
+                        ex.printStackTrace();
                         fail++;
                     }
                 }
@@ -409,12 +417,16 @@ public class MainUI {
                     }
                     processedOk = true;
                 } catch (Exception ex) {
-                    log("  -> KRİTİK HATA (fallback): " + ex.getMessage());
+                    String errorMsg = "  -> KRİTİK HATA (fallback): " + ex.getMessage();
+                    log(errorMsg);
+                    failedItems.add(zipFile.getName() + " - Sebep: " + ex.getMessage());
                     ex.printStackTrace();
                 }
             }
         } catch (Exception ex) {
-            log("  -> KRİTİK HATA (" + zipFile.getName() + "): " + ex.getMessage());
+            String errorMsg = "  -> KRİTİK HATA (" + zipFile.getName() + "): " + ex.getMessage();
+            log(errorMsg);
+            failedItems.add(zipFile.getName() + " - Sebep: " + ex.getMessage());
             ex.printStackTrace();
         } finally {
             if (processedOk) {
@@ -546,7 +558,7 @@ public class MainUI {
         if (depth > maxDepth) return;
 
         String dn = dir.getName();
-        boolean isContainer = dn.equalsIgnoreCase("images") || dn.equalsIgnoreCase("img") || dn.equalsIgnoreCase("photos");
+        boolean isContainer = dn.equalsIgnoreCase("images") || dn.equalsIgnoreCase("img") || dn.equalsIgnoreCase(OUTPUT_FOLDER_NAME);
 
         File[] subs = dir.listFiles(File::isDirectory);
         if (subs == null) subs = new File[0];
@@ -579,7 +591,7 @@ public class MainUI {
 
     private static boolean isOrderFolder(File dir) {
         String name = dir.getName();
-        if (name.equalsIgnoreCase("images") || name.equalsIgnoreCase("img") || name.equalsIgnoreCase("photos")) {
+        if (name.equalsIgnoreCase("images") || name.equalsIgnoreCase("img") || name.equalsIgnoreCase(OUTPUT_FOLDER_NAME)) {
             return false;
         }
         return containsExtRecursively(dir, ".svg", 3) && containsExtRecursively(dir, ".json", 3);
