@@ -84,7 +84,7 @@ public class ImageProcessor {
         if (svgFile == null) throw new IOException("SVG bulunamadı: " + jsonFile.getAbsolutePath());
 
         String baseName = deriveOutputBaseName(orderRoot, outputDirectory, customerNameForFile, orderInfo);
-        String finalBaseName = orderInfo.getQuantity() + "x" + baseName + "(" + orderInfo.getOrderId() + ")";
+        String finalBaseName = "x" + orderInfo.getQuantity() +  baseName + "(" + orderInfo.getOrderId() + ")";
         File finalOutputFile = ensureUniqueFile(outputDirectory, finalBaseName, ".png");
 
         ProcessedSvgResult processedSvgResult = preProcessAndRewriteSvg(svgFile, orderInfo, outputDirectory);
