@@ -184,15 +184,73 @@ public class LabelFinderUI extends JFrame {
         JFileChooser chooser = new JFileChooser(baseDir);
         chooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
         chooser.setDialogTitle("Choose Base Folder (e.g., 'Orders')");
-        if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
-            File dir = chooser.getSelectedFile();
-            if (dir != null && dir.isDirectory()) {
-                baseDir = dir;
-                clearAllViews();
-                if (bulkModeCheck.isSelected()) populateBulkFromBase();
-                else buildLabelAndSlipIndices();
-            }
+
+        if (chooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) {
+            return; // Kullanıcı seçim yapmadıysa çık
         }
+
+        File selectedDir = chooser.getSelectedFile();
+        if (selectedDir == null || !selectedDir.isDirectory()) {
+            return;
+        }
+
+        baseDir = selectedDir;
+        clearAllViews();
+
+        // UI elemanlarını devre dışı bırak ve kullanıcıya meşgul olduğunu bildir
+        setUIEnabled(false);
+        statusLabel.setText("Klasör taranıyor, lütfen bekleyin...");
+
+        // SwingWorker ile arka plan işlemini başlat
+        SwingWorker<Void, Void> worker = new SwingWorker<>() {
+            @Override
+            protected Void doInBackground() throws Exception {
+                // Uzun süren işlem burada, arka planda çalışacak
+                if (bulkModeCheck.isSelected()) {
+                    populateBulkFromBase();
+                } else {
+                    buildLabelAndSlipIndices();
+                }
+                return null;
+            }
+
+            @Override
+            protected void done() {
+                // Arka plan işi bitince bu metot EDT'de çalışır
+                try {
+                    get(); // doInBackground'da bir hata oluştuysa burada yakalanır
+                    // buildLabelAndSlipIndices veya populateBulkFromBase kendi statusLabel'ını zaten ayarlıyor,
+                    // bu yüzden burada tekrar ayarlamaya gerek olmayabilir veya genel bir mesaj verilebilir.
+                    if (bulkModeCheck.isSelected()) {
+                        statusLabel.setText("BULK modu yüklendi: " + labelRefsModel.size() + " sayfa, " + photosModel.size() + " fotoğraf.");
+                    } else {
+                        statusLabel.setText("İndeksleme tamamlandı: " + labelGroups.size() + " etiket, " + slipGroups.size() + " irsaliye.");
+                    }
+
+                } catch (Exception e) {
+                    // Hata oluşursa kullanıcıyı bilgilendir
+                    statusLabel.setText("Hata: " + e.getCause().getMessage());
+                    JOptionPane.showMessageDialog(LabelFinderUI.this,
+                            "Dosyalar taranırken bir hata oluştu:\n" + e.getCause().getMessage(),
+                            "Hata", JOptionPane.ERROR_MESSAGE);
+                } finally {
+                    // İşlem bitince (başarılı ya da hatalı) UI elemanlarını tekrar aktif et
+                    setUIEnabled(true);
+                }
+            }
+        };
+
+        worker.execute(); // SwingWorker'ı çalıştır
+    }
+
+    // Butonları ve diğer kontrolleri toplu halde etkinleştirmek/devre dışı bırakmak için bir yardımcı metot
+    private void setUIEnabled(boolean enabled) {
+        findButton.setEnabled(enabled);
+        chooseBaseBtn.setEnabled(enabled);
+        orderIdField.setEnabled(enabled && !bulkModeCheck.isSelected());
+        bulkModeCheck.setEnabled(enabled);
+        labelRefsList.setEnabled(enabled);
+        photosList.setEnabled(enabled);
     }
 
     private void buildLabelAndSlipIndices() {

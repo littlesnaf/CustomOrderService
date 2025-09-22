@@ -30,7 +30,7 @@ public class MainUI {
     private volatile boolean cancelRequested = false;
     private String fontDirectory;
     private final List<String> failedItems = Collections.synchronizedList(new ArrayList<>());
-    private static final String OUTPUT_FOLDER_NAME = "ready design";
+    private static final String OUTPUT_FOLDER_NAME = "Ready Designs";
 
     public MainUI() {
         fontDirectory = Config.DEFAULT_FONT_DIR;
