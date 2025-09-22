@@ -184,8 +184,11 @@ public class ImageProcessor {
                                          String fileNameSuffix) throws Exception {
         OrderInfo orderInfo = JsonDataReader.parse(jsonFile, orderRoot);
 
-        // >>> NEW: Read "Design Side" decision
         String designSide = JsonDataReader.readDesignSide(jsonFile); // "BOTH" | "FRONT_ONLY" | "BACK_ONLY"
+        String sideLabel =
+                "FRONT_ONLY".equals(designSide) ? "img front" :
+                        "BACK_ONLY".equals(designSide)  ? "back img"  :
+                                "img both";
 
         String baseName = deriveNameFromPhotos(jsonFile.getParentFile(), orderInfo.getOrderId());
         if (isBlank(baseName)) {
@@ -230,7 +233,6 @@ public class ImageProcessor {
             cropImage(tempMaster.getAbsolutePath(), tempCrop2.getAbsolutePath(),
                     crop2X, crop2Y, crop2Width, crop2Height);
 
-            // >>> NEW: Place according to "Design Side"
             String leftOverlayPath  = null; // FRONT (left)
             String rightOverlayPath = null; // BACK  (right)
             switch (designSide) {
@@ -251,7 +253,7 @@ public class ImageProcessor {
             drawPhotoMugOnCanvas(finalCanvas,
                     leftOverlayPath,  area1X, area1Y, area1Width, area1Height,
                     rightOverlayPath, area2X, area2Y, area2Width, area2Height,
-                    orderInfo);
+                    orderInfo, sideLabel);
 
         } finally {
             tempMaster.delete();
@@ -271,7 +273,8 @@ public class ImageProcessor {
     }
 
     public static void drawPhotoMugOnCanvas(BufferedImage canvas, String overlay1Path, int x1, int y1, int w1, int h1,
-                                            String overlay2Path, int x2, int y2, int w2, int h2, OrderInfo orderInfo) throws IOException {
+                                            String overlay2Path, int x2, int y2, int w2, int h2,
+                                            OrderInfo orderInfo, String sideLabel) throws IOException {
         Graphics2D g2d = canvas.createGraphics();
         setupHighQualityRendering(g2d);
         g2d.setColor(Color.WHITE);
@@ -286,7 +289,7 @@ public class ImageProcessor {
             g2d.drawImage(o2, x2, y2, w2, h2, null);
         }
 
-        drawMirroredInfoText(g2d, orderInfo);
+        drawMirroredInfoText(g2d, orderInfo, sideLabel);
         g2d.dispose();
     }
 
@@ -448,7 +451,8 @@ public class ImageProcessor {
         g2d.drawImage(img, x1, y1, w1, h1, null);
         g2d.drawImage(img, x2, y2, w2, h2, null);
 
-        drawMirroredInfoText(g2d, orderInfo);
+        // Legacy helper retains old signature; show without side label.
+        drawMirroredInfoText(g2d, orderInfo, null);
         g2d.dispose();
     }
 
@@ -491,7 +495,7 @@ public class ImageProcessor {
         }
     }
 
-    private static void drawMirroredInfoText(Graphics2D g2d, OrderInfo orderInfo) {
+    private static void drawMirroredInfoText(Graphics2D g2d, OrderInfo orderInfo, String sideLabel) {
         Font infoFont = new Font("Arial", Font.BOLD, 48);
         g2d.setColor(Color.BLACK);
 
@@ -504,7 +508,9 @@ public class ImageProcessor {
         int yLine1 = infoBoxY + (infoBoxHeight - (2 * lineHeight)) / 2 + fm.getAscent();
         int yLine2 = yLine1 + lineHeight;
 
-        String leftLine1 = "Order Q-ty: " + orderInfo.getQuantity();
+        String qtyPart = "Order Q-ty: " + orderInfo.getQuantity();
+        String sidePart = (sideLabel == null || sideLabel.isBlank()) ? "" : "   " + sideLabel;
+        String leftLine1 = qtyPart + sidePart;         // <-- Order Q-ty yanına side label
         String leftLine2 = orderInfo.getOrderId();
         drawMirroredString(g2d, leftLine1, infoBoxX, yLine1, infoFont, false);
         drawMirroredString(g2d, leftLine2, infoBoxX, yLine2, infoFont, false);
@@ -514,7 +520,7 @@ public class ImageProcessor {
                 .substring(Math.max(0, orderInfo.getOrderItemId().length() - 4));
         String rightLine1 = "ID: " + itemIdLast4 + "   ID Q-ty: " + orderInfo.getQuantity();
         String rightLine2 = orderInfo.getLabel();
-        drawMirroredString(g2d, rightLine1, yLine1, yLine1, infoFont, true); // keep as-is if you already used
+        drawMirroredString(g2d, rightLine1, rightEdge, yLine1, infoFont, true);
         drawMirroredString(g2d, rightLine2, rightEdge, yLine2, infoFont, true);
 
         int barcodeWidth = 1000;

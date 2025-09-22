@@ -43,7 +43,62 @@ public class JsonDataReader {
 
         return new OrderInfo(orderId, customerName, fontName, quantity, orderItemId, label);
     }
+    public static class PlacementPresence {
+        public final boolean frontHasImage;
+        public final boolean backHasImage;
+        public PlacementPresence(boolean frontHasImage, boolean backHasImage) {
+            this.frontHasImage = frontHasImage;
+            this.backHasImage = backHasImage;
+        }
+    }
 
+    public static PlacementPresence detectFrontBackImagePresence(File jsonFile) throws IOException {
+        String content = Files.readString(jsonFile.toPath());
+        JSONObject root = new JSONObject(content);
+        boolean front = hasImageForPlacement(root, "FRONT  IMAGE");
+        boolean back  = hasImageForPlacement(root, "BACK IMAGE");
+        return new PlacementPresence(front, back);
+    }
+
+    private static boolean hasImageForPlacement(JSONObject root, String placementName) {
+        JSONObject customizationData = root.optJSONObject("customizationData");
+        if (customizationData == null) return false;
+        JSONArray children = customizationData.optJSONArray("children");
+        if (children == null || children.isEmpty()) return false;
+
+        return scanHasImage(children, placementName);
+    }
+
+    private static boolean scanHasImage(JSONArray arr, String placementName) {
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject node = arr.optJSONObject(i);
+            if (node == null) continue;
+
+            String type = node.optString("type", "");
+            if ("PlacementContainerCustomization".equalsIgnoreCase(type)) {
+                String name = node.optString("name", node.optString("label", ""));
+                if (placementName.equalsIgnoreCase(name)) {
+                    JSONArray kids = node.optJSONArray("children");
+                    if (kids != null) {
+                        for (int k = 0; k < kids.length(); k++) {
+                            JSONObject kid = kids.optJSONObject(k);
+                            if (kid == null) continue;
+                            if ("ImageCustomization".equalsIgnoreCase(kid.optString("type", ""))) {
+                                JSONObject image = kid.optJSONObject("image");
+                                String imageName = image != null ? image.optString("imageName", "").trim() : "";
+                                if (!imageName.isEmpty()) return true; // FOTO VAR
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (node.has("children")) {
+                if (scanHasImage(node.getJSONArray("children"), placementName)) return true;
+            }
+        }
+        return false;
+    }
     /**
      * Reads the "printed area" selection from JSON.
      * Returns: "BOTH", "FRONT_ONLY", or "BACK_ONLY". Defaults to "BOTH" if not found.
