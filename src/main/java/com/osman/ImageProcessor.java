@@ -45,6 +45,8 @@ public class ImageProcessor {
     static final int crop1X = 336, crop1Y = 1048, crop1Width = 1016, crop1Height = 1040;
     static final int crop2X = 1808, crop2Y = 1048, crop2Width = 1016, crop2Height = 1040;
 
+    // Mantıksal font fallback listesi (Latin dışı karakterler için)
+    private static final String[] JAVA_LOGICAL_FALLBACKS = new String[] { "SansSerif", "Dialog" };
 
     // =================================================================================
     // Ana İşlem Metodları (Public API)
@@ -68,7 +70,6 @@ public class ImageProcessor {
         }
         return outputs;
     }
-
 
     // =================================================================================
     // Çekirdek İşlem Akışı (Core Rendering Pipeline)
@@ -95,7 +96,6 @@ public class ImageProcessor {
         g2d.setColor(Color.WHITE);
         g2d.fillRect(0, 0, finalCanvas.getWidth(), finalCanvas.getHeight());
 
-        // JSON -> hangi taraflar çizilecek?
         String designSide = JsonDataReader.readDesignSide(jsonFile); // "BOTH" | "FRONT_ONLY" | "BACK_ONLY"
         boolean drawLeft  = !"BACK_ONLY".equals(designSide);   // FRONT (sol)
         boolean drawRight = !"FRONT_ONLY".equals(designSide);  // BACK  (sağ)
@@ -106,14 +106,9 @@ public class ImageProcessor {
             convertSvgToHighResPng(processedSvgResult.svgContent,
                     svgFile.getParentFile(), tempMaster.getAbsolutePath(), RENDER_SIZE, RENDER_SIZE);
 
-            // Sadece izin verilen tarafları çiz
             drawCropsToCanvas(g2d, tempMaster, outputDirectory, drawLeft, drawRight);
-            String sideLabel =
-                    "FRONT_ONLY".equals(designSide) ? "img front" :
-                            "BACK_ONLY".equals(designSide)  ? "back img"  :
-                                    "img both";
 
-            drawMirroredInfoText(g2d, orderInfo,null);
+            drawMirroredInfoText(g2d, orderInfo, null);
         } finally {
             deleteIfExists(tempMaster);
             processedSvgResult.tempFiles.forEach(ImageProcessor::deleteIfExists);
@@ -162,7 +157,10 @@ public class ImageProcessor {
         }
         m.appendTail(sb);
 
-        return new ProcessedSvgResult(sb.toString(), tempFiles);
+        // FONT FALLBACK ENJEKSİYONU
+        String withFallback = addJavaFallbackFonts(sb.toString());
+
+        return new ProcessedSvgResult(withFallback, tempFiles);
     }
 
     private static BufferedImage readWithImageMagick(File imageFile) {
@@ -202,7 +200,6 @@ public class ImageProcessor {
             return null;
         }
     }
-
 
     // =================================================================================
     // Grafik ve Dosya Yardımcı Metodları
@@ -475,5 +472,107 @@ public class ImageProcessor {
             g.dispose();
             return err;
         }
+    }
+
+    // =================================================================================
+    // SVG font fallback enjeksi̇yonu (Latin dışı karakterler için Java mantıksal fontlar)
+    // =================================================================================
+
+    private static String addJavaFallbackFonts(String svg) {
+        svg = patchFontFamilyAttributes(svg);
+        svg = patchInlineStyleFontFamilies(svg);
+        svg = patchStyleBlockFontFamilies(svg);
+        return svg;
+    }
+
+    private static String patchFontFamilyAttributes(String svg) {
+        Pattern attr = Pattern.compile("(?i)font-family\\s*=\\s*\"([^\"]+)\"");
+        Matcher m = attr.matcher(svg);
+        StringBuffer out = new StringBuffer();
+        while (m.find()) {
+            String families = m.group(1);
+            String updated = appendMissingFallbacks(families);
+            m.appendReplacement(out, "font-family=\"" + Matcher.quoteReplacement(updated) + "\"");
+        }
+        m.appendTail(out);
+        return out.toString();
+    }
+
+    private static String patchInlineStyleFontFamilies(String svg) {
+        Pattern styleAttr = Pattern.compile("(?is)style\\s*=\\s*\"([^\"]*)\"");
+        Matcher ms = styleAttr.matcher(svg);
+        StringBuffer out = new StringBuffer();
+        Pattern famDecl = Pattern.compile("(?i)(font-family\\s*:\\s*)([^;\"']+)");
+        while (ms.find()) {
+            String styleVal = ms.group(1);
+            Matcher fm = famDecl.matcher(styleVal);
+            StringBuffer styleOut = new StringBuffer();
+            boolean changed = false;
+            while (fm.find()) {
+                String prefix = fm.group(1);
+                String families = fm.group(2).trim();
+                String updated = appendMissingFallbacks(families);
+                fm.appendReplacement(styleOut, Matcher.quoteReplacement(prefix + updated));
+                changed = true;
+            }
+            fm.appendTail(styleOut);
+            String replacement = changed ? styleOut.toString() : styleVal;
+            ms.appendReplacement(out, "style=\"" + Matcher.quoteReplacement(replacement) + "\"");
+        }
+        ms.appendTail(out);
+        return out.toString();
+    }
+
+    private static String patchStyleBlockFontFamilies(String svg) {
+        Pattern styleBlock = Pattern.compile("(?is)<style([^>]*)>(.*?)</style>");
+        Matcher mb = styleBlock.matcher(svg);
+        StringBuffer out = new StringBuffer();
+        Pattern famDecl = Pattern.compile("(?i)(font-family\\s*:\\s*)([^;}{]+)");
+        while (mb.find()) {
+            String attrs = mb.group(1);
+            String css = mb.group(2);
+            Matcher fm = famDecl.matcher(css);
+            StringBuffer cssOut = new StringBuffer();
+            while (fm.find()) {
+                String prefix = fm.group(1);
+                String families = fm.group(2).trim();
+                String updated = appendMissingFallbacks(families);
+                fm.appendReplacement(cssOut, Matcher.quoteReplacement(prefix + updated));
+            }
+            fm.appendTail(cssOut);
+            String rebuilt = "<style" + attrs + ">" + cssOut + "</style>";
+            mb.appendReplacement(out, Matcher.quoteReplacement(rebuilt));
+        }
+        mb.appendTail(out);
+        return out.toString();
+    }
+
+    private static String appendMissingFallbacks(String families) {
+        // Var olan aileleri normalize et
+        List<String> parts = new ArrayList<>();
+        for (String f : families.split(",")) {
+            String t = f.trim();
+            if (!t.isEmpty()) parts.add(t);
+        }
+        Set<String> lowerSet = new HashSet<>();
+        for (String p : parts) lowerSet.add(stripQuotes(p).toLowerCase(Locale.ROOT));
+
+        // Eksik mantıksal fontları ekle
+        for (String fb : JAVA_LOGICAL_FALLBACKS) {
+            if (!lowerSet.contains(fb.toLowerCase(Locale.ROOT))) {
+                parts.add(fb);
+            }
+        }
+
+        // Listeyi yeniden birleştir
+        return String.join(", ", parts);
+    }
+
+    private static String stripQuotes(String s) {
+        String t = s.trim();
+        if ((t.startsWith("'") && t.endsWith("'")) || (t.startsWith("\"") && t.endsWith("\""))) {
+            return t.substring(1, t.length() - 1);
+        }
+        return t;
     }
 }

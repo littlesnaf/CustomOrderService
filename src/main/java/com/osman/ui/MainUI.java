@@ -9,15 +9,26 @@ import javax.swing.filechooser.FileNameExtensionFilter;
 import java.awt.*;
 import java.io.File;
 import java.io.FileOutputStream;
-import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.List;
 import java.util.*;
-import java.util.stream.Stream;
+import java.util.List;
 import java.util.zip.ZipEntry;
+import java.util.stream.Stream;
 
+/**
+ * Main desktop UI for batch processing orders (folders & zip files).
+ * <p>
+ * Responsibilities:
+ * <ul>
+ *   <li>Font directory selection and initial font loading (via {@link FontManager}).</li>
+ *   <li>Picking base folders and/or .zip files to process.</li>
+ *   <li>Extracting zips and discovering "leaf" order folders.</li>
+ *   <li>Calling {@link ImageProcessor#processOrderFolderMulti(File, File, String, String)}.</li>
+ * </ul>
+ * <b>Note:</b> We preserved the working pipeline. Only unused helpers were removed and all logs are now English.
+ */
 public class MainUI {
 
     private JFrame frame;
@@ -32,6 +43,7 @@ public class MainUI {
     private final List<String> failedItems = Collections.synchronizedList(new ArrayList<>());
     private static final String OUTPUT_FOLDER_NAME = "Ready Designs";
 
+    /** Launches the window and triggers initial font scan. */
     public MainUI() {
         fontDirectory = Config.DEFAULT_FONT_DIR;
 
@@ -40,8 +52,10 @@ public class MainUI {
         frame.setSize(980, 720);
         frame.setLayout(new BorderLayout(8, 8));
 
+        // Top: font folder row
         JPanel topPanel = new JPanel(new BorderLayout(8, 8));
         frame.add(topPanel, BorderLayout.NORTH);
+
         JPanel fontRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 8));
         chooseFontBtn = new JButton("Choose Font Folder…");
         chooseFontBtn.addActionListener(e -> chooseFontDir());
@@ -51,12 +65,14 @@ public class MainUI {
         fontRow.add(fontPathLabel);
         topPanel.add(fontRow, BorderLayout.NORTH);
 
+        // Center: log
         logArea = new JTextArea();
         logArea.setEditable(false);
         logArea.setFont(new Font("Monospaced", Font.PLAIN, 12));
         JScrollPane scrollPane = new JScrollPane(logArea);
         frame.add(scrollPane, BorderLayout.CENTER);
 
+        // Bottom: progress + buttons
         JPanel bottomPanel = new JPanel(new BorderLayout(8, 8));
         JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 8));
         processButton = new JButton("Select ‘Orders’ Folder or Zip Files…");
@@ -83,6 +99,7 @@ public class MainUI {
         loadInitialFonts();
     }
 
+    /** Opens a directory chooser to select the font folder. */
     private void chooseFontDir() {
         JFileChooser chooser = new JFileChooser(fontDirectory);
         chooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
@@ -98,14 +115,14 @@ public class MainUI {
         }
     }
 
+    /** Loads fonts from the selected folder on a background thread. */
     private void loadInitialFonts() {
         processButton.setEnabled(false);
         progressBar.setIndeterminate(true);
         log("Scanning font folder: " + fontDirectory);
 
         new SwingWorker<Integer, String>() {
-            @Override
-            protected Integer doInBackground() {
+            @Override protected Integer doInBackground() {
                 try {
                     return FontManager.loadFontsFromDirectory(fontDirectory);
                 } catch (Exception e) {
@@ -114,14 +131,8 @@ public class MainUI {
                     return -1;
                 }
             }
-
-            @Override
-            protected void process(List<String> chunks) {
-                for (String s : chunks) log(s);
-            }
-
-            @Override
-            protected void done() {
+            @Override protected void process(List<String> chunks) { for (String s : chunks) log(s); }
+            @Override protected void done() {
                 progressBar.setIndeterminate(false);
                 try {
                     int count = get();
@@ -144,6 +155,7 @@ public class MainUI {
         }.execute();
     }
 
+    /** Lets the user pick base folders and/or zip files, then processes them. */
     private void processSelections() {
         JFileChooser chooser = new JFileChooser();
         chooser.setDialogTitle("Choose the base ‘Orders’ folder and/or Zip files");
@@ -164,8 +176,7 @@ public class MainUI {
         progressBar.setString("Processing…");
 
         new SwingWorker<Void, String>() {
-            @Override
-            protected Void doInBackground() {
+            @Override protected Void doInBackground() {
                 int total = selected.length;
                 int idx = 0;
 
@@ -192,14 +203,8 @@ public class MainUI {
                 publish("\n>>> ALL TASKS COMPLETED <<<");
                 return null;
             }
-
-            @Override
-            protected void process(List<String> chunks) {
-                for (String s : chunks) log(s);
-            }
-
-            @Override
-            protected void done() {
+            @Override protected void process(List<String> chunks) { for (String s : chunks) log(s); }
+            @Override protected void done() {
                 progressBar.setIndeterminate(false);
                 progressBar.setValue(100);
                 progressBar.setString("Done");
@@ -210,7 +215,7 @@ public class MainUI {
 
                 if (!failedItems.isEmpty()) {
                     log("\n==========================================");
-                    log(">>> İŞLEM SONU HATALARI (" + failedItems.size() + " adet) <<<");
+                    log(">>> ERRORS AT THE END (" + failedItems.size() + ") <<<");
                     log("==========================================");
                     for (String failureMessage : failedItems) {
                         log(" - " + failureMessage);
@@ -221,6 +226,7 @@ public class MainUI {
         }.execute();
     }
 
+    /** Processes an “Orders” base directory: iterates subfolders as customers or treats self as a job. */
     private void handleBaseDirectory(File base) {
         File[] customerFolders = base.listFiles(File::isDirectory);
 
@@ -232,13 +238,21 @@ public class MainUI {
                 handleFolder(customerFolder, outputDirectory, customerFolder.getName());
             }
         } else {
-            log("-> No subfolders. Processing the folder itself as a single job: " + base.getName());
+            log("-> No subfolders found. Processing the folder itself as a single job: " + base.getName());
             File outputDirectory = new File(base, OUTPUT_FOLDER_NAME);
             if (!outputDirectory.exists()) outputDirectory.mkdirs();
             handleFolder(base, outputDirectory, base.getName());
         }
     }
 
+    /**
+     * Processes a customer/order folder:
+     * <ol>
+     *   <li>Extracts inner zip files if any.</li>
+     *   <li>Finds leaf order folders.</li>
+     *   <li>Calls ImageProcessor for each leaf or falls back to current folder.</li>
+     * </ol>
+     */
     private void handleFolder(File customerFolder, File outputDirectory, String customerNameForFile) {
         log("\n--- Processing folder: " + customerFolder.getName() + " ---");
         try {
@@ -261,13 +275,10 @@ public class MainUI {
 
             List<File> leafOrders = findOrderLeafFolders(scanRoot, 6);
             if (!leafOrders.isEmpty()) {
-                if (leafOrders.size() > 1) {
-                    log("  -> Multiple orders detected (" + leafOrders.size() + " folders).");
-                } else {
-                    log("  -> Single order folder detected.");
-                }
-                int ok = 0, fail = 0;
+                if (leafOrders.size() > 1) log("  -> Multiple orders detected (" + leafOrders.size() + " folders).");
+                else log("  -> Single order folder detected.");
 
+                int ok = 0, fail = 0;
                 for (File subFolder : leafOrders) {
                     if (cancelRequested) return;
 
@@ -287,7 +298,7 @@ public class MainUI {
                     } catch (Exception ex) {
                         String errorMsg = "    -> ERROR processing " + subFolder.getName() + ": " + ex.getMessage();
                         log(errorMsg);
-                        failedItems.add(customerFolder.getName() + "/" + subFolder.getName() + " - Sebep: " + ex.getMessage());
+                        failedItems.add(customerFolder.getName() + "/" + subFolder.getName() + " - Reason: " + ex.getMessage());
                         fail++;
                     }
                 }
@@ -303,27 +314,27 @@ public class MainUI {
                 } catch (Exception ex) {
                     String errorMsg = "  -> CRITICAL (" + customerFolder.getName() + "): " + ex.getMessage();
                     log(errorMsg);
-                    failedItems.add(customerFolder.getName() + " - Sebep: " + ex.getMessage());
+                    failedItems.add(customerFolder.getName() + " - Reason: " + ex.getMessage());
                 }
             }
         } catch (Exception ex) {
             String errorMsg = "  -> CRITICAL (" + customerFolder.getName() + "): " + ex.getMessage();
             log(errorMsg);
-            failedItems.add(customerFolder.getName() + " - Sebep: " + ex.getMessage());
+            failedItems.add(customerFolder.getName() + " - Reason: " + ex.getMessage());
         }
     }
 
+    /** Scans and extracts zip files under a given folder (depth ≤ 6). */
     private void extractZipArchives(File rootFolder) {
         List<File> zipFiles = new ArrayList<>();
         try (Stream<Path> stream = Files.walk(rootFolder.toPath(), 6)) {
             stream.filter(Files::isRegularFile)
                     .filter(p -> p.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".zip"))
                     .forEach(p -> zipFiles.add(p.toFile()));
-        } catch (IOException e) {
+        } catch (Exception e) {
             log("  -> Error scanning for zip files: " + e.getMessage());
             return;
         }
-
         if (zipFiles.isEmpty()) return;
 
         log("  -> Found " + zipFiles.size() + " zip file(s) inside folder. Extracting...");
@@ -331,9 +342,7 @@ public class MainUI {
             if (cancelRequested) return;
 
             File parent = zip.getParentFile();
-            if (parent != null && parent.getName().equalsIgnoreCase(OUTPUT_FOLDER_NAME)) {
-                continue; // skip output folder
-            }
+            if (parent != null && parent.getName().equalsIgnoreCase(OUTPUT_FOLDER_NAME)) continue; // skip output folder
 
             String baseName = zip.getName().replaceAll("(?i)\\.zip$", "");
             File extractDir = new File(parent, baseName);
@@ -346,21 +355,19 @@ public class MainUI {
             log("  -> Extracting zip: " + zip.getName());
             try {
                 unzip(zip, extractDir);
-                if (zip.delete()) {
-                    log("    -> Extracted and deleted: " + zip.getName());
-                } else {
-                    log("    -> WARNING: Extracted but could not delete zip: " + zip.getName());
-                }
-            } catch (IOException ex) {
+                if (zip.delete()) log("    -> Extracted and deleted: " + zip.getName());
+                else log("    -> WARNING: Extracted but could not delete zip: " + zip.getName());
+            } catch (Exception ex) {
                 String errorMsg = "  -> ERROR extracting " + zip.getName() + ": " + ex.getMessage();
                 log(errorMsg);
-                failedItems.add(zip.getName() + " - Sebep: " + ex.getMessage());
+                failedItems.add(zip.getName() + " - Reason: " + ex.getMessage());
             }
         }
     }
 
+    /** Processes a standalone .zip file as if it were an orders container. */
     private void handleZipFile(File zipFile, File outputDirectory) {
-        log("\n--- Zip Dosyası İşleniyor: " + zipFile.getName() + " ---");
+        log("\n--- Processing Zip: " + zipFile.getName() + " ---");
 
         boolean processedOk = false;
         File extractRoot = null;
@@ -369,78 +376,69 @@ public class MainUI {
             String baseName = zipFile.getName().replaceAll("(?i)\\.zip$", "");
             extractRoot = new File(zipFile.getParentFile(), baseName);
             if (!extractRoot.exists() && !extractRoot.mkdirs()) {
-                throw new RuntimeException("Klasör oluşturulamadı: " + extractRoot.getAbsolutePath());
+                throw new RuntimeException("Could not create folder: " + extractRoot.getAbsolutePath());
             }
-            log("  -> Zip, adıyla aynı klasöre çıkarılıyor: " + extractRoot.getAbsolutePath());
+            log("  -> Extracting to: " + extractRoot.getAbsolutePath());
 
             unzip(zipFile, extractRoot);
-
             String customerName = baseName;
 
             File scanRoot = extractRoot;
-
             List<File> leafOrders = findOrderLeafFolders(scanRoot, 6);
 
             if (!leafOrders.isEmpty()) {
-                log("  -> Zip içinde " + leafOrders.size() + " adet sipariş klasörü bulundu.");
+                log("  -> " + leafOrders.size() + " order folder(s) found inside the zip.");
                 int ok = 0, fail = 0;
                 for (File subFolder : leafOrders) {
                     String n = subFolder.getName();
                     if (n.equalsIgnoreCase(OUTPUT_FOLDER_NAME) || n.equalsIgnoreCase("images") || n.equalsIgnoreCase("img")) {
-                        log("    -> Konteyner klasör atlandı: " + n);
+                        log("    -> Container folder skipped: " + n);
                         continue;
                     }
                     try {
-                        List<String> results = com.osman.ImageProcessor
-                                .processOrderFolderMulti(subFolder, outputDirectory, customerName, null);
+                        List<String> results = ImageProcessor.processOrderFolderMulti(subFolder, outputDirectory, customerName, null);
                         for (String path : results) {
-                            log("    -> BAŞARILI: " + subFolder.getName() + " -> " + new File(path).getName());
+                            log("    -> OK: " + subFolder.getName() + " -> " + new File(path).getName());
                             ok++;
                         }
                     } catch (Exception ex) {
-                        String errorMsg = "    -> HATA: " + subFolder.getName() + " işlenirken: " + ex.getMessage();
+                        String errorMsg = "    -> ERROR while processing " + subFolder.getName() + ": " + ex.getMessage();
                         log(errorMsg);
-                        failedItems.add(zipFile.getName() + "/" + subFolder.getName() + " - Sebep: " + ex.getMessage());
-                        ex.printStackTrace();
+                        failedItems.add(zipFile.getName() + "/" + subFolder.getName() + " - Reason: " + ex.getMessage());
                         fail++;
                     }
                 }
-                log("  -> Özet: " + ok + " başarılı, " + fail + " hatalı.");
+                log("  -> Summary: " + ok + " succeeded, " + fail + " failed.");
                 processedOk = true;
             } else {
-                log("  -> Yaprak klasör bulunamadı; zip kökü çoklu sipariş olarak deneniyor...");
+                log("  -> No leaf folder found; trying zip root as MULTI order…");
                 try {
-                    List<String> results = com.osman.ImageProcessor
-                            .processOrderFolderMulti(scanRoot, outputDirectory, customerName, null);
+                    List<String> results = ImageProcessor.processOrderFolderMulti(scanRoot, outputDirectory, customerName, null);
                     for (String path : results) {
-                        log("  -> BAŞARILI: " + new File(path).getName());
+                        log("  -> OK: " + new File(path).getName());
                     }
                     processedOk = true;
                 } catch (Exception ex) {
-                    String errorMsg = "  -> KRİTİK HATA (fallback): " + ex.getMessage();
+                    String errorMsg = "  -> CRITICAL (fallback): " + ex.getMessage();
                     log(errorMsg);
-                    failedItems.add(zipFile.getName() + " - Sebep: " + ex.getMessage());
-                    ex.printStackTrace();
+                    failedItems.add(zipFile.getName() + " - Reason: " + ex.getMessage());
                 }
             }
         } catch (Exception ex) {
-            String errorMsg = "  -> KRİTİK HATA (" + zipFile.getName() + "): " + ex.getMessage();
+            String errorMsg = "  -> CRITICAL (" + zipFile.getName() + "): " + ex.getMessage();
             log(errorMsg);
-            failedItems.add(zipFile.getName() + " - Sebep: " + ex.getMessage());
-            ex.printStackTrace();
+            failedItems.add(zipFile.getName() + " - Reason: " + ex.getMessage());
         } finally {
             if (processedOk) {
-                if (zipFile.delete()) {
-                    log("  -> İşlem tamamlandı: Orijinal zip silindi: " + zipFile.getName());
-                } else {
-                    log("  -> UYARI: Zip silinemedi (manuel silinebilir): " + zipFile.getName());
-                }
+                if (zipFile.delete()) log("  -> Cleaned up: original zip deleted: " + zipFile.getName());
+                else log("  -> WARNING: Zip could not be deleted: " + zipFile.getName());
             } else {
-                log("  -> Zip silinmedi (işlem hatalı bitti): " + zipFile.getName());
+                log("  -> Zip not deleted (processing failed): " + zipFile.getName());
             }
         }
     }
 
+    /** Secure unzip routine (guards against Zip Slip). */
     private void unzip(File zipFile, File destDir) throws java.io.IOException {
         log("  -> Starting extraction for: " + zipFile.getName());
         int extractedCount = 0;
@@ -461,13 +459,13 @@ public class MainUI {
 
                 ZipEntry zipEntry = entries.nextElement();
 
+                // ignore mac metadata files
                 if (zipEntry.getName().startsWith("__MACOSX/") || zipEntry.getName().contains("/._")) {
                     continue;
                 }
 
                 try {
                     File newFile = new File(destDir, zipEntry.getName());
-
                     String destPath = destDir.getCanonicalPath() + File.separator;
                     String newPath = newFile.getCanonicalPath();
                     if (!newPath.startsWith(destPath)) {
@@ -506,22 +504,7 @@ public class MainUI {
         log("  -> Extraction finished. " + extractedCount + " files extracted, " + errorCount + " errors.");
     }
 
-    private void deleteDirectory(File directory) {
-        File[] allContents = directory.listFiles();
-        if (allContents != null) {
-            for (File file : allContents) {
-                if (file.isDirectory()) deleteDirectory(file);
-                else file.delete();
-            }
-        }
-        directory.delete();
-    }
-
-    private File findFirstDirectory(File directory) {
-        File[] files = directory.listFiles(f -> f.isDirectory() && !f.getName().startsWith(".") && !f.getName().equalsIgnoreCase("__MACOSX"));
-        return (files != null && files.length > 0) ? files[0] : null;
-    }
-
+    /** Returns true if both files resolve to the same canonical path. */
     private boolean isSamePath(File a, File b) {
         try {
             return a != null && b != null && a.getCanonicalPath().equals(b.getCanonicalPath());
@@ -530,10 +513,12 @@ public class MainUI {
         }
     }
 
+    /** Appends a line to the UI log area. */
     private void log(String message) {
         SwingUtilities.invokeLater(() -> logArea.append(message + "\n"));
     }
 
+    /** Shortens a long path for display. */
     private String shortenPath(String path, int maxChars) {
         if (path == null) return "";
         if (path.length() <= maxChars) return path;
@@ -542,9 +527,19 @@ public class MainUI {
         return head + "…/" + tail;
     }
 
+    /** Entry point. */
     public static void main(String[] args) {
         SwingUtilities.invokeLater(MainUI::new);
     }
+
+    // ------------------------------------------------------------
+    // Order folder discovery helpers (kept as-is, used by the flow)
+    // ------------------------------------------------------------
+
+    /**
+     * Finds "leaf" order folders (folders that actually contain .svg and .json)
+     * under the given root, up to the provided depth.
+     */
     private static List<File> findOrderLeafFolders(File scanRoot, int maxDepth) {
         List<File> out = new ArrayList<>();
         collectOrderLeafFolders(scanRoot, out, 0, Math.max(1, maxDepth));
@@ -566,9 +561,7 @@ public class MainUI {
         List<File> potentialChildren = new ArrayList<>();
         for (File sub : subs) {
             String n = sub.getName();
-            if (n.startsWith(".") || n.equalsIgnoreCase("__MACOSX")) {
-                continue;
-            }
+            if (n.startsWith(".") || n.equalsIgnoreCase("__MACOSX")) continue;
             potentialChildren.add(sub);
         }
 
@@ -583,12 +576,11 @@ public class MainUI {
         }
 
         if (!addedChildAsLeaf && isOrderFolder(dir) && !isContainer) {
-            if (!out.contains(dir)) {
-                out.add(dir);
-            }
+            if (!out.contains(dir)) out.add(dir);
         }
     }
 
+    /** A folder qualifies as an order folder if it contains both .svg and .json within 3 levels. */
     private static boolean isOrderFolder(File dir) {
         String name = dir.getName();
         if (name.equalsIgnoreCase("images") || name.equalsIgnoreCase("img") || name.equalsIgnoreCase(OUTPUT_FOLDER_NAME)) {
