@@ -59,6 +59,63 @@ public class JsonDataReader {
             }
         }
     }
+    public static int readMugOunces(File jsonFile) throws IOException {
+        String content = Files.readString(jsonFile.toPath());
+        JSONObject root = new JSONObject(content);
+
+        // 1) v3 surfaces name
+        try {
+            if (root.has("version3.0")) {
+                JSONObject v3 = root.getJSONObject("version3.0");
+                if (v3.has("customizationInfo")) {
+                    JSONObject ci = v3.getJSONObject("customizationInfo");
+                    if (ci.has("surfaces")) {
+                        JSONArray surfaces = ci.getJSONArray("surfaces");
+                        for (int i = 0; i < surfaces.length(); i++) {
+                            String name = surfaces.getJSONObject(i).optString("name", "");
+                            int oz = parseOzFromString(name);
+                            if (oz > 0) return oz;
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+
+        // 2) preview label
+        try {
+            if (root.has("customizationData")) {
+                JSONObject cd = root.getJSONObject("customizationData");
+                if (cd.has("children")) {
+                    JSONArray ch = cd.getJSONArray("children");
+                    for (int i = 0; i < ch.length(); i++) {
+                        String label = ch.getJSONObject(i).optString("label", "");
+                        int oz = parseOzFromString(label);
+                        if (oz > 0) return oz;
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+
+        // 3) title fallback
+        String title = root.optString("title", "");
+        int oz = parseOzFromString(title);
+        if (oz > 0) return oz;
+
+        // Varsayılan: 11 oz
+        return 11;
+    }
+
+    private static int parseOzFromString(String s) {
+        if (s == null) return -1;
+        String t = s.toLowerCase(Locale.ROOT);
+        if (t.contains("15") && t.contains("oz")) return 15;
+        if (t.contains("11") && t.contains("oz")) return 11;
+        // Bazı listelerde "11 WHITE" / "15 WHITE" gibi yazımlar:
+        if (t.matches(".*\\b15\\b.*")) return 15;
+        if (t.matches(".*\\b11\\b.*")) return 11;
+        return -1;
+    }
+
 
     // --- MEVCUT DİĞER METODLAR (DEĞİŞİKLİK YOK) ---
     public static OrderInfo parse(File jsonFile, File orderDirectory) throws IOException { String content = Files.readString(jsonFile.toPath()); JSONObject root = new JSONObject(content); String orderId = root.optString("orderId"); if (orderId.isEmpty()) throw new IOException("JSON is missing 'orderId' field."); String orderItemId = root.optString("orderItemId"); if (orderItemId.isEmpty()) throw new IOException("JSON is missing 'orderItemId' field."); String fontName = findFontFamilyInCustomization(root); if (fontName == null) { fontName = "Arial"; } String label = findLabelInCustomization(root); if (label == null) throw new IOException("Could not find label information in JSON."); int quantity = root.optInt("quantity", 1); String customerName = orderDirectory.getName(); return new OrderInfo(orderId, customerName, fontName, quantity, orderItemId, label); }

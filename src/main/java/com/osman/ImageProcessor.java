@@ -1,5 +1,4 @@
 package com.osman;
-
 import com.google.zxing.BarcodeFormat;
 import com.google.zxing.client.j2se.MatrixToImageWriter;
 import com.google.zxing.common.BitMatrix;
@@ -8,7 +7,6 @@ import org.apache.batik.transcoder.TranscoderException;
 import org.apache.batik.transcoder.TranscoderInput;
 import org.apache.batik.transcoder.TranscoderOutput;
 import org.apache.batik.transcoder.image.PNGTranscoder;
-
 import javax.imageio.ImageIO;
 import java.awt.*;
 import java.awt.geom.AffineTransform;
@@ -25,6 +23,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
+
 /**
  * Sipariş klasörlerini işleyerek son baskı dosyalarını oluşturan ana sınıf.
  * Bu sınıf, SVG dosyalarını okur, müşteri resimlerini ImageMagick ile işler ve birleştirir.
@@ -37,19 +36,13 @@ public class ImageProcessor {
 
     static final String BLANK_LOGO_URL = "https://m.media-amazon.com/images/S/";
     static final String TRANSPARENT_PIXEL_DATA_URI = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
-    static final int FINAL_WIDTH = 2580;
-    static final int FINAL_HEIGHT = 1410;
-    static final int RENDER_SIZE = 3200;
-    static final int area1X = 144, area1Y = 78, area1Width = 952, area1Height = 974;   // LEFT (FRONT)
-    static final int area2X = 1524, area2Y = 75, area2Width = 944, area2Height = 975;  // RIGHT (BACK)
-    static final int crop1X = 336, crop1Y = 1048, crop1Width = 1016, crop1Height = 1040;
-    static final int crop2X = 1808, crop2Y = 1048, crop2Width = 1016, crop2Height = 1040;
+
 
     // Mantıksal font fallback listesi (Latin dışı karakterler için)
     private static final String[] JAVA_LOGICAL_FALLBACKS = new String[] { "SansSerif", "Dialog" };
 
     // =================================================================================
-    // Ana İşlem Metodları (Public API)..
+    // Ana İşlem Metodları (Public API)
     // =================================================================================
 
     public static List<String> processOrderFolderMulti(File orderDirectory,
@@ -80,17 +73,22 @@ public class ImageProcessor {
                                          File outputDirectory,
                                          String customerNameForFile,
                                          String fileNameSuffix) throws Exception {
+        // ... parse/order vb. sonrasında, SVG bulunduğu yerde:
+
+
         OrderInfo orderInfo = JsonDataReader.parse(jsonFile, orderRoot);
         File svgFile = findNearestSvg(jsonFile.getParentFile(), orderRoot);
         if (svgFile == null) throw new IOException("SVG bulunamadı: " + jsonFile.getAbsolutePath());
-
+        int mugOz = JsonDataReader.readMugOunces(jsonFile);   // 11 veya 15
+        MugTemplate T = (mugOz == 15) ? MugTemplate.OZ15() : MugTemplate.OZ11();
         String baseName = deriveOutputBaseName(orderRoot, outputDirectory, customerNameForFile, orderInfo);
         String finalBaseName = "x" + orderInfo.getQuantity() +  baseName + "(" + orderInfo.getOrderId() + ")";
         File finalOutputFile = ensureUniqueFile(outputDirectory, finalBaseName, ".png");
 
         ProcessedSvgResult processedSvgResult = preProcessAndRewriteSvg(svgFile, orderInfo, outputDirectory);
 
-        BufferedImage finalCanvas = new BufferedImage(FINAL_WIDTH, FINAL_HEIGHT, BufferedImage.TYPE_INT_RGB);
+        BufferedImage finalCanvas = new BufferedImage(T.FINAL_WIDTH, T.FINAL_HEIGHT, BufferedImage.TYPE_INT_RGB);
+
         Graphics2D g2d = finalCanvas.createGraphics();
         setupHighQualityRendering(g2d);
         g2d.setColor(Color.WHITE);
@@ -104,9 +102,12 @@ public class ImageProcessor {
         try {
             tempMaster = File.createTempFile("temp_master_", ".png", outputDirectory);
             convertSvgToHighResPng(processedSvgResult.svgContent,
-                    svgFile.getParentFile(), tempMaster.getAbsolutePath(), RENDER_SIZE, RENDER_SIZE);
+                    svgFile.getParentFile(), tempMaster.getAbsolutePath(), T.RENDER_SIZE, T.RENDER_SIZE);
+            ;
 
-            drawCropsToCanvas(g2d, tempMaster, outputDirectory, drawLeft, drawRight);
+            drawCropsToCanvas(g2d, tempMaster, outputDirectory, drawLeft, drawRight, T);
+
+
 
             drawMirroredInfoText(g2d, orderInfo, null);
         } finally {
@@ -209,29 +210,30 @@ public class ImageProcessor {
                                           File masterFile,
                                           File tempDir,
                                           boolean drawLeft,
-                                          boolean drawRight) {
+                                          boolean drawRight,
+                                          MugTemplate T) {
         File crop1 = null, crop2 = null;
         try {
             crop1 = File.createTempFile("crop1_", ".png", tempDir);
             crop2 = File.createTempFile("crop2_", ".png", tempDir);
 
             cropImage(masterFile.getAbsolutePath(), crop1.getAbsolutePath(),
-                    crop1X, crop1Y, crop1Width, crop1Height);
+                    T.crop1X, T.crop1Y, T.crop1Width, T.crop1Height);
             cropImage(masterFile.getAbsolutePath(), crop2.getAbsolutePath(),
-                    crop2X, crop2Y, crop2Width, crop2Height);
+                    T.crop2X, T.crop2Y, T.crop2Width, T.crop2Height);
 
             if (drawLeft) {
-                g2d.drawImage(ImageIO.read(crop1), area1X, area1Y, area1Width, area1Height, null);
+                g2d.drawImage(ImageIO.read(crop1), T.area1X, T.area1Y, T.area1Width, T.area1Height, null);
             } else {
                 g2d.setColor(Color.WHITE);
-                g2d.fillRect(area1X, area1Y, area1Width, area1Height);
+                g2d.fillRect(T.area1X, T.area1Y, T.area1Width, T.area1Height);
             }
 
             if (drawRight) {
-                g2d.drawImage(ImageIO.read(crop2), area2X, area2Y, area2Width, area2Height, null);
+                g2d.drawImage(ImageIO.read(crop2), T.area2X, T.area2Y, T.area2Width, T.area2Height, null);
             } else {
                 g2d.setColor(Color.WHITE);
-                g2d.fillRect(area2X, area2Y, area2Width, area2Height);
+                g2d.fillRect(T.area2X, T.area2Y, T.area2Width, T.area2Height);
             }
 
         } catch (IOException e) {
@@ -241,6 +243,7 @@ public class ImageProcessor {
             deleteIfExists(crop2);
         }
     }
+
 
     private static void deleteIfExists(File f) {
         if (f != null) { try { Files.deleteIfExists(f.toPath()); } catch (IOException e) { /* ignore */ } }
@@ -276,32 +279,35 @@ public class ImageProcessor {
         if (isBlank(baseName)) baseName = sanitizeName(outputDir.getName());
         return baseName;
     }
-
-    private static void drawMirroredInfoText(Graphics2D g2d, OrderInfo orderInfo, String sideLabel) {
+   static void drawMirroredInfoText(Graphics2D g2d, OrderInfo orderInfo,
+                                    String sideLabel) {
         Font infoFont = new Font("Arial", Font.BOLD, 48);
         g2d.setColor(Color.BLACK);
-        int infoBoxX = 158, infoBoxY = 1263, infoBoxWidth = 2330, infoBoxHeight = 146;
+
+        int infoBoxX = 158, infoBoxY = 1263 + 0, infoBoxWidth = 2330, infoBoxHeight = 146;
+
         FontMetrics fm = g2d.getFontMetrics(infoFont);
         int lineHeight = fm.getHeight();
         int yLine1 = infoBoxY + (infoBoxHeight - (2 * lineHeight)) / 2 + fm.getAscent();
         int yLine2 = yLine1 + lineHeight;
+
         String qtyPart = "Order Q-ty: " + orderInfo.getQuantity();
         String sidePart = (sideLabel == null || sideLabel.isBlank()) ? "" : " " + sideLabel;
-        String leftLine1 = qtyPart + sidePart;
-        String leftLine2 = orderInfo.getOrderId();
-        drawMirroredString(g2d, leftLine1, infoBoxX, yLine1, infoFont, false);
-        drawMirroredString(g2d, leftLine2, infoBoxX, yLine2, infoFont, false);
+
+        drawMirroredString(g2d, qtyPart + sidePart, infoBoxX, yLine1, infoFont, false);
+        drawMirroredString(g2d, orderInfo.getOrderId(), infoBoxX, yLine2, infoFont, false);
+
         int rightEdge = infoBoxX + infoBoxWidth;
         String itemIdLast4 = orderInfo.getOrderItemId().substring(Math.max(0, orderInfo.getOrderItemId().length() - 4));
-        String rightLine1 = "ID: " + itemIdLast4 + " ID Q-ty: " + orderInfo.getQuantity();
-        String rightLine2 = orderInfo.getLabel();
-        drawMirroredString(g2d, rightLine1, rightEdge, yLine1, infoFont, true);
-        drawMirroredString(g2d, rightLine2, rightEdge, yLine2, infoFont, true);
+        drawMirroredString(g2d, "ID: " + itemIdLast4 + " ID Q-ty: " + orderInfo.getQuantity(), rightEdge, yLine1, infoFont, true);
+        drawMirroredString(g2d, orderInfo.getLabel(), rightEdge, yLine2, infoFont, true);
+
         BufferedImage barcode = generateBarcodeWithText(orderInfo.getOrderId(), 1000, 120);
         int barcodeX = infoBoxX + (infoBoxWidth - barcode.getWidth()) / 2;
-        int barcodeY = infoBoxY + (infoBoxHeight - barcode.getHeight()) / 2 - 50;
+        int barcodeY = infoBoxY + (infoBoxHeight - barcode.getHeight()) / 2 + 0; // <— -50 yerine parametre
         g2d.drawImage(barcode, barcodeX, barcodeY, null);
     }
+
 
     private static void setupHighQualityRendering(Graphics2D g2d) {
         g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
@@ -309,7 +315,7 @@ public class ImageProcessor {
         g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
     }
 
-    private static void drawMirroredString(Graphics2D g2d, String text, int x, int y, Font font, boolean alignRight) {
+   static void drawMirroredString(Graphics2D g2d, String text, int x, int y, Font font, boolean alignRight) {
         AffineTransform original = g2d.getTransform();
         g2d.setFont(font);
         FontMetrics fm = g2d.getFontMetrics();
@@ -435,7 +441,7 @@ public class ImageProcessor {
         return null;
     }
 
-    private static BufferedImage generateBarcodeWithText(String text, int width, int height) {
+    static BufferedImage generateBarcodeWithText(String text, int width, int height) {
         try {
             Code128Writer writer = new Code128Writer();
             BitMatrix matrix = writer.encode(text, BarcodeFormat.CODE_128, width, height);
