@@ -49,7 +49,7 @@ public class ImageProcessor {
     private static final String[] JAVA_LOGICAL_FALLBACKS = new String[] { "SansSerif", "Dialog" };
 
     // =================================================================================
-    // Ana İşlem Metodları (Public API)
+    // Ana İşlem Metodları (Public API)..
     // =================================================================================
 
     public static List<String> processOrderFolderMulti(File orderDirectory,
