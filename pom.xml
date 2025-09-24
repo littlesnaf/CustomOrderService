@@ -11,20 +11,24 @@
     <properties>
         <maven.compiler.release>17</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
         <batik.version>1.17</batik.version>
         <xmlgraphics.commons.version>2.9</xmlgraphics.commons.version>
+        <pdfbox.version>2.0.31</pdfbox.version>
+        <zxing.version>3.5.3</zxing.version>
+        <json.version>20240303</json.version>
+        <twelvemonkeys.version>3.10.1</twelvemonkeys.version>
+
         <jackson.version>2.17.2</jackson.version>
+        <tess4j.version>5.8.0</tess4j.version>
+        <metadata.extractor.version>2.18.0</metadata.extractor.version>
+
+        <shade.version>3.5.0</shade.version>
+        <launch4j.plugin.version>2.6.0</launch4j.plugin.version>
     </properties>
 
     <dependencies>
-        <!-- Jackson -->
-        <dependency>
-            <groupId>com.fasterxml.jackson.core</groupId>
-            <artifactId>jackson-databind</artifactId>
-            <version>${jackson.version}</version>
-        </dependency>
-
-        <!-- Batik: tüm modüller tek pakette (XMLResourceDescriptor bu pakette) -->
+        <!-- SVG rendering -->
         <dependency>
             <groupId>org.apache.xmlgraphics</groupId>
             <artifactId>batik-all</artifactId>
@@ -32,95 +36,83 @@
         </dependency>
         <dependency>
             <groupId>org.apache.xmlgraphics</groupId>
-            <artifactId>batik-all</artifactId>
-            <version>1.17</version>
-        </dependency>
-        <!-- Batik’in temel IO/codec bağımlılığı -->
-        <dependency>
-            <groupId>org.apache.xmlgraphics</groupId>
             <artifactId>xmlgraphics-commons</artifactId>
-            <version>2.9</version>
+            <version>${xmlgraphics.commons.version}</version>
         </dependency>
+
+        <!-- JSON -->
         <dependency>
             <groupId>org.json</groupId>
             <artifactId>json</artifactId>
-            <version>20240303</version>
+            <version>${json.version}</version>
         </dependency>
+
+        <!-- Jackson (added back) -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <version>${jackson.version}</version>
+        </dependency>
+
+        <!-- PDF -->
         <dependency>
             <groupId>org.apache.pdfbox</groupId>
             <artifactId>pdfbox</artifactId>
-            <version>2.0.31</version>
+            <version>${pdfbox.version}</version>
         </dependency>
-        <dependency>
-            <groupId>net.sourceforge.tess4j</groupId>
-            <artifactId>tess4j</artifactId>
-            <version>5.8.0</version>
-        </dependency>
+
+        <!-- Barcode -->
         <dependency>
             <groupId>com.google.zxing</groupId>
             <artifactId>core</artifactId>
-            <version>3.5.3</version>
+            <version>${zxing.version}</version>
         </dependency>
         <dependency>
             <groupId>com.google.zxing</groupId>
             <artifactId>javase</artifactId>
-            <version>3.5.3</version>
+            <version>${zxing.version}</version>
         </dependency>
+
+        <!-- OCR (added back) -->
         <dependency>
             <groupId>net.sourceforge.tess4j</groupId>
             <artifactId>tess4j</artifactId>
-            <version>5.8.0</version>
+            <version>${tess4j.version}</version>
+        </dependency>
+
+        <!-- Image metadata (added back) -->
+        <dependency>
+            <groupId>com.drewnoakes</groupId>
+            <artifactId>metadata-extractor</artifactId>
+            <version>${metadata.extractor.version}</version>
+        </dependency>
+
+        <!-- Extended ImageIO (CMYK JPEG/TIFF support etc.) -->
+        <dependency>
+            <groupId>com.twelvemonkeys.imageio</groupId>
+            <artifactId>imageio-core</artifactId>
+            <version>${twelvemonkeys.version}</version>
         </dependency>
         <dependency>
             <groupId>com.twelvemonkeys.imageio</groupId>
             <artifactId>imageio-jpeg</artifactId>
-            <version>3.10.1</version>
+            <version>${twelvemonkeys.version}</version>
         </dependency>
         <dependency>
             <groupId>com.twelvemonkeys.imageio</groupId>
             <artifactId>imageio-tiff</artifactId>
-            <version>3.10.1</version>
-        </dependency>
-        <dependency>
-            <groupId>com.twelvemonkeys.imageio</groupId>
-            <artifactId>imageio-core</artifactId>
-            <version>3.10.1</version>
+            <version>${twelvemonkeys.version}</version>
         </dependency>
         <dependency>
             <groupId>com.twelvemonkeys.imageio</groupId>
             <artifactId>imageio-metadata</artifactId>
-            <version>3.10.1</version>
+            <version>${twelvemonkeys.version}</version>
         </dependency>
-
-            <dependency>
-                <groupId>com.google.zxing</groupId>
-                <artifactId>core</artifactId>
-                <version>3.5.3</version>
-            </dependency>
-            <dependency>
-                <groupId>com.google.zxing</groupId>
-                <artifactId>javase</artifactId>
-                <version>3.5.3</version>
-            </dependency>
-        <!-- pom.xml -->
-        <dependency>
-            <groupId>com.drewnoakes</groupId>
-            <artifactId>metadata-extractor</artifactId>
-            <version>2.18.0</version>
-        </dependency>
-        <dependency>
-            <groupId>org.jetbrains</groupId>
-            <artifactId>annotations</artifactId>
-            <version>13.0</version>
-            <scope>compile</scope>
-        </dependency>
-
-
     </dependencies>
 
     <build>
         <plugins>
-            <!-- JDK 17 ile derleme -->
+            <!-- Java 17 compile -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
@@ -129,10 +121,81 @@
                     <release>${maven.compiler.release}</release>
                 </configuration>
             </plugin>
+
+            <!-- Build two fat-jars (MainUI & LabelFinderUI) -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <version>${shade.version}</version>
+                <executions>
+                    <execution>
+                        <id>shade-mainui</id>
+                        <phase>package</phase>
+                        <goals><goal>shade</goal></goals>
+                        <configuration>
+                            <finalName>Mugeditor-MainUI</finalName>
+                            <createDependencyReducedPom>true</createDependencyReducedPom>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.osman.ui.MainUI</mainClass>
+                                </transformer>
+                            </transformers>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>shade-labelfinder</id>
+                        <phase>package</phase>
+                        <goals><goal>shade</goal></goals>
+                        <configuration>
+                            <finalName>Mugeditor-LabelFinder</finalName>
+                            <createDependencyReducedPom>true</createDependencyReducedPom>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.osman.ui.LabelFinderUI</mainClass>
+                                </transformer>
+                            </transformers>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Windows .exe wrappers for both jars -->
+            <plugin>
+                <groupId>com.akathist.maven.plugins.launch4j</groupId>
+                <artifactId>launch4j-maven-plugin</artifactId>
+                <version>${launch4j.plugin.version}</version>
+                <executions>
+                    <execution>
+                        <id>l4j-mainui</id>
+                        <phase>package</phase>
+                        <goals><goal>launch4j</goal></goals>
+                        <configuration>
+                            <outfile>${project.build.directory}/Mugeditor-MainUI.exe</outfile>
+                            <jar>${project.build.directory}/Mugeditor-MainUI.jar</jar>
+                            <headerType>gui</headerType>
+                            <jre>
+                                <minVersion>17</minVersion>
+                            </jre>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>l4j-labelfinder</id>
+                        <phase>package</phase>
+                        <goals><goal>launch4j</goal></goals>
+                        <configuration>
+                            <outfile>${project.build.directory}/Mugeditor-LabelFinder.exe</outfile>
+                            <jar>${project.build.directory}/Mugeditor-LabelFinder.jar</jar>
+                            <headerType>gui</headerType>
+                            <jre>
+                                <minVersion>17</minVersion>
+                            </jre>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
         </plugins>
     </build>
 
-    <!-- (Genelde gerekmez ama IDE/proxy sorunlarında merkez deposunu açıkça tanımlamak faydalı) -->
     <repositories>
         <repository>
             <id>central</id>
