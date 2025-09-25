@@ -77,12 +77,13 @@ public class ImageProcessor {
 
 
         OrderInfo orderInfo = JsonDataReader.parse(jsonFile, orderRoot);
+        int totalOrderQuantity = JsonDataReader.calculateTotalOrderQuantity(orderRoot);
         File svgFile = findNearestSvg(jsonFile.getParentFile(), orderRoot);
         if (svgFile == null) throw new IOException("SVG bulunamadı: " + jsonFile.getAbsolutePath());
         int mugOz = JsonDataReader.readMugOunces(jsonFile);   // 11 veya 15
         MugTemplate T = (mugOz == 15) ? MugTemplate.OZ15() : MugTemplate.OZ11();
         String baseName = deriveOutputBaseName(orderRoot, outputDirectory, customerNameForFile, orderInfo);
-        String finalBaseName = "x" + orderInfo.getQuantity() +  baseName + "(" + orderInfo.getOrderId() + ")";
+        String finalBaseName = "x" + orderInfo.getQuantity() + "-" +baseName + "(" + orderInfo.getOrderId() + ") ";
         File finalOutputFile = ensureUniqueFile(outputDirectory, finalBaseName, ".png");
 
         ProcessedSvgResult processedSvgResult = preProcessAndRewriteSvg(svgFile, orderInfo, outputDirectory);
@@ -109,7 +110,7 @@ public class ImageProcessor {
 
 
 
-            drawMirroredInfoText(g2d, orderInfo, null);
+            drawMirroredInfoText(g2d, orderInfo, null, T, totalOrderQuantity);
         } finally {
             deleteIfExists(tempMaster);
             processedSvgResult.tempFiles.forEach(ImageProcessor::deleteIfExists);
@@ -279,19 +280,21 @@ public class ImageProcessor {
         if (isBlank(baseName)) baseName = sanitizeName(outputDir.getName());
         return baseName;
     }
-   static void drawMirroredInfoText(Graphics2D g2d, OrderInfo orderInfo,
-                                    String sideLabel) {
+    private static void drawMirroredInfoText(Graphics2D g2d, OrderInfo orderInfo, String sideLabel, MugTemplate T, int totalOrderQuantity) {
         Font infoFont = new Font("Arial", Font.BOLD, 48);
         g2d.setColor(Color.BLACK);
 
-        int infoBoxX = 158, infoBoxY = 1263 + 0, infoBoxWidth = 2330, infoBoxHeight = 146;
+        // Position dynamically based on template height
+        int infoBoxY = T.FINAL_HEIGHT - 147;
+        int infoBoxX = 158, infoBoxWidth = 2330, infoBoxHeight = 146;
 
         FontMetrics fm = g2d.getFontMetrics(infoFont);
         int lineHeight = fm.getHeight();
         int yLine1 = infoBoxY + (infoBoxHeight - (2 * lineHeight)) / 2 + fm.getAscent();
-        int yLine2 = yLine1 + lineHeight;
+        int yLine2 = infoBoxY + (infoBoxHeight - (2 * lineHeight)) / 2 + fm.getAscent() + lineHeight;
 
-        String qtyPart = "Order Q-ty: " + orderInfo.getQuantity();
+        // Display the correct TOTAL order quantity
+        String qtyPart = "Order Q-ty: " + totalOrderQuantity;
         String sidePart = (sideLabel == null || sideLabel.isBlank()) ? "" : " " + sideLabel;
 
         drawMirroredString(g2d, qtyPart + sidePart, infoBoxX, yLine1, infoFont, false);
@@ -299,12 +302,15 @@ public class ImageProcessor {
 
         int rightEdge = infoBoxX + infoBoxWidth;
         String itemIdLast4 = orderInfo.getOrderItemId().substring(Math.max(0, orderInfo.getOrderItemId().length() - 4));
-        drawMirroredString(g2d, "ID: " + itemIdLast4 + " ID Q-ty: " + orderInfo.getQuantity(), rightEdge, yLine1, infoFont, true);
+
+        // Display the ITEM quantity from the JSON
+        drawMirroredString(g2d, "ID: " + itemIdLast4 + "  ID Qty: " + orderInfo.getQuantity(), rightEdge, yLine1, infoFont, true);
         drawMirroredString(g2d, orderInfo.getLabel(), rightEdge, yLine2, infoFont, true);
 
         BufferedImage barcode = generateBarcodeWithText(orderInfo.getOrderId(), 1000, 120);
         int barcodeX = infoBoxX + (infoBoxWidth - barcode.getWidth()) / 2;
-        int barcodeY = infoBoxY + (infoBoxHeight - barcode.getHeight()) / 2 + 0; // <— -50 yerine parametre
+
+        int barcodeY = infoBoxY + (infoBoxHeight - barcode.getHeight()) / 2 - 50;
         g2d.drawImage(barcode, barcodeX, barcodeY, null);
     }
 

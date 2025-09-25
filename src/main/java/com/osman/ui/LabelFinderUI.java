@@ -4,7 +4,8 @@ import com.osman.PackSlipExtractor;
 import com.osman.PdfLinker;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.rendering.PDFRenderer;
-
+import java.awt.event.ActionEvent;
+import java.awt.event.KeyEvent;
 import javax.imageio.ImageIO;
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
@@ -24,6 +25,7 @@ import java.util.List;
 import java.util.*;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
+
 
 public class LabelFinderUI extends JFrame {
 
@@ -150,6 +152,8 @@ public class LabelFinderUI extends JFrame {
         labelRefsList.addListSelectionListener(e -> { if (!e.getValueIsAdjusting()) renderSelectedBulkPage(); });
         photosList.addListSelectionListener(e -> { if (!e.getValueIsAdjusting()) renderSelectedPhotos(); });
         addWindowListener(new WindowAdapter() { @Override public void windowClosing(WindowEvent e) { cleanupAndExit(); } });
+        addPrintShortcut(getRootPane());
+
 
         applyModeUI();
     }
@@ -270,9 +274,9 @@ public class LabelFinderUI extends JFrame {
             statusLabel.setText("Error reading PDFs: " + e.getMessage());
             return;
         }
+        Pattern packingSlipName = Pattern.compile("(?i)^Amazon\\.pdf$");
+        Pattern packingSlipFolder = Pattern.compile("(?i)^(?:\\d{2}\\s*[PRWB]|mix).*");
 
-        Pattern packingSlipName = Pattern.compile("(?i)^11[PRWB](\\s*\\(\\d+\\))?\\.pdf$");
-        Pattern packingSlipFolder = Pattern.compile("(?i)^11\\s*[PRWB].*");
 
         for (File pdf : pdfs) {
             String name = pdf.getName();
@@ -535,6 +539,22 @@ public class LabelFinderUI extends JFrame {
         }
         results.sort(Comparator.comparing(a -> a.getFileName().toString(), String.CASE_INSENSITIVE_ORDER));
         return results;
+    }
+    private void addPrintShortcut(JRootPane rootPane) {
+        // macOS: CMD, Windows/Linux: CTRL
+        int mask = Toolkit.getDefaultToolkit().getMenuShortcutKeyMaskEx();
+        KeyStroke ks = KeyStroke.getKeyStroke(KeyEvent.VK_P, mask);
+
+        rootPane.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW)
+                .put(ks, "printCombinedAction");
+
+        rootPane.getActionMap().put("printCombinedAction", new AbstractAction() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                // Print butonuna basılmış gibi davran
+                printCombined();
+            }
+        });
     }
 
     private static BufferedImage addBorder(BufferedImage src, Color color, int size) {
