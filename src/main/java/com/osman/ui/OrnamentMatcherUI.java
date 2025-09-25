@@ -2,7 +2,6 @@ package com.osman.ui;
 
 import com.osman.PackSlipExtractor;
 import com.osman.PdfLinker;
-import org.apache.pdfbox.pdmodel.PDDocument;
 
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
@@ -14,6 +13,8 @@ import java.util.List;
 import java.util.*;
 import java.util.stream.Collectors;
 
+import org.apache.pdfbox.pdmodel.PDDocument;
+
 public class OrnamentMatcherUI extends JFrame {
 
     // --- UI Bileşenleri ---
@@ -21,29 +22,39 @@ public class OrnamentMatcherUI extends JFrame {
     private final JTextField slipsField;
     private final JButton chooseLabelsBtn;
     private final JButton chooseSlipsBtn;
-    private final JButton generateBtn;
+
+    private final JButton generateMatchedBtn; // order-by-order tek PDF
+    private final JButton generateBySkuBtn;   // SKU'ya göre çoklu PDF
     private final JCheckBox includeUnmatchedCheck;
-    private final JLabel status;
+
+    private final JTextArea statusArea;
 
     public OrnamentMatcherUI() {
-        setTitle("Ornament Label–Slip Matcher (Page-by-Page PDF)");
+        setTitle("Ornament Label–Slip Matcher");
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
-        setSize(900, 240);
+        setSize(980, 420);
         setLocationRelativeTo(null);
 
-        // --- UI Kurulumu (Değişiklik yok) ---
         labelsField = new JTextField(60);
         slipsField  = new JTextField(60);
         chooseLabelsBtn = new JButton("Pick Labels PDF…");
         chooseSlipsBtn  = new JButton("Pick Packing Slip PDF…");
-        generateBtn     = new JButton("Generate Matched PDF");
-        includeUnmatchedCheck = new JCheckBox("Include orders missing one side (label or slip)");
-        status = new JLabel("Select PDFs and click Generate.");
 
+        generateMatchedBtn = new JButton("Generate Matched PDF");
+        generateBySkuBtn   = new JButton("Generate PDFs Grouped by SKU");
+        includeUnmatchedCheck = new JCheckBox("Include orders missing one side (label or slip)");
+
+        statusArea = new JTextArea(10, 80);
+        statusArea.setEditable(false);
+        statusArea.setLineWrap(true);
+        statusArea.setWrapStyleWord(true);
+
+        // --- Üst form ---
         JPanel rows = new JPanel(new GridBagLayout());
-        rows.setBorder(new EmptyBorder(12,12,12,12));
+        rows.setBorder(new EmptyBorder(12, 12, 12, 12));
         GridBagConstraints c = new GridBagConstraints();
-        c.insets = new Insets(6,6,6,6);
+        c.insets = new Insets(6, 6, 6, 6);
+
         c.gridx = 0; c.gridy = 0; c.anchor = GridBagConstraints.WEST;
         rows.add(new JLabel("Labels PDF:"), c);
         c.gridx = 1; c.fill = GridBagConstraints.HORIZONTAL; c.weightx = 1.0;
@@ -61,24 +72,31 @@ public class OrnamentMatcherUI extends JFrame {
         c.gridx = 1; c.gridy = 2; c.gridwidth = 2; c.anchor = GridBagConstraints.WEST;
         rows.add(includeUnmatchedCheck, c);
 
-        JPanel bottom = new JPanel(new BorderLayout(8,8));
-        bottom.setBorder(new EmptyBorder(0,12,12,12));
-        bottom.add(status, BorderLayout.WEST);
-        bottom.add(generateBtn, BorderLayout.EAST);
+        // --- Alt butonlar + status ---
+        JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
+        buttons.add(generateMatchedBtn);
+        buttons.add(generateBySkuBtn);
+
+        JPanel bottom = new JPanel(new BorderLayout(8, 8));
+        bottom.setBorder(new EmptyBorder(0, 12, 12, 12));
+        bottom.add(new JScrollPane(statusArea), BorderLayout.CENTER);
+        bottom.add(buttons, BorderLayout.SOUTH);
 
         setLayout(new BorderLayout());
-        add(rows, BorderLayout.CENTER);
-        add(bottom, BorderLayout.SOUTH);
+        add(rows, BorderLayout.NORTH);
+        add(bottom, BorderLayout.CENTER);
 
+        // Events
         chooseLabelsBtn.addActionListener(this::pickLabels);
         chooseSlipsBtn.addActionListener(this::pickSlips);
-        generateBtn.addActionListener(this::generate);
+        generateMatchedBtn.addActionListener(this::generateMatched);
+        generateBySkuBtn.addActionListener(this::generateBySku);
 
+        // Örnek yollar (değiştirilebilir)
         labelsField.setText("/Users/murattuncel/Desktop/ORN 9.25.25/462ba86c-d51a-4131-b9fd-60572fad0cdb.pdf");
         slipsField.setText("/Users/murattuncel/Desktop/ORN 9.25.25/Amazon.pdf");
     }
 
-    // --- UI Metodları (Değişiklik yok) ---
     private void pickLabels(ActionEvent e) {
         JFileChooser fc = new JFileChooser(pathOf(labelsField.getText()));
         fc.setDialogTitle("Pick Ornament Labels PDF");
@@ -103,27 +121,29 @@ public class OrnamentMatcherUI extends JFrame {
         return f.isDirectory() ? f : f.getParentFile();
     }
 
-    // --- Ana İşlem Metodu ---
-    private void generate(ActionEvent e) {
+    // --------------------------------------------------------------------------------
+    // 1) Order-by-order TEK PDF oluştur (label sayfaları, ardından slip sayfaları; her biri ayrı sayfa)
+    // --------------------------------------------------------------------------------
+    private void generateMatched(ActionEvent e) {
         String labelsPath = labelsField.getText().trim();
         String slipsPath  = slipsField.getText().trim();
         if (labelsPath.isEmpty() || slipsPath.isEmpty()) {
-            status.setText("Pick both PDFs first.");
+            appendStatus("Pick both PDFs first.");
             return;
         }
         File labels = new File(labelsPath);
         File slips  = new File(slipsPath);
         if (!labels.isFile() || !slips.isFile()) {
-            status.setText("Invalid file(s).");
+            appendStatus("Invalid file(s).");
             return;
         }
-        generateBtn.setEnabled(false);
-        status.setText("Indexing & merging...");
+
+        setButtonsEnabled(false);
+        appendStatus("Indexing & merging (order-by-order)...");
 
         SwingWorker<File, String> worker = new SwingWorker<>() {
             @Override
             protected File doInBackground() throws Exception {
-                // Adım 1: PDF'leri tara ve haritaları oluştur
                 publish("Indexing shipping labels...");
                 Map<String, List<Integer>> labelMap = PdfLinker.buildOrderIdToPagesMap(labels);
                 publish(" -> Found " + labelMap.size() + " orders in labels PDF.");
@@ -132,7 +152,6 @@ public class OrnamentMatcherUI extends JFrame {
                 Map<String, List<Integer>> slipMap  = PackSlipExtractor.indexOrderToPages(slips);
                 publish(" -> Found " + slipMap.size() + " orders in packing slip PDF.");
 
-                // Adım 2: İşlenecek sipariş ID'lerini belirle
                 Set<String> orderIds = new LinkedHashSet<>();
                 orderIds.addAll(labelMap.keySet());
                 orderIds.addAll(slipMap.keySet());
@@ -149,12 +168,10 @@ public class OrnamentMatcherUI extends JFrame {
                 }
                 publish("Found " + orderIds.size() + " total orders to process.");
 
-                // Adım 3: Çıktı dosyasını hazırla
                 String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date());
-                File outDir = labels.getParentFile() != null ? labels.getParentFile() : new File(".");
+                File outDir = resolveOrdersDirUI(labels);
                 File outFile = new File(outDir, "ORN_Matched_" + stamp + ".pdf");
 
-                // Adım 4: Sayfaları Kopyala
                 try (PDDocument labelsDoc = PDDocument.load(labels);
                      PDDocument slipsDoc  = PDDocument.load(slips);
                      PDDocument outDoc    = new PDDocument()) {
@@ -181,23 +198,22 @@ public class OrnamentMatcherUI extends JFrame {
             }
 
             @Override protected void process(List<String> chunks) {
-                if (!chunks.isEmpty()) status.setText(chunks.get(chunks.size()-1));
+                if (!chunks.isEmpty()) appendStatus(chunks.get(chunks.size()-1));
             }
 
             @Override protected void done() {
-                generateBtn.setEnabled(true);
+                setButtonsEnabled(true);
                 try {
                     File outFile = get();
                     if (outFile != null && outFile.isFile()) {
-                        status.setText("Done: " + outFile.getAbsolutePath());
+                        appendStatus("Done: " + outFile.getAbsolutePath());
                         Desktop.getDesktop().open(outFile);
                     } else {
-                        status.setText("Nothing generated.");
+                        appendStatus("Nothing generated.");
                     }
                 } catch (Exception ex) {
-                    // SwingWorker'dan gelen exception'ların asıl nedenini almak için getCause() kullanılır
                     Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
-                    status.setText("Error: " + cause.getMessage());
+                    appendStatus("Error: " + cause.getMessage());
                     JOptionPane.showMessageDialog(
                             OrnamentMatcherUI.this,
                             "An error occurred:\n" + cause.getMessage(),
@@ -208,6 +224,85 @@ public class OrnamentMatcherUI extends JFrame {
             }
         };
         worker.execute();
+    }
+    private File resolveOrdersDirUI(File referencePdf) {
+        File base = referencePdf.getParentFile() != null ? referencePdf.getParentFile() : new File(".");
+        File orders = new File(base, "Orders");
+        if (!orders.exists()) orders.mkdirs();
+        return orders;
+    }
+
+    // --------------------------------------------------------------------------------
+    // 2) SKU'ya göre AYRI PDF'ler oluştur
+    // --------------------------------------------------------------------------------
+    private void generateBySku(ActionEvent e) {
+        String labelsPath = labelsField.getText().trim();
+        String slipsPath  = slipsField.getText().trim();
+        if (labelsPath.isEmpty() || slipsPath.isEmpty()) {
+            appendStatus("Pick both PDFs first.");
+            return;
+        }
+        File labels = new File(labelsPath);
+        File slips  = new File(slipsPath);
+        if (!labels.isFile() || !slips.isFile()) {
+            appendStatus("Invalid file(s).");
+            return;
+        }
+
+        setButtonsEnabled(false);
+        appendStatus("Generating PDFs grouped by SKU...");
+
+        SwingWorker<File, String> worker = new SwingWorker<>() {
+            @Override
+            protected File doInBackground() throws Exception {
+                try {
+                    Map<String, File> outputs = com.osman.OrnamentProcessor.generateSkuPdfs(
+                            labels, slips, includeUnmatchedCheck.isSelected()
+                    );
+                    if (outputs.isEmpty()) {
+                        publish("No PDFs produced.");
+                        return null;
+                    }
+                    StringBuilder sb = new StringBuilder("Created PDFs:\n");
+                    outputs.forEach((k, f) -> sb.append("  ").append(k).append(" -> ").append(f.getAbsolutePath()).append("\n"));
+                    publish(sb.toString());
+                    // İlk dosyayı döndürelim (UI otomatik açabilsin)
+                    return outputs.values().iterator().next();
+                } catch (Exception ex) {
+                    publish("Error: " + ex.getMessage());
+                    return null;
+                }
+            }
+
+            @Override protected void process(List<String> chunks) {
+                if (!chunks.isEmpty()) appendStatus(chunks.get(chunks.size()-1));
+            }
+
+            @Override protected void done() {
+                setButtonsEnabled(true);
+                try {
+                    File first = get();
+                    if (first != null && first.isFile()) {
+                        Desktop.getDesktop().open(first);
+                    }
+                } catch (Exception ignored) {}
+            }
+        };
+        worker.execute();
+    }
+
+    private void setButtonsEnabled(boolean enabled) {
+        chooseLabelsBtn.setEnabled(enabled);
+        chooseSlipsBtn.setEnabled(enabled);
+        generateMatchedBtn.setEnabled(enabled);
+        generateBySkuBtn.setEnabled(enabled);
+        includeUnmatchedCheck.setEnabled(enabled);
+    }
+
+    private void appendStatus(String line) {
+        statusArea.append(line);
+        if (!line.endsWith("\n")) statusArea.append("\n");
+        statusArea.setCaretPosition(statusArea.getDocument().getLength());
     }
 
     public static void main(String[] args) {
