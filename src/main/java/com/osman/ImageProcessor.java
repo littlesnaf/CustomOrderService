@@ -321,7 +321,7 @@ public class ImageProcessor {
         g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
     }
 
-   static void drawMirroredString(Graphics2D g2d, String text, int x, int y, Font font, boolean alignRight) {
+    static void drawMirroredString(Graphics2D g2d, String text, int x, int y, Font font, boolean alignRight) {
         AffineTransform original = g2d.getTransform();
         g2d.setFont(font);
         FontMetrics fm = g2d.getFontMetrics();
