@@ -24,38 +24,39 @@ import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 
-/**
- * Sipariş klasörlerini işleyerek son baskı dosyalarını oluşturan ana sınıf.
- * Bu sınıf, SVG dosyalarını okur, müşteri resimlerini ImageMagick ile işler ve birleştirir.
- */
+
 public class ImageProcessor {
 
     // =================================================================================
-    // Sabit Değişkenler (Constants)
+    //(Constants)
     // =================================================================================
 
     static final String BLANK_LOGO_URL = "https://m.media-amazon.com/images/S/";
     static final String TRANSPARENT_PIXEL_DATA_URI = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
 
 
-    // Mantıksal font fallback listesi (Latin dışı karakterler için)
+
     private static final String[] JAVA_LOGICAL_FALLBACKS = new String[] { "SansSerif", "Dialog" };
 
     // =================================================================================
-    // Ana İşlem Metodları (Public API)
+    // // (Public API)
     // =================================================================================
 
+    /**
+     * Processes every JSON order inside the provided directory and renders production PNGs.
+     * @return absolute file paths of the rendered outputs.
+     */
     public static List<String> processOrderFolderMulti(File orderDirectory,
                                                        File outputDirectory,
                                                        String customerNameForFile,
                                                        String fileNameSuffix) throws Exception {
         if (!orderDirectory.isDirectory())
-            throw new IllegalArgumentException("Sağlanan sipariş yolu bir klasör değil: " + orderDirectory.getAbsolutePath());
+            throw new IllegalArgumentException("The provided order path is not a directory. " + orderDirectory.getAbsolutePath());
         if (!outputDirectory.isDirectory())
-            throw new IllegalArgumentException("Sağlanan çıktı yolu bir klasör değil: " + outputDirectory.getAbsolutePath());
+            throw new IllegalArgumentException("The specified order path is not recognized as a directory. " + outputDirectory.getAbsolutePath());
         List<File> jsonFiles = findJsonFiles(orderDirectory);
         if (jsonFiles.isEmpty())
-            throw new IOException("Klasör altında JSON bulunamadı: " + orderDirectory.getAbsolutePath());
+            throw new IOException("There is No SVG in File " + orderDirectory.getAbsolutePath());
 
         List<String> outputs = new ArrayList<>();
         for (File jsonFile : jsonFiles) {
@@ -65,22 +66,23 @@ public class ImageProcessor {
     }
 
     // =================================================================================
-    // Çekirdek İşlem Akışı (Core Rendering Pipeline)
+   // (Core Rendering Pipeline)
     // =================================================================================
 
+    /** Core pipeline that reads JSON metadata, rewrites the SVG, composites assets, and exports PNG. */
     private static String renderFromJson(File jsonFile,
                                          File orderRoot,
                                          File outputDirectory,
                                          String customerNameForFile,
                                          String fileNameSuffix) throws Exception {
-        // ... parse/order vb. sonrasında, SVG bulunduğu yerde:
+
 
 
         OrderInfo orderInfo = JsonDataReader.parse(jsonFile, orderRoot);
         int totalOrderQuantity = JsonDataReader.calculateTotalOrderQuantity(orderRoot);
         File svgFile = findNearestSvg(jsonFile.getParentFile(), orderRoot);
-        if (svgFile == null) throw new IOException("SVG bulunamadı: " + jsonFile.getAbsolutePath());
-        int mugOz = JsonDataReader.readMugOunces(jsonFile);   // 11 veya 15
+        if (svgFile == null) throw new IOException("SVG Couldn't Find: " + jsonFile.getAbsolutePath());
+        int mugOz = JsonDataReader.readMugOunces(jsonFile);   // 11 or 15
         MugTemplate T = (mugOz == 15) ? MugTemplate.OZ15() : MugTemplate.OZ11();
         String baseName = deriveOutputBaseName(orderRoot, outputDirectory, customerNameForFile, orderInfo);
         String finalBaseName = "x" + orderInfo.getQuantity() + "-" +baseName + "(" + orderInfo.getOrderId() + ") ";
@@ -96,9 +98,8 @@ public class ImageProcessor {
         g2d.fillRect(0, 0, finalCanvas.getWidth(), finalCanvas.getHeight());
 
         String designSide = JsonDataReader.readDesignSide(jsonFile); // "BOTH" | "FRONT_ONLY" | "BACK_ONLY"
-        boolean drawLeft  = !"BACK_ONLY".equals(designSide);   // FRONT (sol)
-        boolean drawRight = !"FRONT_ONLY".equals(designSide);  // BACK  (sağ)
-
+        boolean drawLeft  = !"BACK_ONLY".equals(designSide);   // FRONT
+        boolean drawRight = !"FRONT_ONLY".equals(designSide);  // BACK
         File tempMaster = null;
         try {
             tempMaster = File.createTempFile("temp_master_", ".png", outputDirectory);
@@ -123,6 +124,10 @@ public class ImageProcessor {
 
     private record ProcessedSvgResult(String svgContent, List<File> tempFiles) {}
 
+    /**
+     * Injects personalization data and sanitizes embedded images before the SVG is rasterized.
+     * Temporary files for sanitized assets are tracked for later cleanup.
+     */
     private static ProcessedSvgResult preProcessAndRewriteSvg(File svgFile, OrderInfo orderInfo, File tempDir) throws IOException {
         String content = Files.readString(svgFile.toPath());
         content = content.replace("FONT_PLACEHOLDER", orderInfo.getFontName());
@@ -159,15 +164,15 @@ public class ImageProcessor {
         }
         m.appendTail(sb);
 
-        // FONT FALLBACK ENJEKSİYONU
         String withFallback = addJavaFallbackFonts(sb.toString());
 
         return new ProcessedSvgResult(withFallback, tempFiles);
     }
 
+    /** Calls ImageMagick to normalize the source image (orientation, color space, alpha) before use. */
     private static BufferedImage readWithImageMagick(File imageFile) {
         if (imageFile == null || !imageFile.exists()) {
-            System.err.println("ImageMagick için kaynak dosya bulunamadı: " + imageFile);
+            System.err.println(" No source for ImageMagick " + imageFile);
             return null;
         }
         try {
@@ -194,19 +199,20 @@ public class ImageProcessor {
             if (exitCode == 0 && tempFile.exists() && tempFile.length() > 0) {
                 return ImageIO.read(tempFile);
             } else {
-                System.err.println("ImageMagick işlemi başarısız oldu. Dosya: " + imageFile.getName() + ", Çıkış Kodu: " + exitCode);
+                System.err.println("ImageMagick failed. File: " + imageFile.getName() + ", Output Code: " + exitCode);
                 return null;
             }
         } catch (IOException | InterruptedException e) {
-            System.err.println("ImageMagick çağrılırken hata: " + e.getMessage());
+            System.err.println("ImageMagick call error: " + e.getMessage());
             return null;
         }
     }
 
-    // =================================================================================
-    // Grafik ve Dosya Yardımcı Metodları
-    // =================================================================================
 
+    /**
+     * Crops the master render into left/right panels and paints them into the final canvas.
+     * Missing sides are filled with white so single-sided designs still look correct.
+     */
     private static void drawCropsToCanvas(Graphics2D g2d,
                                           File masterFile,
                                           File tempDir,
@@ -238,7 +244,7 @@ public class ImageProcessor {
             }
 
         } catch (IOException e) {
-            System.err.println("Kırpma ve çizme hatası: " + e.getMessage());
+            System.err.println("Crop or Draw error: " + e.getMessage());
         } finally {
             deleteIfExists(crop1);
             deleteIfExists(crop2);
@@ -246,10 +252,12 @@ public class ImageProcessor {
     }
 
 
+    /** Quietly deletes a temporary file if it was created. */
     private static void deleteIfExists(File f) {
         if (f != null) { try { Files.deleteIfExists(f.toPath()); } catch (IOException e) { /* ignore */ } }
     }
 
+    /** Collects JSON definition files from the order directory, looking several levels deep. */
     private static List<File> findJsonFiles(File directory) throws IOException {
         List<File> jsonFiles = new ArrayList<>();
         try (Stream<Path> stream = Files.walk(directory.toPath(), 6)) {
@@ -265,6 +273,7 @@ public class ImageProcessor {
         return jsonFiles;
     }
 
+    /** Chooses a friendly output filename seed based on photos, folder names, or customer info. */
     private static String deriveOutputBaseName(File orderRoot, File outputDir, String customerName, OrderInfo info) {
         String baseName = null;
         try { baseName = deriveNameFromPhotos(orderRoot, info.getOrderId()); } catch (IOException e) { /* ignore */ }
@@ -280,6 +289,7 @@ public class ImageProcessor {
         if (isBlank(baseName)) baseName = sanitizeName(outputDir.getName());
         return baseName;
     }
+    /** Writes mirrored production details (quantity, IDs, barcode) along the bottom of the canvas. */
     private static void drawMirroredInfoText(Graphics2D g2d, OrderInfo orderInfo, String sideLabel, MugTemplate T, int totalOrderQuantity) {
         Font infoFont = new Font("Arial", Font.BOLD, 48);
         g2d.setColor(Color.BLACK);
@@ -315,12 +325,14 @@ public class ImageProcessor {
     }
 
 
+    /** Applies standard high-quality rendering hints for crisp output. */
     private static void setupHighQualityRendering(Graphics2D g2d) {
         g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
         g2d.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
         g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
     }
 
+    /** Draws text mirrored horizontally so both mug sides read correctly after printing. */
     static void drawMirroredString(Graphics2D g2d, String text, int x, int y, Font font, boolean alignRight) {
         AffineTransform original = g2d.getTransform();
         g2d.setFont(font);
@@ -333,6 +345,7 @@ public class ImageProcessor {
         g2d.setTransform(original);
     }
 
+    /** Rasterizes customized SVG markup at high resolution while allowing external resources. */
     public static void convertSvgToHighResPng(String svgContent, File baseDirectory, String outputPath,
                                               float targetWidth, float targetHeight) throws IOException, TranscoderException {
         try (FileOutputStream out = new FileOutputStream(outputPath)) {
@@ -349,13 +362,15 @@ public class ImageProcessor {
         }
     }
 
+    /** Convenience wrapper around Java2D subimage cropping. */
     public static void cropImage(String sourcePath, String outputPath, int x, int y, int width, int height) throws IOException {
         BufferedImage sourceImage = ImageIO.read(new File(sourcePath));
-        if (sourceImage == null) throw new IOException("Kırpılacak resim okunamadı: " + sourcePath);
+        if (sourceImage == null) throw new IOException("Image couldn't read for crop : " + sourcePath);
         BufferedImage cropped = sourceImage.getSubimage(x, y, width, height);
         ImageIO.write(cropped, "png", new File(outputPath));
     }
 
+    /** Finds the first file with the given extension by walking the directory tree. */
     private static File findFileByExtension(File directory, String extension) {
         if (directory == null || !directory.isDirectory()) return null;
         final String extLower = extension.toLowerCase(Locale.ROOT);
@@ -368,6 +383,7 @@ public class ImageProcessor {
         } catch (IOException e) { return null; }
     }
 
+    /** Attempts to reuse existing photo filenames (minus order IDs) as the output base name. */
     private static String deriveNameFromPhotos(File orderDirectory, String orderId) throws IOException {
         try (Stream<Path> stream = Files.walk(orderDirectory.toPath(), 3)) {
             return stream.filter(Files::isRegularFile)
@@ -382,6 +398,7 @@ public class ImageProcessor {
         }
     }
 
+    /** Strips the order ID portion from a filename and returns the surrounding descriptor text. */
     private static String extractNameAroundOrderId(String fileName) {
         String base = fileName;
         int dot = base.lastIndexOf('.');
@@ -406,11 +423,13 @@ public class ImageProcessor {
         return null;
     }
 
+    /** Drops underscore/dash prefixes and suffixes that remain after splitting filenames. */
     private static String trimDelims(String s) {
         if (s == null) return "";
         return s.replaceAll("^[ _-]+|[ _-]+$", "");
     }
 
+    /** Normalizes a candidate filename to ASCII-safe characters. */
     private static String sanitizeName(String s) {
         if (s == null) return "";
         String out = s.replaceAll("[^a-zA-Z0-9._-]", "_");
@@ -418,8 +437,12 @@ public class ImageProcessor {
         return out;
     }
 
+    /** Null/blank check used for filename heuristics. */
     private static boolean isBlank(String s) { return s == null || s.trim().isEmpty(); }
 
+    /**
+     * Ensures output files never overwrite existing assets by appending incrementing suffixes.
+     */
     private static File ensureUniqueFile(File dir, String baseNameNoExt, String ext) {
         File f = new File(dir, baseNameNoExt + ext);
         if (!f.exists()) return f;
@@ -431,6 +454,7 @@ public class ImageProcessor {
         }
     }
 
+    /** Finds the first SVG either near the JSON file or anywhere within the broader order folder. */
     private static File findNearestSvg(File startDir, File rootFallback) {
         try (Stream<Path> s = Files.walk(startDir.toPath(), 3)) {
             Optional<Path> p = s.filter(Files::isRegularFile)
@@ -447,6 +471,7 @@ public class ImageProcessor {
         return null;
     }
 
+    /** Generates a Code-128 barcode and prints the human-readable text beneath it. */
     static BufferedImage generateBarcodeWithText(String text, int width, int height) {
         try {
             Code128Writer writer = new Code128Writer();
@@ -487,9 +512,10 @@ public class ImageProcessor {
     }
 
     // =================================================================================
-    // SVG font fallback enjeksi̇yonu (Latin dışı karakterler için Java mantıksal fontlar)
+    // SVG font fallback
     // =================================================================================
 
+    /** Adds Java logical fonts to font-family declarations to avoid missing glyphs at runtime. */
     private static String addJavaFallbackFonts(String svg) {
         svg = patchFontFamilyAttributes(svg);
         svg = patchInlineStyleFontFamilies(svg);
@@ -497,6 +523,7 @@ public class ImageProcessor {
         return svg;
     }
 
+    /** Injects fallback families into inline `font-family="..."` attributes. */
     private static String patchFontFamilyAttributes(String svg) {
         Pattern attr = Pattern.compile("(?i)font-family\\s*=\\s*\"([^\"]+)\"");
         Matcher m = attr.matcher(svg);
@@ -510,6 +537,7 @@ public class ImageProcessor {
         return out.toString();
     }
 
+    /** Adjusts inline style attributes so they also include fallback font families. */
     private static String patchInlineStyleFontFamilies(String svg) {
         Pattern styleAttr = Pattern.compile("(?is)style\\s*=\\s*\"([^\"]*)\"");
         Matcher ms = styleAttr.matcher(svg);
@@ -535,6 +563,7 @@ public class ImageProcessor {
         return out.toString();
     }
 
+    /** Ensures `<style>` blocks reference fallback fonts for any `font-family:` declarations. */
     private static String patchStyleBlockFontFamilies(String svg) {
         Pattern styleBlock = Pattern.compile("(?is)<style([^>]*)>(.*?)</style>");
         Matcher mb = styleBlock.matcher(svg);
@@ -559,8 +588,9 @@ public class ImageProcessor {
         return out.toString();
     }
 
+    /** Appends any missing logical fallback families to the provided font stack string. */
     private static String appendMissingFallbacks(String families) {
-        // Var olan aileleri normalize et
+
         List<String> parts = new ArrayList<>();
         for (String f : families.split(",")) {
             String t = f.trim();
@@ -569,17 +599,18 @@ public class ImageProcessor {
         Set<String> lowerSet = new HashSet<>();
         for (String p : parts) lowerSet.add(stripQuotes(p).toLowerCase(Locale.ROOT));
 
-        // Eksik mantıksal fontları ekle
+
         for (String fb : JAVA_LOGICAL_FALLBACKS) {
             if (!lowerSet.contains(fb.toLowerCase(Locale.ROOT))) {
                 parts.add(fb);
             }
         }
 
-        // Listeyi yeniden birleştir
+
         return String.join(", ", parts);
     }
 
+    /** Removes surrounding single/double quotes without disturbing inner characters. */
     private static String stripQuotes(String s) {
         String t = s.trim();
         if ((t.startsWith("'") && t.endsWith("'")) || (t.startsWith("\"") && t.endsWith("\""))) {

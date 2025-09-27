@@ -7,9 +7,11 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.util.Locale;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
+/**
+ * Parses Amazon Custom JSON payloads so downstream renderers can pull product details, art paths,
+ * font selections, and order metadata without duplicating parsing logic everywhere.
+ */
 public class JsonDataReader {
 
     /**
@@ -103,8 +105,10 @@ public class JsonDataReader {
     // YOUR OTHER EXISTING METHODS (NO CHANGES NEEDED BELOW THIS LINE)
     // =================================================================================
 
+    /** Bundles the optional front/back image filenames captured from personalization data. */
     public record ImageFileInfo(String frontImageFile, String backImageFile) {}
 
+    /** Extracts the first front/back artwork filenames referenced in the JSON, if present. */
     public static ImageFileInfo readImageFileNames(File jsonFile) throws IOException {
         String content = Files.readString(jsonFile.toPath());
         JSONObject root = new JSONObject(content);
@@ -118,6 +122,7 @@ public class JsonDataReader {
         return new ImageFileInfo(fileNames[0], fileNames[1]);
     }
 
+    /** Recursive helper that walks the customization tree looking for image nodes. */
     private static void findImageFilesRecursively(JSONArray array, String[] fileNames) {
         for (int i = 0; i < array.length(); i++) {
             JSONObject node = array.optJSONObject(i);
@@ -137,6 +142,7 @@ public class JsonDataReader {
         }
     }
 
+    /** Attempts to infer whether the order is for the 11oz or 15oz mug variant. */
     public static int readMugOunces(File jsonFile) throws IOException {
         String content = Files.readString(jsonFile.toPath());
         JSONObject root = new JSONObject(content);
@@ -175,6 +181,10 @@ public class JsonDataReader {
         return 11;
     }
 
+    /**
+     * Looks for an ounce indicator (11 or 15) inside the supplied string.
+     * Returns -1 if the hint is missing so the caller can continue searching.
+     */
     private static int parseOzFromString(String s) {
         if (s == null) return -1;
         String t = s.toLowerCase(Locale.ROOT);
@@ -185,7 +195,13 @@ public class JsonDataReader {
         return -1;
     }
 
+    /**
+     * Builds an {@link OrderInfo} snapshot from the raw JSON plus directory context.
+     * The rendering pipeline relies on this metadata for filenames, fonts, and personalization text.
+     */
     public static OrderInfo parse(File jsonFile, File orderDirectory) throws IOException { String content = Files.readString(jsonFile.toPath()); JSONObject root = new JSONObject(content); String orderId = root.optString("orderId"); if (orderId.isEmpty()) throw new IOException("JSON is missing 'orderId' field."); String orderItemId = root.optString("orderItemId"); if (orderItemId.isEmpty()) throw new IOException("JSON is missing 'orderItemId' field."); String fontName = findFontFamilyInCustomization(root); if (fontName == null) { fontName = "Arial"; } String label = findLabelInCustomization(root); if (label == null) throw new IOException("Could not find label information in JSON."); int quantity = root.optInt("quantity", 1); String customerName = orderDirectory.getName(); return new OrderInfo(orderId, customerName, fontName, quantity, orderItemId, label); }
+
+    /** Infers whether the design should be printed on the front, back, or both sides of the mug. */
     public static String readDesignSide(File jsonFile) throws IOException { String content = Files.readString(jsonFile.toPath()); JSONObject root = new JSONObject(content); String raw = findDesignSideInCustomization(root); if (isNonEmpty(raw)) return normalizeDesignSide(raw); raw = findDesignSideGeneric(root); if (isNonEmpty(raw)) return normalizeDesignSide(raw); raw = findDesignSideInV3(root); if (isNonEmpty(raw)) return normalizeDesignSide(raw); return "BOTH"; }
     private static boolean isNonEmpty(String s) { return s != null && !s.isBlank(); }
     private static String normalizeDesignSide(String raw) { String s = raw.toLowerCase(Locale.ROOT); if (s.contains("both")) return "BOTH"; if (s.contains("front")) return "FRONT_ONLY"; if (s.contains("back")) return "BACK_ONLY"; return "BOTH"; }

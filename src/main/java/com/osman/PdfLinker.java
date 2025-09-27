@@ -19,6 +19,7 @@ public class PdfLinker {
     private static final Pattern PACKING_SLIP_FOLDER_PATTERN =
             Pattern.compile("^(?:\\d{2}\\s*[PRWB]|mix).*", Pattern.CASE_INSENSITIVE);
 
+    /** Determines if the given PDF name matches known packing-slip naming conventions. */
     private static boolean isPackingSlipFile(File pdfFile) {
         if (pdfFile == null) return false;
         String name = pdfFile.getName();
@@ -32,6 +33,7 @@ public class PdfLinker {
         return false;
     }
 
+    /** Loads a PDF from disk and returns an index of order IDs to label pages, skipping slips. */
     public static Map<String, List<Integer>> buildOrderIdToPagesMap(File labelsPdf) throws IOException {
         if (labelsPdf == null || !labelsPdf.isFile()) {
             throw new IOException("Labels PDF not found: " + labelsPdf);

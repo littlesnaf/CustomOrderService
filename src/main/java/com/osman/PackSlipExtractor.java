@@ -8,28 +8,19 @@ import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+/**
+ * Utility routines for scanning Amazon packing slip PDFs and mapping order IDs to their pages.
+ */
 public class PackSlipExtractor {
 
-    // Your inner classes like PackSlipData and Item do not need to change.
-    // ... (Omitted for brevity, keep your existing inner classes)
-    public static class Item {
-        public String quantity = "";
-        public String productDetails = "";
-        public Map<String, String> customizations = new LinkedHashMap<>();
-    }
-    public static class PackSlipData {
-        public String orderId = "";
-        public List<Item> items = new ArrayList<>();
-        // Add other fields as needed
-    }
+
 
     private static final Pattern ORDER_ID_RE = Pattern.compile("\\b(\\d{3}-\\d{7}-\\d{7})\\b");
 
     /**
-     * UPDATED: Produces a map of order IDs to pages.
-     * This version is stricter and only maps a page if an Order ID is explicitly found in the page header.
+     * Produces a map of order IDs to pages. The implementation is strict—it only records a page when the
+     * Order ID is detected in the header segment so footer summaries do not produce false positives.
      */
-
     public static Map<String, List<Integer>> indexOrderToPages(File packingSlipPdf) throws IOException {
         Map<String, List<Integer>> out = new LinkedHashMap<>();
         try (PDDocument doc = PDDocument.load(packingSlipPdf)) {
@@ -63,10 +54,7 @@ public class PackSlipExtractor {
         return out;
     }
 
-    /**
-     * Smarter function to find the main Order ID.
-     * It only searches the top of the page to avoid confusion with footer text.
-     */
+    /** Looks at the first lines of text on a page to locate the Order ID header. */
     private static String findOrderIdInPageHeader(String text) {
         if (text == null || text.isEmpty()) return null;
 
@@ -84,6 +72,5 @@ public class PackSlipExtractor {
     }
 
 
-    // The other methods in this class for deep data extraction are not used by the UI
-    // but can remain for other purposes.
+
 }

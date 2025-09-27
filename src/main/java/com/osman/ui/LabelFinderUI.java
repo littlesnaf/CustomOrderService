@@ -26,14 +26,24 @@ import java.util.*;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
-
+/**
+ * Swing UI that helps operators locate shipping labels, packing slips, and photos for Amazon orders.
+ * <p>Supports two workflows:</p>
+ * <ul>
+ *   <li><b>Single order</b>: looks up matching label and slip pages by Order ID.</li>
+ *   <li><b>Bulk mode</b>: browses every PDF page and related product photos.</li>
+ * </ul>
+ * The class coordinates filesystem scanning, PDF rendering, photo previews, and printing.
+ */
 public class LabelFinderUI extends JFrame {
 
+    /** Holds the document and page number where a label was rendered. */
     private static class LabelLocation {
         final File pdfFile;
         final int pageNumber;
         LabelLocation(File pdfFile, int pageNumber) { this.pdfFile = pdfFile; this.pageNumber = pageNumber; }
     }
+    /** Groups a PDF with its relevant 1-based pages for either labels or packing slips. */
     private static class PageGroup {
         final File file;
         final List<Integer> pages;
@@ -47,7 +57,7 @@ public class LabelFinderUI extends JFrame {
     private final JCheckBox bulkModeCheck;
     private final JLabel statusLabel;
 
-    // Tek panel: Shipping Label + Packing Slip tek görüntüde (üst/alt)
+
     private final ImagePanel combinedPanel;
 
     private final DefaultListModel<LabelRef> labelRefsModel;
@@ -62,8 +72,9 @@ public class LabelFinderUI extends JFrame {
     private Map<String, PageGroup> slipGroups;  // Packing slips (PackSlipExtractor)
 
     private LabelLocation currentLabelLocation;
-    private BufferedImage combinedPreview; // yazdırılacak birleşik görüntü
+    private BufferedImage combinedPreview;
 
+    /** Builds the full window layout, registers listeners, and initializes UI state. */
     public LabelFinderUI() {
         setTitle("Label & Photo Viewer");
         setDefaultCloseOperation(JFrame.DO_NOTHING_ON_CLOSE);
@@ -158,6 +169,7 @@ public class LabelFinderUI extends JFrame {
         applyModeUI();
     }
 
+    /** Toggles widgets and reindexes files when the user switches between single and bulk modes. */
     private void onModeChanged(boolean bulk) {
         applyModeUI();
         clearAllViews();
@@ -167,6 +179,7 @@ public class LabelFinderUI extends JFrame {
         }
     }
 
+    /** Updates UI enablement rules based on the currently selected mode. */
     private void applyModeUI() {
         boolean bulk = bulkModeCheck.isSelected();
         orderIdField.setEnabled(!bulk);
@@ -174,6 +187,7 @@ public class LabelFinderUI extends JFrame {
         labelRefsList.setEnabled(bulk);
     }
 
+    /** Resets previews, selections, and buttons so the next lookup starts clean. */
     private void clearAllViews() {
         combinedPreview = null;
         combinedPanel.setImage(null);
@@ -184,13 +198,14 @@ public class LabelFinderUI extends JFrame {
         printButton.setEnabled(false);
     }
 
+    /** Prompts the user to select the root directory that contains order PDFs and photos. */
     private void chooseBaseFolder() {
         JFileChooser chooser = new JFileChooser(baseDir);
         chooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
         chooser.setDialogTitle("Choose Base Folder (e.g., 'Orders')");
 
         if (chooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) {
-            return; // Kullanıcı seçim yapmadıysa çık
+            return;
         }
 
         File selectedDir = chooser.getSelectedFile();
@@ -201,15 +216,15 @@ public class LabelFinderUI extends JFrame {
         baseDir = selectedDir;
         clearAllViews();
 
-        // UI elemanlarını devre dışı bırak ve kullanıcıya meşgul olduğunu bildir
+
         setUIEnabled(false);
         statusLabel.setText("Klasör taranıyor, lütfen bekleyin...");
 
-        // SwingWorker ile arka plan işlemini başlat
+
         SwingWorker<Void, Void> worker = new SwingWorker<>() {
             @Override
             protected Void doInBackground() throws Exception {
-                // Uzun süren işlem burada, arka planda çalışacak
+
                 if (bulkModeCheck.isSelected()) {
                     populateBulkFromBase();
                 } else {
@@ -220,11 +235,10 @@ public class LabelFinderUI extends JFrame {
 
             @Override
             protected void done() {
-                // Arka plan işi bitince bu metot EDT'de çalışır
+
                 try {
-                    get(); // doInBackground'da bir hata oluştuysa burada yakalanır
-                    // buildLabelAndSlipIndices veya populateBulkFromBase kendi statusLabel'ını zaten ayarlıyor,
-                    // bu yüzden burada tekrar ayarlamaya gerek olmayabilir veya genel bir mesaj verilebilir.
+                    get();
+
                     if (bulkModeCheck.isSelected()) {
                         statusLabel.setText("BULK modu yüklendi: " + labelRefsModel.size() + " sayfa, " + photosModel.size() + " fotoğraf.");
                     } else {
@@ -232,22 +246,23 @@ public class LabelFinderUI extends JFrame {
                     }
 
                 } catch (Exception e) {
-                    // Hata oluşursa kullanıcıyı bilgilendir
+
                     statusLabel.setText("Hata: " + e.getCause().getMessage());
                     JOptionPane.showMessageDialog(LabelFinderUI.this,
                             "Dosyalar taranırken bir hata oluştu:\n" + e.getCause().getMessage(),
                             "Hata", JOptionPane.ERROR_MESSAGE);
                 } finally {
-                    // İşlem bitince (başarılı ya da hatalı) UI elemanlarını tekrar aktif et
+
                     setUIEnabled(true);
                 }
             }
         };
 
-        worker.execute(); // SwingWorker'ı çalıştır
+        worker.execute();
     }
 
-    // Butonları ve diğer kontrolleri toplu halde etkinleştirmek/devre dışı bırakmak için bir yardımcı metot
+
+    /** Enables or disables user interaction while long-running background work executes. */
     private void setUIEnabled(boolean enabled) {
         findButton.setEnabled(enabled);
         chooseBaseBtn.setEnabled(enabled);
@@ -257,6 +272,7 @@ public class LabelFinderUI extends JFrame {
         photosList.setEnabled(enabled);
     }
 
+    /** Scans PDFs under the base directory and maps order IDs to the pages that contain them. */
     private void buildLabelAndSlipIndices() {
         labelGroups = new HashMap<>();
         slipGroups  = new HashMap<>();
@@ -306,11 +322,13 @@ public class LabelFinderUI extends JFrame {
         statusLabel.setText("Indexed " + labelGroups.size() + " labels, " + slipGroups.size() + " packing slips.");
     }
 
+    /** Entry point for the Find button and ENTER key in the order field. */
     private void onFind() {
         if (bulkModeCheck.isSelected()) populateBulkFromBase();
         else findSingleOrderFlow();
     }
 
+    /** Single-order mode: renders label + slip preview and finds matching photos for the entered ID. */
     private void findSingleOrderFlow() {
         String orderId = orderIdField.getText().trim();
         if (orderId.isEmpty()) {
@@ -339,7 +357,7 @@ public class LabelFinderUI extends JFrame {
             statusLabel.setText("Packing slip not found for: " + orderId);
         }
 
-        // İkisini tek görselde birleştir (üst: label, alt: slip). Biri yoksa olanı göster.
+
         combinedPreview = stackImagesVertically(
                 labelImg == null ? null : addBorder(labelImg, Color.RED, 8),
                 slipImg  == null ? null : addBorder(slipImg, new Color(0,120,215), 8),
@@ -370,6 +388,7 @@ public class LabelFinderUI extends JFrame {
         }
     }
 
+    /** Renders one or more PDF pages into a single tall image so the user can preview the document. */
     private BufferedImage renderPdfPagesMerged(File pdf, List<Integer> pages1Based, int dpi) {
         if (pages1Based == null || pages1Based.isEmpty()) return null;
         try (PDDocument doc = PDDocument.load(pdf)) {
@@ -398,6 +417,7 @@ public class LabelFinderUI extends JFrame {
         }
     }
 
+    /** Vertically stacks two images with a configurable gap and background color. */
     private static BufferedImage stackImagesVertically(BufferedImage top, BufferedImage bottom, int gap, Color bg) {
         if (top == null && bottom == null) return null;
         if (top == null) return bottom;
@@ -414,6 +434,7 @@ public class LabelFinderUI extends JFrame {
         return out;
     }
 
+    /** Sends the combined preview image to the default printer if possible. */
     private void printCombined() {
         if (combinedPreview == null) {
             statusLabel.setText("Nothing to print.");
@@ -435,11 +456,13 @@ public class LabelFinderUI extends JFrame {
         }
     }
 
+    /** Disposes Swing resources and terminates the JVM. */
     private void cleanupAndExit() {
         dispose();
         System.exit(0);
     }
 
+    /** Populates the bulk mode lists with every PDF page and photo discovered under the base directory. */
     private void populateBulkFromBase() {
         if (baseDir == null || !baseDir.isDirectory()) {
             statusLabel.setText("Select a valid base folder for BULK.");
@@ -480,6 +503,7 @@ public class LabelFinderUI extends JFrame {
         statusLabel.setText("BULK loaded: " + labelRefsModel.size() + " pages, " + photosModel.size() + " photos.");
     }
 
+    /** Bulk mode helper that renders the selected PDF page preview and enables printing. */
     private void renderSelectedBulkPage() {
         LabelRef ref = labelRefsList.getSelectedValue();
         if (ref == null) {
@@ -504,6 +528,7 @@ public class LabelFinderUI extends JFrame {
         }
     }
 
+    /** Loads up to two selected photos and draws them side by side in the preview pane. */
     private void renderSelectedPhotos() {
         List<Path> selected = photosList.getSelectedValuesList();
         if (selected == null || selected.isEmpty()) {
@@ -527,6 +552,7 @@ public class LabelFinderUI extends JFrame {
         }
     }
 
+    /** Recursively looks for image files under the root whose name contains the given order ID. */
     private static List<Path> findAllMatchingPhotos(Path root, String orderId) throws IOException {
         final String needle = orderId.toLowerCase(Locale.ROOT);
         List<Path> results = new ArrayList<>();
@@ -540,6 +566,7 @@ public class LabelFinderUI extends JFrame {
         results.sort(Comparator.comparing(a -> a.getFileName().toString(), String.CASE_INSENSITIVE_ORDER));
         return results;
     }
+    /** Binds Cmd/Ctrl+P to the print action so the workflow matches user expectations. */
     private void addPrintShortcut(JRootPane rootPane) {
         // macOS: CMD, Windows/Linux: CTRL
         int mask = Toolkit.getDefaultToolkit().getMenuShortcutKeyMaskEx();
@@ -551,12 +578,13 @@ public class LabelFinderUI extends JFrame {
         rootPane.getActionMap().put("printCombinedAction", new AbstractAction() {
             @Override
             public void actionPerformed(ActionEvent e) {
-                // Print butonuna basılmış gibi davran
+
                 printCombined();
             }
         });
     }
 
+    /** Wraps the given image in a solid border to make previews easier to see. */
     private static BufferedImage addBorder(BufferedImage src, Color color, int size) {
         if (src == null) return null;
         int w = src.getWidth() + size * 2;
@@ -575,7 +603,7 @@ public class LabelFinderUI extends JFrame {
         return out;
     }
 
-    // --- Basit görüntü paneli ---
+    /** Simple scroll-friendly panel that keeps a single image centered. */
     private static class ImagePanel extends JPanel {
         private BufferedImage image;
         public void setImage(BufferedImage img) { this.image = img; revalidate(); repaint(); }
@@ -591,6 +619,7 @@ public class LabelFinderUI extends JFrame {
         }
     }
 
+    /** Displays one or two photos; when two are present it splits the available width evenly. */
     private static class DualImagePanel extends JPanel {
         private BufferedImage imgA;
         private BufferedImage imgB;
@@ -633,6 +662,7 @@ public class LabelFinderUI extends JFrame {
         }
     }
 
+    /** Lightweight list entry that remembers the source file and 1-based page index. */
     private static class LabelRef {
         final File file;
         final int page1Based;
@@ -640,6 +670,7 @@ public class LabelFinderUI extends JFrame {
         String toDisplayString() { return file.getName() + "  —  p." + page1Based; }
         @Override public String toString() { return toDisplayString(); }
     }
+    /** Auto-selects the first photo(s) so operators see an immediate preview after a lookup. */
     private void selectAndPreviewFirstPhotos() {
         if (photosModel.isEmpty()) {
             photoView.setImages(null, null);
@@ -647,10 +678,10 @@ public class LabelFinderUI extends JFrame {
         }
         int last = Math.min(1, photosModel.size() - 1); // 1 veya 2 fotoğraf
         photosList.setSelectionInterval(0, last);
-        renderSelectedPhotos(); // ön-izlemeyi hemen güncelle
+        renderSelectedPhotos();
     }
 
-    // Printable: BufferedImage’i sayfaya sığdırarak yazdırır (tek sayfa)
+    /** Printable adapter that scales the combined preview to the printer's imageable area. */
     private static class BufferedImagePrintable implements Printable {
         private final BufferedImage img;
         BufferedImagePrintable(BufferedImage img) { this.img = img; }
@@ -679,6 +710,7 @@ public class LabelFinderUI extends JFrame {
         }
     }
 
+    /** Launches the standalone UI. */
     public static void main(String[] args) {
         SwingUtilities.invokeLater(() -> new LabelFinderUI().setVisible(true));
     }

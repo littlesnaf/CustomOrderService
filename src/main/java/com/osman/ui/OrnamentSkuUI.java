@@ -20,6 +20,10 @@ import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+/**
+ * Swing front-end for splitting merged ornament PDFs into per-SKU files.
+ * Operators can drag-and-drop PDFs, choose an output folder, and launch the processing run.
+ */
 public class OrnamentSkuUI extends JFrame {
 
     private final DefaultListModel<Path> inputListModel = new DefaultListModel<>();
@@ -105,6 +109,7 @@ public class OrnamentSkuUI extends JFrame {
         appendLog("Select merged PDFs and an output directory. Results will be written under: <output>/ready-orders/");
     }
 
+    /** Opens a file chooser to append one or more merged PDFs into the processing list. */
     private void onAddPdfs() {
         JFileChooser fc = new JFileChooser();
         fc.setFileFilter(new FileNameExtensionFilter("PDF files", "pdf"));
@@ -123,12 +128,14 @@ public class OrnamentSkuUI extends JFrame {
         }
     }
 
+    /** Removes the currently highlighted PDFs from the queue. */
     private void onRemoveSelected(JList<Path> list) {
         List<Path> sel = list.getSelectedValuesList();
         for (Path p : sel) inputListModel.removeElement(p);
         appendLog("Removed " + sel.size() + " item(s).");
     }
 
+    /** Lets the user pick the target directory where the per-SKU PDFs will be written. */
     private void onChooseOutput() {
         JFileChooser fc = new JFileChooser();
         fc.setDialogTitle("Choose Output Directory");
@@ -139,6 +146,7 @@ public class OrnamentSkuUI extends JFrame {
         }
     }
 
+    /** Kicks off the background thread that splits, analyzes, and writes the per-SKU documents. */
     private void onRun() {
         if (inputListModel.isEmpty()) {
             JOptionPane.showMessageDialog(this, "Please add at least one input PDF.", "Missing Inputs", JOptionPane.WARNING_MESSAGE);
@@ -231,6 +239,7 @@ public class OrnamentSkuUI extends JFrame {
         }).start();
     }
 
+    /** Renames each SKU PDF with a quantity prefix so the downstream workflow sees totals instantly. */
     private void renameSkuFilesWithCounts(Path outDir, Map<String, List<BundleRef>> skuIndex) {
         for (Map.Entry<String, List<BundleRef>> e : skuIndex.entrySet()) {
             String sku = e.getKey();
@@ -263,6 +272,7 @@ public class OrnamentSkuUI extends JFrame {
         }
     }
 
+    /** Enables/disables interactive controls while the background worker is running. */
     private void setUIEnabled(boolean enabled) {
         SwingUtilities.invokeLater(() -> {
             for (Component c : getContentPane().getComponents()) c.setEnabled(enabled);
@@ -270,6 +280,7 @@ public class OrnamentSkuUI extends JFrame {
         });
     }
 
+    /** Appends a line to the log text area on the Event Dispatch Thread. */
     private void appendLog(String s) {
         SwingUtilities.invokeLater(() -> {
             logArea.append(s + "\n");
@@ -277,6 +288,7 @@ public class OrnamentSkuUI extends JFrame {
         });
     }
 
+    /** Saves each page of a PDF to disk so we can reassemble them into SKU-specific bundles. */
     private static List<Path> splitToSinglePages(PDDocument doc, Path tmpDir) throws IOException {
         Splitter splitter = new Splitter();
         splitter.setSplitAtPage(1);
@@ -293,6 +305,7 @@ public class OrnamentSkuUI extends JFrame {
         return files;
     }
 
+    /** Reads each page to pair a shipping label with its following packing-slip pages. */
     private static List<Bundle> buildBundles(PDDocument doc, int docId) throws IOException {
         PDFTextStripper stripper = new PDFTextStripper();
         stripper.setSortByPosition(true); // kritik: Qty sütunu gibi sağda duran değerleri doğru sırala
@@ -369,6 +382,7 @@ public class OrnamentSkuUI extends JFrame {
         return filtered;
     }
 
+    /** Recombines the relevant single-page PDFs for each bundle into the destination file. */
     private static void mergeBundles(List<List<Path>> singlePagesPerDoc, List<BundleRef> bundles, Path outFile) throws IOException {
         if (bundles.isEmpty()) return;
         PDFMergerUtility mu = new PDFMergerUtility();
@@ -386,6 +400,7 @@ public class OrnamentSkuUI extends JFrame {
 
 
 
+    /** Attempts to deduce the ordered quantity for each SKU within a packing-slip text block. */
     private static Map<String, Integer> countSkuOccurrences(String text) {
         Map<String, Integer> totals = new LinkedHashMap<>();
 
@@ -449,16 +464,20 @@ public class OrnamentSkuUI extends JFrame {
         }
         return totals;
     }
+    /** Returns the first regex capture group or the supplied fallback if no match exists. */
     private static String firstMatch(Pattern p, String text, String fallback) {
         Matcher m = p.matcher(text);
         if (m.find()) return m.group(1);
         return fallback;
     }
 
+    /** Null-safe helper used during PDF text parsing. */
     private static String safe(String s) { return s == null ? "" : s; }
 
+    /** Sanitizes SKU strings so they can be used safely in filenames. */
     private static String sanitize(String s) { return s.replaceAll("[^A-Za-z0-9._-]", "_"); }
 
+    /** Recursively deletes a temporary directory tree, ignoring failures. */
     private static void cleanDir(Path dir) {
         if (dir == null || !Files.exists(dir)) return;
         try (var s = Files.walk(dir)) {
@@ -468,6 +487,7 @@ public class OrnamentSkuUI extends JFrame {
         } catch (IOException ignored) {}
     }
 
+    /** Represents a single shipping label and its related packing-slip pages. */
     private static class Bundle {
         final int docId;
         Integer labelPageIndex;
@@ -478,12 +498,14 @@ public class OrnamentSkuUI extends JFrame {
         Bundle(int docId) { this.docId = docId; }
     }
 
+    /** Points to a bundle and the index of the document it originated from. */
     private static class BundleRef {
         final int docId;
         final Bundle bundle;
         BundleRef(int docId, Bundle bundle) { this.docId = docId; this.bundle = bundle; }
     }
 
+    /** Handles drag-and-drop of PDFs/folders onto the input list. */
     private class FileDropToListHandler extends TransferHandler {
         public boolean canImport(TransferSupport support) {
             return support.isDataFlavorSupported(DataFlavor.javaFileListFlavor);
@@ -519,6 +541,7 @@ public class OrnamentSkuUI extends JFrame {
         }
     }
 
+    /** Allows dropping a directory onto the output field. */
     private class DirDropToFieldHandler extends TransferHandler {
         public boolean canImport(TransferSupport support) {
             return support.isDataFlavorSupported(DataFlavor.javaFileListFlavor);
@@ -545,6 +568,7 @@ public class OrnamentSkuUI extends JFrame {
         }
     }
 
+    /** Fallback drop handler on the frame itself for either PDFs or directories. */
     private class FileOrDirFallbackHandler extends TransferHandler {
         public boolean canImport(TransferSupport support) {
             return support.isDataFlavorSupported(DataFlavor.javaFileListFlavor);

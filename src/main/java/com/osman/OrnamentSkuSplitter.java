@@ -12,6 +12,10 @@ import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+/**
+ * Command-line helper that splits merged ornament PDFs into per-SKU documents.
+ * It pairs each shipping label with the matching packing-slip pages and groups them by SKU.
+ */
 public class OrnamentSkuSplitter {
 
     private static final String[] INPUT_PATHS = new String[] {
@@ -23,6 +27,7 @@ public class OrnamentSkuSplitter {
     private static final String KW_CONTINUED = "Continued on Next Page";
     private static final String KW_NOT_CONTINUED = "Not Continued on Next Page";
 
+    /** Entry point expected to be invoked manually; orchestrates the split and merge workflow. */
     public static void main(String[] args) throws Exception {
         List<Path> inputs = resolveInputs();
         if (inputs.isEmpty()) throw new IOException("Girdi dosyası bulunamadı.");
@@ -80,6 +85,7 @@ public class OrnamentSkuSplitter {
         cleanDir(tmpRoot);
     }
 
+    /** Saves every page of the merged document as its own PDF so we can recombine quickly later. */
     private static List<Path> splitToSinglePages(PDDocument doc, Path tmpDir) throws IOException {
         Splitter splitter = new Splitter();
         splitter.setSplitAtPage(1);
@@ -96,6 +102,10 @@ public class OrnamentSkuSplitter {
         return files;
     }
 
+    /**
+     * Parses the document text to identify which label page belongs with which packing-slip pages.
+     * A bundle represents a single order inside the merged PDF.
+     */
     private static List<Bundle> buildBundles(PDDocument doc, int docId) throws IOException {
         PDFTextStripper stripper = new PDFTextStripper();
         int total = doc.getNumberOfPages();
@@ -165,6 +175,7 @@ public class OrnamentSkuSplitter {
         return filtered;
     }
 
+    /** Reassembles label + slip pages into a single PDF for each SKU or the mixed fallback. */
     private static void mergeBundles(List<List<Path>> singlePagesPerDoc, List<BundleRef> bundles, Path outFile) throws IOException {
         if (bundles.isEmpty()) return;
         PDFMergerUtility mu = new PDFMergerUtility();
@@ -183,6 +194,7 @@ public class OrnamentSkuSplitter {
         mu.mergeDocuments(MemoryUsageSetting.setupMainMemoryOnly());
     }
 
+    /** Collects all SKU tokens from a block of packing-slip text. */
     private static Set<String> extractSkus(String text) {
         Set<String> out = new LinkedHashSet<>();
         Matcher m = SKU_PATTERN.matcher(text);
@@ -190,16 +202,20 @@ public class OrnamentSkuSplitter {
         return out;
     }
 
+    /** Returns the first capture group for the given regex or a provided fallback value. */
     private static String firstMatch(Pattern p, String text, String fallback) {
         Matcher m = p.matcher(text);
         if (m.find()) return m.group(1);
         return fallback;
     }
 
+    /** Null-safe helper that prevents downstream NPEs while parsing PDF text. */
     private static String safe(String s) { return s == null ? "" : s; }
 
+    /** Sanitizes dynamic filenames so they are safe for cross-platform file systems. */
     private static String sanitize(String s) { return s.replaceAll("[^A-Za-z0-9._-]", "_"); }
 
+    /** Resolves configured input paths to actual files, ignoring missing entries. */
     private static List<Path> resolveInputs() {
         List<Path> out = new ArrayList<>();
         for (String p : INPUT_PATHS) {
@@ -209,6 +225,7 @@ public class OrnamentSkuSplitter {
         return out;
     }
 
+    /** Deletes a temporary directory tree quietly. */
     private static void cleanDir(Path dir) {
         if (dir == null) return;
         if (!Files.exists(dir)) return;
@@ -219,6 +236,7 @@ public class OrnamentSkuSplitter {
         } catch (IOException ignored) {}
     }
 
+    /** Represents one order bundle combining a label page with one or more packing-slip pages. */
     private static class Bundle {
         final int docId;
         Integer labelPageIndex;
@@ -228,6 +246,7 @@ public class OrnamentSkuSplitter {
         Bundle(int docId) { this.docId = docId; }
     }
 
+    /** Lightweight pointer tying a bundle back to the originating document list. */
     private static class BundleRef {
         final int docId;
         final Bundle bundle;

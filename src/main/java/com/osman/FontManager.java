@@ -17,7 +17,7 @@ public class FontManager {
     public static int loadFontsFromDirectory(String fontFolderPath) throws IOException, FontFormatException {
         File fontDir = new File(fontFolderPath);
         if (!fontDir.isDirectory()) {
-            throw new IOException("Font klasörü bulunamadı veya bir klasör değil: " + fontFolderPath);
+            throw new IOException("Font folder not found or is not a directory." + fontFolderPath);
         }
 
         File[] fontFiles = fontDir.listFiles((dir, name) -> {
@@ -26,7 +26,7 @@ public class FontManager {
         });
 
         if (fontFiles == null || fontFiles.length == 0) {
-            throw new IOException("Belirtilen klasörde hiç font dosyası (.ttf, .otf) bulunamadı: " + fontFolderPath);
+            throw new IOException("No font files (.ttf, .otf) were found in the specified folder " + fontFolderPath);
         }
 
         int loadedCount = 0;
@@ -38,12 +38,12 @@ public class FontManager {
                 ge.registerFont(font);
                 loadedCount++;
             } catch (IOException | FontFormatException e) {
-                // Bozuk fontları atla, akışı kesme
+
             }
         }
 
         if (loadedCount == 0) {
-            throw new IOException("Klasördeki font dosyaları okunamadı veya hepsi bozuk.");
+            throw new IOException("The font files in the folder could not be read or are all corrupted.");
         }
         return loadedCount;
     }

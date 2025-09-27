@@ -1,5 +1,9 @@
 package com.osman;
 
+/**
+ * Holds the pixel measurements for mug canvases so rendering code can stay declarative.
+ * Instances describe overall canvas size, design areas, and crop rectangles for both sides.
+ */
 public class MugTemplate {
     final int FINAL_WIDTH;
     final int FINAL_HEIGHT;
@@ -11,6 +15,7 @@ public class MugTemplate {
     final int crop1X, crop1Y, crop1Width, crop1Height;
     final int crop2X, crop2Y, crop2Width, crop2Height;
 
+    /** Internal constructor used by the static factory helpers. */
     MugTemplate(int fw, int fh, int rs,
                 int a1x, int a1y, int a1w, int a1h,
                 int a2x, int a2y, int a2w, int a2h,
@@ -26,6 +31,7 @@ public class MugTemplate {
     }
 
     // 11 oz: mevcut üretim ölçüleriniz
+    /** Template tuned for the standard 11oz mug dimensions used in production. */
     static MugTemplate OZ11() {
         return new MugTemplate(
                 2580, 1410, 3200,
