@@ -10,11 +10,13 @@ import javax.swing.*;
 import javax.swing.border.EmptyBorder;
 import javax.swing.filechooser.FileNameExtensionFilter;
 import java.awt.*;
+import java.awt.datatransfer.DataFlavor;
+import java.awt.datatransfer.Transferable;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.*;
-import java.util.*;
 import java.util.List;
+import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -23,9 +25,13 @@ public class OrnamentSkuUI extends JFrame {
     private final DefaultListModel<Path> inputListModel = new DefaultListModel<>();
     private final JTextField outputDirField = new JTextField();
     private final JTextArea logArea = new JTextArea();
+    private JList<Path> inputList;
 
     private static final Pattern SKU_PATTERN = Pattern.compile("\\bSKU[0-9A-Z\\-]+(?:\\.[A-Z]+)?\\b");
     private static final Pattern ORDER_PATTERN = Pattern.compile("Order\\s*#\\s*:\\s*([0-9\\-]+)");
+    private static final Pattern QTY_INLINE = Pattern.compile("(?i)\\bqty\\b\\s*[:x-]?\\s*(\\d{1,3})");
+    private static final Pattern QTY_BEFORE_PRICE = Pattern.compile("(?s)\\b(\\d{1,3})\\s*\\$\\s*\\d"); // <-- güncel
+    private static final Pattern STANDALONE_INT = Pattern.compile("^\\s*(\\d{1,3})\\s*$");
     private static final String KW_PACKING_SLIP = "Packing Slip";
     private static final String KW_CONTINUED = "Continued on Next Page";
     private static final String KW_NOT_CONTINUED = "Not Continued on Next Page";
@@ -48,10 +54,10 @@ public class OrnamentSkuUI extends JFrame {
         root.add(north, BorderLayout.NORTH);
 
         JPanel inputPanel = new JPanel(new BorderLayout(8, 8));
-        inputPanel.setBorder(BorderFactory.createTitledBorder("Input PDFs"));
+        inputPanel.setBorder(BorderFactory.createTitledBorder("Input PDFs (Drag & Drop supported)"));
         north.add(inputPanel);
 
-        JList<Path> inputList = new JList<>(inputListModel);
+        inputList = new JList<>(inputListModel);
         inputList.setVisibleRowCount(6);
         inputList.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
         inputPanel.add(new JScrollPane(inputList), BorderLayout.CENTER);
@@ -66,7 +72,7 @@ public class OrnamentSkuUI extends JFrame {
         inputPanel.add(inputBtns, BorderLayout.SOUTH);
 
         JPanel outPanel = new JPanel(new BorderLayout(8, 8));
-        outPanel.setBorder(BorderFactory.createTitledBorder("Output Directory"));
+        outPanel.setBorder(BorderFactory.createTitledBorder("Output Directory (Drag a folder here)"));
         north.add(outPanel);
 
         outputDirField.setEditable(false);
@@ -91,6 +97,10 @@ public class OrnamentSkuUI extends JFrame {
         clearBtn.addActionListener(e -> inputListModel.clear());
         chooseOutBtn.addActionListener(e -> onChooseOutput());
         runBtn.addActionListener(e -> onRun());
+
+        inputList.setTransferHandler(new FileDropToListHandler());
+        outputDirField.setTransferHandler(new DirDropToFieldHandler());
+        root.setTransferHandler(new FileOrDirFallbackHandler());
 
         appendLog("Select merged PDFs and an output directory. Results will be written under: <output>/ready-orders/");
     }
@@ -207,6 +217,8 @@ public class OrnamentSkuUI extends JFrame {
                     appendLog("Wrote: MIX.pdf (" + mixBundles.size() + " bundles)");
                 }
 
+                renameSkuFilesWithCounts(outDir, skuIndex);
+
                 cleanDir(tmpRoot);
                 appendLog("Done.");
                 JOptionPane.showMessageDialog(this, "Finished.", "OK", JOptionPane.INFORMATION_MESSAGE);
@@ -219,10 +231,41 @@ public class OrnamentSkuUI extends JFrame {
         }).start();
     }
 
+    private void renameSkuFilesWithCounts(Path outDir, Map<String, List<BundleRef>> skuIndex) {
+        for (Map.Entry<String, List<BundleRef>> e : skuIndex.entrySet()) {
+            String sku = e.getKey();
+            int totalCount = 0;
+            for (BundleRef br : e.getValue()) {
+                totalCount += br.bundle.skuCounts.getOrDefault(sku, 0);
+            }
+            if (totalCount <= 0) totalCount = e.getValue().size();
+
+            String base = sanitize(sku);
+            Path oldFile = outDir.resolve(base + ".pdf");
+            if (!Files.exists(oldFile)) continue;
+
+            String targetName = "x" + totalCount + "-" + base + ".pdf";
+            Path target = outDir.resolve(targetName);
+
+            int suffix = 1;
+            while (Files.exists(target)) {
+                targetName = "x" + totalCount + "-" + base + "_" + suffix + ".pdf";
+                target = outDir.resolve(targetName);
+                suffix++;
+            }
+
+            try {
+                Files.move(oldFile, target, StandardCopyOption.ATOMIC_MOVE);
+                appendLog("Renamed: " + oldFile.getFileName() + " -> " + target.getFileName());
+            } catch (IOException ioe) {
+                appendLog("Rename failed for " + oldFile.getFileName() + ": " + ioe.getMessage());
+            }
+        }
+    }
+
     private void setUIEnabled(boolean enabled) {
         SwingUtilities.invokeLater(() -> {
             for (Component c : getContentPane().getComponents()) c.setEnabled(enabled);
-            // Keep log scroll usable
             logArea.setEnabled(true);
         });
     }
@@ -252,6 +295,7 @@ public class OrnamentSkuUI extends JFrame {
 
     private static List<Bundle> buildBundles(PDDocument doc, int docId) throws IOException {
         PDFTextStripper stripper = new PDFTextStripper();
+        stripper.setSortByPosition(true); // kritik: Qty sütunu gibi sağda duran değerleri doğru sırala
         int total = doc.getNumberOfPages();
 
         List<Bundle> result = new ArrayList<>();
@@ -283,7 +327,13 @@ public class OrnamentSkuUI extends JFrame {
                 if (current != null) {
                     current.slipPageIndices.add(i);
                     current.orderId = firstMatch(ORDER_PATTERN, text, current.orderId);
-                    current.skus.addAll(extractSkus(text));
+
+                    Map<String, Integer> occ = countSkuOccurrences(text);
+                    current.skus.addAll(occ.keySet());
+                    for (Map.Entry<String, Integer> en : occ.entrySet()) {
+                        current.skuCounts.merge(en.getKey(), en.getValue(), Integer::sum);
+                    }
+
                     prevContinued = hasCont;
                     if (hasNotCont) {
                         result.add(current);
@@ -334,13 +384,71 @@ public class OrnamentSkuUI extends JFrame {
         mu.mergeDocuments(MemoryUsageSetting.setupMainMemoryOnly());
     }
 
-    private static Set<String> extractSkus(String text) {
-        Set<String> out = new LinkedHashSet<>();
-        Matcher m = SKU_PATTERN.matcher(text);
-        while (m.find()) out.add(m.group());
-        return out;
-    }
 
+
+    private static Map<String, Integer> countSkuOccurrences(String text) {
+        Map<String, Integer> totals = new LinkedHashMap<>();
+
+        List<int[]> spans = new ArrayList<>();
+        Matcher m = SKU_PATTERN.matcher(text);
+        while (m.find()) spans.add(new int[]{m.start(), m.end()});
+        if (spans.isEmpty()) return totals;
+
+        for (int i = 0; i < spans.size(); i++) {
+            int start = spans.get(i)[0];
+            int skuEnd = spans.get(i)[1];
+            int end = (i + 1 < spans.size()) ? spans.get(i + 1)[0] : text.length();
+
+            int cut = end;
+            int p;
+            p = text.indexOf("Grand Total", skuEnd); if (p >= 0 && p < cut) cut = p;
+            p = text.indexOf("Not Continued on Next Page", skuEnd); if (p >= 0 && p < cut) cut = p;
+            p = text.indexOf("Continued on Next Page", skuEnd); if (p >= 0 && p < cut) cut = p;
+
+            String block = text.substring(start, cut);
+
+            Matcher mSku = SKU_PATTERN.matcher(block);
+            if (!mSku.find()) continue;
+            String sku = mSku.group();
+
+            int qty = 1;
+
+            Matcher q1 = QTY_INLINE.matcher(block);
+            if (q1.find()) {
+                try { qty = Math.max(1, Integer.parseInt(q1.group(1))); } catch (NumberFormatException ignored) {}
+            } else {
+                Matcher q2 = QTY_BEFORE_PRICE.matcher(block);
+                if (q2.find()) {
+                    try { qty = Math.max(1, Integer.parseInt(q2.group(1))); } catch (NumberFormatException ignored) {}
+                } else {
+                    int repeats = 0;
+                    Matcher again = SKU_PATTERN.matcher(block);
+                    while (again.find()) repeats++;
+                    if (repeats >= 2) {
+                        qty = repeats;
+                    } else {
+                        String[] lines = block.split("\\R+");
+                        for (String ln : lines) {
+                            String t = ln.trim();
+                            if (t.isEmpty()) continue;
+                            if (t.contains("/")) continue;
+                            if (t.toLowerCase().contains("sku")) continue;
+                            if (t.startsWith("Grand Total") || t.startsWith("Not Continued") || t.startsWith("Continued")) break;
+                            Matcher solo = STANDALONE_INT.matcher(t);
+                            if (solo.matches()) {
+                                try {
+                                    int n = Integer.parseInt(solo.group(1));
+                                    if (n >= 2 && n <= 999) { qty = n; break; }
+                                } catch (NumberFormatException ignored) {}
+                            }
+                        }
+                    }
+                }
+            }
+            totals.merge(sku, qty, Integer::sum);
+        }
+        return totals;
+    }
     private static String firstMatch(Pattern p, String text, String fallback) {
         Matcher m = p.matcher(text);
         if (m.find()) return m.group(1);
@@ -365,6 +473,7 @@ public class OrnamentSkuUI extends JFrame {
         Integer labelPageIndex;
         final List<Integer> slipPageIndices = new ArrayList<>();
         final Set<String> skus = new LinkedHashSet<>();
+        final Map<String, Integer> skuCounts = new LinkedHashMap<>();
         String orderId;
         Bundle(int docId) { this.docId = docId; }
     }
@@ -373,5 +482,96 @@ public class OrnamentSkuUI extends JFrame {
         final int docId;
         final Bundle bundle;
         BundleRef(int docId, Bundle bundle) { this.docId = docId; this.bundle = bundle; }
+    }
+
+    private class FileDropToListHandler extends TransferHandler {
+        public boolean canImport(TransferSupport support) {
+            return support.isDataFlavorSupported(DataFlavor.javaFileListFlavor);
+        }
+        @SuppressWarnings("unchecked")
+        public boolean importData(TransferSupport support) {
+            if (!canImport(support)) return false;
+            try {
+                Transferable t = support.getTransferable();
+                List<File> files = (List<File>) t.getTransferData(DataFlavor.javaFileListFlavor);
+                int added = 0;
+                for (File f : files) {
+                    if (f.isDirectory()) {
+                        try (var walk = Files.walk(f.toPath())) {
+                            for (Path p : (Iterable<Path>) walk::iterator) {
+                                if (Files.isRegularFile(p) && p.toString().toLowerCase().endsWith(".pdf")) {
+                                    inputListModel.addElement(p);
+                                    added++;
+                                }
+                            }
+                        }
+                    } else if (f.getName().toLowerCase().endsWith(".pdf")) {
+                        inputListModel.addElement(f.toPath());
+                        added++;
+                    }
+                }
+                if (added > 0) appendLog("Dropped " + added + " PDF(s).");
+                return added > 0;
+            } catch (Exception ex) {
+                appendLog("Drop error: " + ex.getMessage());
+                return false;
+            }
+        }
+    }
+
+    private class DirDropToFieldHandler extends TransferHandler {
+        public boolean canImport(TransferSupport support) {
+            return support.isDataFlavorSupported(DataFlavor.javaFileListFlavor);
+        }
+        @SuppressWarnings("unchecked")
+        public boolean importData(TransferSupport support) {
+            if (!canImport(support)) return false;
+            try {
+                Transferable t = support.getTransferable();
+                List<File> files = (List<File>) t.getTransferData(DataFlavor.javaFileListFlavor);
+                for (File f : files) {
+                    if (f.isDirectory()) {
+                        outputDirField.setText(f.getAbsolutePath());
+                        appendLog("Output directory set via drop: " + f.getAbsolutePath());
+                        return true;
+                    }
+                }
+                appendLog("Drop a folder to set output directory.");
+                return false;
+            } catch (Exception ex) {
+                appendLog("Drop error: " + ex.getMessage());
+                return false;
+            }
+        }
+    }
+
+    private class FileOrDirFallbackHandler extends TransferHandler {
+        public boolean canImport(TransferSupport support) {
+            return support.isDataFlavorSupported(DataFlavor.javaFileListFlavor);
+        }
+        @SuppressWarnings("unchecked")
+        public boolean importData(TransferSupport support) {
+            if (!canImport(support)) return false;
+            try {
+                Transferable t = support.getTransferable();
+                List<File> files = (List<File>) t.getTransferData(DataFlavor.javaFileListFlavor);
+                boolean any = false;
+                for (File f : files) {
+                    if (f.isDirectory()) {
+                        outputDirField.setText(f.getAbsolutePath());
+                        appendLog("Output directory set via drop: " + f.getAbsolutePath());
+                        any = true;
+                    } else if (f.getName().toLowerCase().endsWith(".pdf")) {
+                        inputListModel.addElement(f.toPath());
+                        any = true;
+                    }
+                }
+                if (any) appendLog("Drop handled on window.");
+                return any;
+            } catch (Exception ex) {
+                appendLog("Drop error: " + ex.getMessage());
+                return false;
+            }
+        }
     }
 }

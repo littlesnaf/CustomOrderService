@@ -15,9 +15,6 @@ import java.util.regex.Pattern;
 public class OrnamentSkuSplitter {
 
     private static final String[] INPUT_PATHS = new String[] {
-            "/Users/murattuncel/Desktop/ORN 9.26.25/final_2025-09-26_10:25:15.pdf",
-            "/Users/murattuncel/Desktop/ORN 9.26.25/final_2025-09-26_14/37/28.pdf",
-            "/Users/murattuncel/Desktop/ORN 9.26.25/final_2025-09-26_11/30/41.pdf"
     };
 
     private static final Pattern SKU_PATTERN = Pattern.compile("\\bSKU[0-9A-Z\\-]+(?:\\.[A-Z]+)?\\b");
