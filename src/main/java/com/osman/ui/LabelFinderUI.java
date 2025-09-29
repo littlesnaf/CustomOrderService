@@ -10,14 +10,9 @@ import javax.imageio.ImageIO;
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
 import java.awt.*;
-import java.awt.event.ItemEvent;
-import java.awt.event.WindowAdapter;
-import java.awt.event.WindowEvent;
+import java.awt.event.*;
 import java.awt.image.BufferedImage;
-import java.awt.print.PageFormat;
-import java.awt.print.Printable;
-import java.awt.print.PrinterException;
-import java.awt.print.PrinterJob;
+import java.awt.print.*;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.*;
@@ -36,14 +31,12 @@ import java.util.stream.Stream;
  * The class coordinates filesystem scanning, PDF rendering, photo previews, and printing.
  */
 public class LabelFinderUI extends JFrame {
-
     /** Holds the document and page number where a label was rendered. */
     private static class LabelLocation {
         final File pdfFile;
         final int pageNumber;
         LabelLocation(File pdfFile, int pageNumber) { this.pdfFile = pdfFile; this.pageNumber = pageNumber; }
     }
-    /** Groups a PDF with its relevant 1-based pages for either labels or packing slips. */
     private static class PageGroup {
         final File file;
         final List<Integer> pages;
@@ -57,7 +50,6 @@ public class LabelFinderUI extends JFrame {
     private final JCheckBox bulkModeCheck;
     private final JLabel statusLabel;
 
-
     private final ImagePanel combinedPanel;
 
     private final DefaultListModel<LabelRef> labelRefsModel;
@@ -68,13 +60,15 @@ public class LabelFinderUI extends JFrame {
 
     private File baseDir;
 
-    private Map<String, PageGroup> labelGroups; // Shipping labels (PdfLinker)
-    private Map<String, PageGroup> slipGroups;  // Packing slips (PackSlipExtractor)
+    private Map<String, PageGroup> labelGroups;
+    private Map<String, PageGroup> slipGroups;
 
     private LabelLocation currentLabelLocation;
     private BufferedImage combinedPreview;
 
-    /** Builds the full window layout, registers listeners, and initializes UI state. */
+    private java.util.List<BufferedImage> labelPagesToPrint;
+    private java.util.List<BufferedImage> slipPagesToPrint;
+
     public LabelFinderUI() {
         setTitle("Label & Photo Viewer");
         setDefaultCloseOperation(JFrame.DO_NOTHING_ON_CLOSE);
@@ -97,7 +91,6 @@ public class LabelFinderUI extends JFrame {
         top.add(chooseBaseBtn);
         top.add(bulkModeCheck);
 
-        // Sol üst liste panelleri
         labelRefsModel = new DefaultListModel<>();
         labelRefsList = new JList<>(labelRefsModel);
         labelRefsList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
@@ -133,7 +126,6 @@ public class LabelFinderUI extends JFrame {
         listsPanel.add(labelsScroll);
         listsPanel.add(photosScroll);
 
-        // Tek başlıklı, tek panel: Shipping Label & Slip
         combinedPanel = new ImagePanel();
         JScrollPane combinedScroll = new JScrollPane(combinedPanel);
         combinedScroll.setBorder(BorderFactory.createTitledBorder("Shipping Label & Slip"));
@@ -148,7 +140,7 @@ public class LabelFinderUI extends JFrame {
         JSplitPane mainSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, leftPanel, photoViewScroll);
         mainSplit.setResizeWeight(0.45);
 
-        statusLabel = new JLabel("Select base folder → choose mode → (if single) enter Order ID → Find.");
+        statusLabel = new JLabel("Scan barcode → prints automatically. Choose base folder first.");
 
         setLayout(new BorderLayout());
         add(top, BorderLayout.NORTH);
@@ -162,14 +154,23 @@ public class LabelFinderUI extends JFrame {
         bulkModeCheck.addItemListener(e -> onModeChanged(e.getStateChange() == ItemEvent.SELECTED));
         labelRefsList.addListSelectionListener(e -> { if (!e.getValueIsAdjusting()) renderSelectedBulkPage(); });
         photosList.addListSelectionListener(e -> { if (!e.getValueIsAdjusting()) renderSelectedPhotos(); });
-        addWindowListener(new WindowAdapter() { @Override public void windowClosing(WindowEvent e) { cleanupAndExit(); } });
+
+        addWindowListener(new WindowAdapter() {
+            @Override public void windowClosing(WindowEvent e) { cleanupAndExit(); }
+            @Override public void windowOpened(WindowEvent e) { orderIdField.requestFocusInWindow(); }
+            @Override public void windowActivated(WindowEvent e) { orderIdField.requestFocusInWindow(); }
+        });
+
+        orderIdField.addFocusListener(new FocusAdapter() {
+            @Override public void focusGained(FocusEvent e) {
+                SwingUtilities.invokeLater(orderIdField::selectAll);
+            }
+        });
+
         addPrintShortcut(getRootPane());
-
-
         applyModeUI();
     }
 
-    /** Toggles widgets and reindexes files when the user switches between single and bulk modes. */
     private void onModeChanged(boolean bulk) {
         applyModeUI();
         clearAllViews();
@@ -179,7 +180,6 @@ public class LabelFinderUI extends JFrame {
         }
     }
 
-    /** Updates UI enablement rules based on the currently selected mode. */
     private void applyModeUI() {
         boolean bulk = bulkModeCheck.isSelected();
         orderIdField.setEnabled(!bulk);
@@ -187,7 +187,6 @@ public class LabelFinderUI extends JFrame {
         labelRefsList.setEnabled(bulk);
     }
 
-    /** Resets previews, selections, and buttons so the next lookup starts clean. */
     private void clearAllViews() {
         combinedPreview = null;
         combinedPanel.setImage(null);
@@ -196,73 +195,54 @@ public class LabelFinderUI extends JFrame {
         photosModel.clear();
         currentLabelLocation = null;
         printButton.setEnabled(false);
+        labelPagesToPrint = new ArrayList<>();
+        slipPagesToPrint  = new ArrayList<>();
     }
 
-    /** Prompts the user to select the root directory that contains order PDFs and photos. */
     private void chooseBaseFolder() {
         JFileChooser chooser = new JFileChooser(baseDir);
         chooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
         chooser.setDialogTitle("Choose Base Folder (e.g., 'Orders')");
-
-        if (chooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) {
-            return;
-        }
+        if (chooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) return;
 
         File selectedDir = chooser.getSelectedFile();
-        if (selectedDir == null || !selectedDir.isDirectory()) {
-            return;
-        }
+        if (selectedDir == null || !selectedDir.isDirectory()) return;
 
         baseDir = selectedDir;
         clearAllViews();
 
-
         setUIEnabled(false);
-        statusLabel.setText("Klasör taranıyor, lütfen bekleyin...");
-
+        statusLabel.setText("Scanning folder...");
 
         SwingWorker<Void, Void> worker = new SwingWorker<>() {
-            @Override
-            protected Void doInBackground() throws Exception {
-
-                if (bulkModeCheck.isSelected()) {
-                    populateBulkFromBase();
-                } else {
-                    buildLabelAndSlipIndices();
-                }
+            @Override protected Void doInBackground() {
+                if (bulkModeCheck.isSelected()) populateBulkFromBase();
+                else buildLabelAndSlipIndices();
                 return null;
             }
-
-            @Override
-            protected void done() {
-
+            @Override protected void done() {
                 try {
                     get();
-
                     if (bulkModeCheck.isSelected()) {
-                        statusLabel.setText("BULK modu yüklendi: " + labelRefsModel.size() + " sayfa, " + photosModel.size() + " fotoğraf.");
+                        statusLabel.setText("BULK loaded: " + labelRefsModel.size() + " pages, " + photosModel.size() + " photos.");
                     } else {
-                        statusLabel.setText("İndeksleme tamamlandı: " + labelGroups.size() + " etiket, " + slipGroups.size() + " irsaliye.");
+                        statusLabel.setText("Indexed " + labelGroups.size() + " labels, " + slipGroups.size() + " packing slips.");
                     }
-
                 } catch (Exception e) {
-
-                    statusLabel.setText("Hata: " + e.getCause().getMessage());
+                    statusLabel.setText("Error: " + e.getCause().getMessage());
                     JOptionPane.showMessageDialog(LabelFinderUI.this,
-                            "Dosyalar taranırken bir hata oluştu:\n" + e.getCause().getMessage(),
-                            "Hata", JOptionPane.ERROR_MESSAGE);
+                            "Error while scanning:\n" + e.getCause().getMessage(),
+                            "Error", JOptionPane.ERROR_MESSAGE);
                 } finally {
-
                     setUIEnabled(true);
+                    orderIdField.requestFocusInWindow();
+                    orderIdField.selectAll();
                 }
             }
         };
-
         worker.execute();
     }
 
-
-    /** Enables or disables user interaction while long-running background work executes. */
     private void setUIEnabled(boolean enabled) {
         findButton.setEnabled(enabled);
         chooseBaseBtn.setEnabled(enabled);
@@ -272,7 +252,6 @@ public class LabelFinderUI extends JFrame {
         photosList.setEnabled(enabled);
     }
 
-    /** Scans PDFs under the base directory and maps order IDs to the pages that contain them. */
     private void buildLabelAndSlipIndices() {
         labelGroups = new HashMap<>();
         slipGroups  = new HashMap<>();
@@ -290,9 +269,9 @@ public class LabelFinderUI extends JFrame {
             statusLabel.setText("Error reading PDFs: " + e.getMessage());
             return;
         }
+
         Pattern packingSlipName = Pattern.compile("(?i)^Amazon\\.pdf$");
         Pattern packingSlipFolder = Pattern.compile("(?i)^(?:\\d{2}\\s*[PRWB]|mix).*");
-
 
         for (File pdf : pdfs) {
             String name = pdf.getName();
@@ -300,7 +279,7 @@ public class LabelFinderUI extends JFrame {
             String parentName = parent != null ? parent.getName() : "";
             boolean looksLikePackingSlip =
                     packingSlipName.matcher(name).matches() ||
-                    (name.equalsIgnoreCase("Amazon.pdf") && packingSlipFolder.matcher(parentName).matches());
+                            (name.equalsIgnoreCase("Amazon.pdf") && packingSlipFolder.matcher(parentName).matches());
 
             if (looksLikePackingSlip) {
                 try {
@@ -311,7 +290,7 @@ public class LabelFinderUI extends JFrame {
                 } catch (IOException ignored) {}
             } else {
                 try {
-                    Map<String, List<Integer>> m = PdfLinker.buildOrderIdToPagesMap(pdf); // shipping label sayfaları
+                    Map<String, List<Integer>> m = PdfLinker.buildOrderIdToPagesMap(pdf);
                     for (Map.Entry<String, List<Integer>> e : m.entrySet()) {
                         labelGroups.put(e.getKey(), new PageGroup(pdf, new ArrayList<>(e.getValue())));
                     }
@@ -322,17 +301,19 @@ public class LabelFinderUI extends JFrame {
         statusLabel.setText("Indexed " + labelGroups.size() + " labels, " + slipGroups.size() + " packing slips.");
     }
 
-    /** Entry point for the Find button and ENTER key in the order field. */
     private void onFind() {
-        if (bulkModeCheck.isSelected()) populateBulkFromBase();
-        else findSingleOrderFlow();
+        if (bulkModeCheck.isSelected()) {
+            populateBulkFromBase();
+            return;
+        }
+        findSingleOrderFlow();
     }
 
-    /** Single-order mode: renders label + slip preview and finds matching photos for the entered ID. */
     private void findSingleOrderFlow() {
         String orderId = orderIdField.getText().trim();
         if (orderId.isEmpty()) {
             statusLabel.setText("Please enter an Order ID.");
+            orderIdField.requestFocusInWindow();
             return;
         }
         combinedPreview = null;
@@ -342,9 +323,14 @@ public class LabelFinderUI extends JFrame {
         BufferedImage labelImg = null;
         BufferedImage slipImg  = null;
 
+        labelPagesToPrint = new ArrayList<>();
+        slipPagesToPrint  = new ArrayList<>();
+
         PageGroup lg = (labelGroups != null) ? labelGroups.get(orderId) : null;
         if (lg != null) {
-            labelImg = renderPdfPagesMerged(lg.file, lg.pages, 150);
+            java.util.List<BufferedImage> labelPages = renderPdfPagesList(lg.file, lg.pages, 150);
+            labelPagesToPrint.addAll(labelPages);
+            labelImg = stackMany(withBorder(labelPages, Color.RED, 8), 12, Color.WHITE);
             currentLabelLocation = new LabelLocation(lg.file, lg.pages.get(0));
         } else {
             statusLabel.setText("Shipping label not found for: " + orderId);
@@ -352,24 +338,19 @@ public class LabelFinderUI extends JFrame {
 
         PageGroup sg = (slipGroups != null) ? slipGroups.get(orderId) : null;
         if (sg != null) {
-            slipImg = renderPdfPagesMerged(sg.file, sg.pages, 150);
+            java.util.List<BufferedImage> slipPages = renderPdfPagesList(sg.file, sg.pages, 150);
+            slipPagesToPrint.addAll(slipPages);
+            slipImg = stackMany(withBorder(slipPages, new Color(0,120,215), 8), 12, Color.WHITE);
         } else if (lg != null) {
             statusLabel.setText("Packing slip not found for: " + orderId);
         }
 
-
-        combinedPreview = stackImagesVertically(
-                labelImg == null ? null : addBorder(labelImg, Color.RED, 8),
-                slipImg  == null ? null : addBorder(slipImg, new Color(0,120,215), 8),
-                12, Color.WHITE
-        );
-
+        combinedPreview = stackImagesVertically(labelImg, slipImg, 12, Color.WHITE);
         if (combinedPreview != null) {
             combinedPanel.setImage(combinedPreview);
             printButton.setEnabled(true);
         }
 
-        // Foto eşleştirme
         photosModel.clear();
         photoView.setImages(null, null);
         if (baseDir != null && baseDir.isDirectory()) {
@@ -379,16 +360,98 @@ public class LabelFinderUI extends JFrame {
         }
         selectAndPreviewFirstPhotos();
 
-        if (photosModel.isEmpty()) {
-            if (currentLabelLocation != null) statusLabel.setText("Label found, but NO matching photo found for: " + orderId);
-        } else if (photosModel.size() == 1) {
-            statusLabel.setText("Auto-selected 1 photo for preview.");
+        try {
+            if (baseDir != null && baseDir.isDirectory()) {
+                List<Path> designs = findReadyDesignPhotos(baseDir.toPath(), orderId);
+                if (!designs.isEmpty()) {
+                    int ok = 0;
+                    for (Path p : designs) {
+                        if (addUserTag(p, "Green")) ok++;   // macOS İngilizce
+                    }
+                    if (ok > 0) {
+                        statusLabel.setText("Ready designs tagged: Green (" + ok + "/" + designs.size() + ").");
+                    } else {
+                        statusLabel.setText("Tried to tag " + designs.size() + " item(s) Green, none confirmed. Check permissions.");
+                    }
+                } else {
+                    statusLabel.setText("No ready design found to tag for: " + orderId);
+                }
+            }
+        } catch (IOException ioex) {
+            statusLabel.setText("Tagging skipped (IO error).");
+        }
+        if (!labelPagesToPrint.isEmpty() || !slipPagesToPrint.isEmpty()) {
+            printCombinedDirect();
+            orderIdField.setText("");
+            orderIdField.requestFocusInWindow();
         } else {
-            statusLabel.setText("Auto-selected first 2 photos for preview.");
+            orderIdField.requestFocusInWindow();
+            orderIdField.selectAll();
+        }
+
+        if (photosModel.isEmpty()) {
+            if (currentLabelLocation != null) statusLabel.setText("Printed. No matching photo found for: " + orderId);
+        } else if (photosModel.size() == 1) {
+            statusLabel.setText("Printed. Auto-selected 1 photo for preview.");
+        } else {
+            statusLabel.setText("Printed. Auto-selected first 2 photos for preview.");
         }
     }
 
-    /** Renders one or more PDF pages into a single tall image so the user can preview the document. */
+    private java.util.List<BufferedImage> renderPdfPagesList(File pdf, java.util.List<Integer> pages1Based, int dpi) {
+        java.util.List<BufferedImage> out = new ArrayList<>();
+        if (pdf == null || pages1Based == null || pages1Based.isEmpty()) return out;
+        try (PDDocument doc = PDDocument.load(pdf)) {
+            PDFRenderer renderer = new PDFRenderer(doc);
+            for (int p : pages1Based) {
+                BufferedImage img = renderer.renderImageWithDPI(p - 1, dpi);
+                out.add(img);
+            }
+        } catch (IOException ignored) {}
+        return out;
+    }
+
+    private static BufferedImage stackMany(java.util.List<BufferedImage> images, int gap, Color bg) {
+        if (images == null || images.isEmpty()) return null;
+        int wMax = 0, totalH = 0, count = 0;
+        for (BufferedImage im : images) {
+            if (im == null) continue;
+            wMax = Math.max(wMax, im.getWidth());
+            totalH += im.getHeight();
+            count++;
+        }
+        if (wMax == 0 || totalH == 0) return null;
+        totalH += gap * Math.max(0, count - 1);
+
+        BufferedImage out = new BufferedImage(wMax, totalH, BufferedImage.TYPE_INT_RGB);
+        Graphics2D g = out.createGraphics();
+        g.setColor(bg);
+        g.fillRect(0, 0, wMax, totalH);
+
+        int y = 0;
+        int idx = 0;
+        for (BufferedImage im : images) {
+            if (im == null) continue;
+            g.drawImage(im, 0, y, null);
+            y += im.getHeight();
+            if (idx < count - 1) {
+                g.setColor(bg);
+                g.fillRect(0, y, wMax, gap);
+                y += gap;
+            }
+            idx++;
+        }
+        g.dispose();
+        return out;
+    }
+
+    private static java.util.List<BufferedImage> withBorder(java.util.List<BufferedImage> images, Color color, int size) {
+        java.util.List<BufferedImage> out = new ArrayList<>();
+        if (images == null) return out;
+        for (BufferedImage im : images) { out.add(addBorder(im, color, size)); }
+        return out;
+    }
+
     private BufferedImage renderPdfPagesMerged(File pdf, List<Integer> pages1Based, int dpi) {
         if (pages1Based == null || pages1Based.isEmpty()) return null;
         try (PDDocument doc = PDDocument.load(pdf)) {
@@ -417,7 +480,6 @@ public class LabelFinderUI extends JFrame {
         }
     }
 
-    /** Vertically stacks two images with a configurable gap and background color. */
     private static BufferedImage stackImagesVertically(BufferedImage top, BufferedImage bottom, int gap, Color bg) {
         if (top == null && bottom == null) return null;
         if (top == null) return bottom;
@@ -434,15 +496,22 @@ public class LabelFinderUI extends JFrame {
         return out;
     }
 
-    /** Sends the combined preview image to the default printer if possible. */
     private void printCombined() {
-        if (combinedPreview == null) {
-            statusLabel.setText("Nothing to print.");
-            return;
+        java.util.List<BufferedImage> pages = new ArrayList<>();
+        if (labelPagesToPrint != null) pages.addAll(labelPagesToPrint);
+        if (slipPagesToPrint  != null) pages.addAll(slipPagesToPrint);
+        if (pages.isEmpty()) {
+            if (combinedPreview == null) { statusLabel.setText("Nothing to print."); return; }
+            pages.add(combinedPreview);
         }
+
         PrinterJob job = PrinterJob.getPrinterJob();
-        job.setJobName("Shipping Label & Slip");
-        job.setPrintable(new BufferedImagePrintable(combinedPreview));
+        job.setJobName("Shipping Label & Slip (4x6)");
+        BufferedImage first = pages.get(0);
+        boolean landscape = first.getWidth() > first.getHeight();
+        PageFormat pf = create4x6PageFormat(job, landscape);
+        job.setPrintable(new MultiPagePrintable(pages), pf);
+
         if (job.printDialog()) {
             try {
                 job.print();
@@ -456,13 +525,38 @@ public class LabelFinderUI extends JFrame {
         }
     }
 
-    /** Disposes Swing resources and terminates the JVM. */
+    private boolean printCombinedDirect() {
+        java.util.List<BufferedImage> pages = new ArrayList<>();
+        if (labelPagesToPrint != null) pages.addAll(labelPagesToPrint);
+        if (slipPagesToPrint  != null) pages.addAll(slipPagesToPrint);
+        if (pages.isEmpty()) {
+            if (combinedPreview == null) { statusLabel.setText("Nothing to print."); return false; }
+            pages.add(combinedPreview);
+        }
+
+        PrinterJob job = PrinterJob.getPrinterJob();
+        job.setJobName("Shipping Label & Slip (4x6) - Direct");
+        BufferedImage first = pages.get(0);
+        boolean landscape = first.getWidth() > first.getHeight();
+        PageFormat pf = create4x6PageFormat(job, landscape);
+        job.setPrintable(new MultiPagePrintable(pages), pf);
+
+        try {
+            job.print();
+            statusLabel.setText("Printed (direct).");
+            return true;
+        } catch (PrinterException e) {
+            JOptionPane.showMessageDialog(this, "Direct print failed.\n" + e.getMessage(),
+                    "Print Error", JOptionPane.ERROR_MESSAGE);
+            return false;
+        }
+    }
+
     private void cleanupAndExit() {
         dispose();
         System.exit(0);
     }
 
-    /** Populates the bulk mode lists with every PDF page and photo discovered under the base directory. */
     private void populateBulkFromBase() {
         if (baseDir == null || !baseDir.isDirectory()) {
             statusLabel.setText("Select a valid base folder for BULK.");
@@ -503,7 +597,6 @@ public class LabelFinderUI extends JFrame {
         statusLabel.setText("BULK loaded: " + labelRefsModel.size() + " pages, " + photosModel.size() + " photos.");
     }
 
-    /** Bulk mode helper that renders the selected PDF page preview and enables printing. */
     private void renderSelectedBulkPage() {
         LabelRef ref = labelRefsList.getSelectedValue();
         if (ref == null) {
@@ -511,6 +604,8 @@ public class LabelFinderUI extends JFrame {
             combinedPanel.setImage(null);
             currentLabelLocation = null;
             printButton.setEnabled(false);
+            labelPagesToPrint = new ArrayList<>();
+            slipPagesToPrint  = new ArrayList<>();
             return;
         }
         currentLabelLocation = new LabelLocation(ref.file, ref.page1Based);
@@ -520,15 +615,19 @@ public class LabelFinderUI extends JFrame {
             combinedPreview = addBorder(img, Color.DARK_GRAY, 8);
             combinedPanel.setImage(combinedPreview);
             printButton.setEnabled(true);
+            labelPagesToPrint = new ArrayList<>();
+            slipPagesToPrint  = new ArrayList<>();
+            labelPagesToPrint.add(img);
         } catch (IOException e) {
             combinedPreview = null;
             combinedPanel.setImage(null);
             currentLabelLocation = null;
             printButton.setEnabled(false);
+            labelPagesToPrint = new ArrayList<>();
+            slipPagesToPrint  = new ArrayList<>();
         }
     }
 
-    /** Loads up to two selected photos and draws them side by side in the preview pane. */
     private void renderSelectedPhotos() {
         List<Path> selected = photosList.getSelectedValuesList();
         if (selected == null || selected.isEmpty()) {
@@ -552,7 +651,6 @@ public class LabelFinderUI extends JFrame {
         }
     }
 
-    /** Recursively looks for image files under the root whose name contains the given order ID. */
     private static List<Path> findAllMatchingPhotos(Path root, String orderId) throws IOException {
         final String needle = orderId.toLowerCase(Locale.ROOT);
         List<Path> results = new ArrayList<>();
@@ -566,25 +664,16 @@ public class LabelFinderUI extends JFrame {
         results.sort(Comparator.comparing(a -> a.getFileName().toString(), String.CASE_INSENSITIVE_ORDER));
         return results;
     }
-    /** Binds Cmd/Ctrl+P to the print action so the workflow matches user expectations. */
+
     private void addPrintShortcut(JRootPane rootPane) {
-        // macOS: CMD, Windows/Linux: CTRL
         int mask = Toolkit.getDefaultToolkit().getMenuShortcutKeyMaskEx();
         KeyStroke ks = KeyStroke.getKeyStroke(KeyEvent.VK_P, mask);
-
-        rootPane.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW)
-                .put(ks, "printCombinedAction");
-
+        rootPane.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(ks, "printCombinedAction");
         rootPane.getActionMap().put("printCombinedAction", new AbstractAction() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-
-                printCombined();
-            }
+            @Override public void actionPerformed(ActionEvent e) { printCombined(); }
         });
     }
 
-    /** Wraps the given image in a solid border to make previews easier to see. */
     private static BufferedImage addBorder(BufferedImage src, Color color, int size) {
         if (src == null) return null;
         int w = src.getWidth() + size * 2;
@@ -594,16 +683,15 @@ public class LabelFinderUI extends JFrame {
         g.setColor(Color.WHITE);
         g.fillRect(0, 0, w, h);
         g.setColor(color);
-        g.fillRect(0, 0, w, size);            // top
-        g.fillRect(0, h - size, w, size);     // bottom
-        g.fillRect(0, 0, size, h);            // left
-        g.fillRect(w - size, 0, size, h);     // right
+        g.fillRect(0, 0, w, size);
+        g.fillRect(0, h - size, w, size);
+        g.fillRect(0, 0, size, h);
+        g.fillRect(w - size, 0, size, h);
         g.drawImage(src, size, size, null);
         g.dispose();
         return out;
     }
 
-    /** Simple scroll-friendly panel that keeps a single image centered. */
     private static class ImagePanel extends JPanel {
         private BufferedImage image;
         public void setImage(BufferedImage img) { this.image = img; revalidate(); repaint(); }
@@ -619,20 +707,11 @@ public class LabelFinderUI extends JFrame {
         }
     }
 
-    /** Displays one or two photos; when two are present it splits the available width evenly. */
     private static class DualImagePanel extends JPanel {
         private BufferedImage imgA;
         private BufferedImage imgB;
-
-        public void setImages(BufferedImage a, BufferedImage b) {
-            this.imgA = a;
-            this.imgB = b;
-            revalidate();
-            repaint();
-        }
-
-        @Override
-        protected void paintComponent(Graphics g) {
+        public void setImages(BufferedImage a, BufferedImage b) { this.imgA = a; this.imgB = b; revalidate(); repaint(); }
+        @Override protected void paintComponent(Graphics g) {
             super.paintComponent(g);
             if (imgA == null && imgB == null) return;
             Graphics2D g2 = (Graphics2D) g;
@@ -650,7 +729,6 @@ public class LabelFinderUI extends JFrame {
                 g2.fillRect(wL - 1, 0, 2, panelHeight);
             }
         }
-
         private void drawFitted(Graphics2D g2, BufferedImage img, int x, int y, int w, int h) {
             if (img == null) return;
             double scale = Math.min((double) w / img.getWidth(), (double) h / img.getHeight());
@@ -662,7 +740,6 @@ public class LabelFinderUI extends JFrame {
         }
     }
 
-    /** Lightweight list entry that remembers the source file and 1-based page index. */
     private static class LabelRef {
         final File file;
         final int page1Based;
@@ -670,47 +747,159 @@ public class LabelFinderUI extends JFrame {
         String toDisplayString() { return file.getName() + "  —  p." + page1Based; }
         @Override public String toString() { return toDisplayString(); }
     }
-    /** Auto-selects the first photo(s) so operators see an immediate preview after a lookup. */
-    private void selectAndPreviewFirstPhotos() {
-        if (photosModel.isEmpty()) {
-            photoView.setImages(null, null);
-            return;
+
+    private static class MultiPagePrintable implements Printable {
+        private final java.util.List<BufferedImage> pages;
+        MultiPagePrintable(java.util.List<BufferedImage> pages) {
+            this.pages = pages == null ? java.util.Collections.emptyList() : pages;
         }
-        int last = Math.min(1, photosModel.size() - 1); // 1 veya 2 fotoğraf
-        photosList.setSelectionInterval(0, last);
-        renderSelectedPhotos();
-    }
-
-    /** Printable adapter that scales the combined preview to the printer's imageable area. */
-    private static class BufferedImagePrintable implements Printable {
-        private final BufferedImage img;
-        BufferedImagePrintable(BufferedImage img) { this.img = img; }
-
         @Override
         public int print(Graphics g, PageFormat pf, int pageIndex) throws PrinterException {
-            if (pageIndex > 0) return NO_SUCH_PAGE;
+            if (pageIndex < 0 || pageIndex >= pages.size()) return NO_SUCH_PAGE;
+            BufferedImage img = pages.get(pageIndex);
             if (img == null) return NO_SUCH_PAGE;
 
             Graphics2D g2d = (Graphics2D) g;
             g2d.translate(pf.getImageableX(), pf.getImageableY());
 
-            double printableW = pf.getImageableWidth();
-            double printableH = pf.getImageableHeight();
+            double pw = pf.getImageableWidth();
+            double ph = pf.getImageableHeight();
 
-            double scale = Math.min(printableW / img.getWidth(), printableH / img.getHeight());
-            int drawW = (int) Math.floor(img.getWidth() * scale);
-            int drawH = (int) Math.floor(img.getHeight() * scale);
-
-            int dx = (int) ((printableW - drawW) / 2.0);
-            int dy = (int) ((printableH - drawH) / 2.0);
+            double scale = Math.min(pw / img.getWidth(), ph / img.getHeight());
+            int dw = (int) Math.floor(img.getWidth() * scale);
+            int dh = (int) Math.floor(img.getHeight() * scale);
+            int dx = (int) ((pw - dw) / 2.0);
+            int dy = (int) ((ph - dh) / 2.0);
 
             g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
-            g2d.drawImage(img, dx, dy, drawW, drawH, null);
+            g2d.drawImage(img, dx, dy, dw, dh, null);
             return PAGE_EXISTS;
         }
     }
 
-    /** Launches the standalone UI. */
+    private static PageFormat create4x6PageFormat(PrinterJob job, boolean landscape) {
+        PageFormat pf = job.defaultPage();
+        Paper paper = new Paper();
+        double inch = 72.0;
+        double w = 4 * inch;
+        double h = 6 * inch;
+        if (landscape) { double t = w; w = h; h = t; }
+        double topMargin = h * 0.10;
+        double sideMargin = 0.10 * inch;
+
+        paper.setSize(w, h);
+        paper.setImageableArea(
+                sideMargin,
+                topMargin,
+                w - 2 * sideMargin,
+                h - topMargin - sideMargin
+        );
+        pf.setPaper(paper);
+        pf.setOrientation(landscape ? PageFormat.LANDSCAPE : PageFormat.PORTRAIT);
+        return pf;
+    }
+
+    private void selectAndPreviewFirstPhotos() {
+        if (photosModel == null || photosModel.isEmpty()) {
+            photoView.setImages(null, null);
+            return;
+        }
+        int last = Math.min(1, photosModel.size() - 1);
+        photosList.clearSelection();
+        photosList.setSelectionInterval(0, last);
+        renderSelectedPhotos();
+    }
+
+    private enum LabelColor {
+        NONE(0), GRAY(1), GREEN(2), PURPLE(3), BLUE(4), YELLOW(5), RED(6), ORANGE(7);
+        final int idx; LabelColor(int i){ this.idx = i; }
+    }
+    private static boolean verifyFinderTag(Path path, int expectedIdx) {
+        try {
+            Process p = new ProcessBuilder(
+                    "/usr/bin/mdls", "-raw", "-name", "kMDItemFSLabel", path.toAbsolutePath().toString()
+            ).start();
+            int exit = p.waitFor();
+            if (exit != 0) return false;
+            try (java.io.BufferedReader br = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(p.getInputStream()))) {
+                String s = br.readLine();
+                if (s == null) return false;
+                s = s.trim();
+                // bazen (null) gelebilir
+                if ("(null)".equalsIgnoreCase(s)) return expectedIdx == 0;
+                int val = Integer.parseInt(s);
+                return val == expectedIdx;
+            }
+        } catch (Exception e) {
+            return false;
+        }
+    }
+    private static void runAppleScript(String script) throws Exception {
+        Process p = new ProcessBuilder("/usr/bin/osascript", "-e", script).start();
+        int exit = p.waitFor();
+        if (exit != 0) throw new RuntimeException("AppleScript failed. Exit=" + exit);
+    }
+
+    private static boolean setFinderTag(Path path, LabelColor color) {
+        try {
+            String f = path.toAbsolutePath().toString().replace("\"","\\\"");
+            String script =
+                    "tell application \"Finder\"\n" +
+                            "  set t to POSIX file \"" + f + "\" as alias\n" +
+                            "  set label index of t to 0\n" +         // önce temizle
+                            "  set label index of t to " + color.idx + "\n" + // sonra hedefe ayarla
+                            "end tell";
+            runAppleScript(script);
+            try { Thread.sleep(150); } catch (InterruptedException ignored) {}
+            return verifyFinderTag(path, color.idx);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+    private static boolean addUserTag(Path path, String tagName) {
+        try {
+            String f = path.toAbsolutePath().toString().replace("\"","\\\"");
+            String tn = tagName.replace("\"","\\\"");
+            String script =
+                    "set thePath to POSIX file \"" + f + "\"\n" +
+                            "tell application \"Finder\"\n" +
+                            "  set t to thePath as alias\n" +
+                            "  try\n" +
+                            "    set cur to tag names of t\n" +
+                            "  on error\n" +
+                            "    set cur to {}\n" +
+                            "  end try\n" +
+                            "  if cur does not contain \"" + tn + "\" then set tag names of t to (cur & {\"" + tn + "\"})\n" +
+                            "end tell";
+            Process p = new ProcessBuilder("/usr/bin/osascript", "-e", script).start();
+            if (p.waitFor() != 0) return false;
+            try { Thread.sleep(120); } catch (InterruptedException ignored) {}
+            Process v = new ProcessBuilder("/usr/bin/mdls","-raw","-name","kMDItemUserTags", f).start();
+            if (v.waitFor() != 0) return false;
+            try (java.io.BufferedReader br = new java.io.BufferedReader(new java.io.InputStreamReader(v.getInputStream()))) {
+                String s = br.readLine();
+                return s != null && s.contains(tagName);
+            }
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static List<Path> findReadyDesignPhotos(Path root, String orderId) throws IOException {
+        final String needle = "(" + orderId.toLowerCase(Locale.ROOT) + ")";
+        List<Path> out = new ArrayList<>();
+        try (Stream<Path> s = Files.walk(root, 12)) {
+            s.filter(Files::isRegularFile).forEach(p -> {
+                String n = p.getFileName().toString().toLowerCase(Locale.ROOT);
+                boolean isImage = n.endsWith(".png") || n.endsWith(".jpg") || n.endsWith(".jpeg");
+                if (isImage && n.startsWith("x") && n.contains(needle)) out.add(p);
+            });
+        }
+        out.sort(Comparator.comparing(a -> a.getFileName().toString(), String.CASE_INSENSITIVE_ORDER));
+        return out;
+    }
+
     public static void main(String[] args) {
         SwingUtilities.invokeLater(() -> new LabelFinderUI().setVisible(true));
     }

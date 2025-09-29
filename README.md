@@ -84,5 +84,4 @@ To run a specific UI from your IDE, set the main class accordingly (e.g., `com.o
 
 ## License
 
-## License
 This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.

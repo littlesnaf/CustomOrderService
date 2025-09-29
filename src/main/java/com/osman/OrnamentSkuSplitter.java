@@ -30,7 +30,7 @@ public class OrnamentSkuSplitter {
     /** Entry point expected to be invoked manually; orchestrates the split and merge workflow. */
     public static void main(String[] args) throws Exception {
         List<Path> inputs = resolveInputs();
-        if (inputs.isEmpty()) throw new IOException("Girdi dosyası bulunamadı.");
+        if (inputs.isEmpty()) throw new IOException("No input file ");
 
         Path outDir = inputs.get(0).getParent().resolve("ready-ornaments");
         Files.createDirectories(outDir);
