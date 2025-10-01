@@ -2,9 +2,13 @@ package com.osman;
 
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.text.PDFTextStripper;
+
 import java.io.File;
 import java.io.IOException;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -12,8 +16,6 @@ import java.util.regex.Pattern;
  * Utility routines for scanning Amazon packing slip PDFs and mapping order IDs to their pages.
  */
 public class PackSlipExtractor {
-
-
 
     private static final Pattern ORDER_ID_RE = Pattern.compile("\\b(\\d{3}-\\d{7}-\\d{7})\\b");
 
@@ -59,18 +61,19 @@ public class PackSlipExtractor {
         if (text == null || text.isEmpty()) return null;
 
         String[] lines = text.split("\\r?\\n");
-        for (int i = 0; i < Math.min(lines.length, 20); i++) {
+        String fallbackId = null;
+        int maxLines = Math.min(lines.length, 40);
+        for (int i = 0; i < maxLines; i++) {
             String line = lines[i];
-            if (line.toLowerCase().contains("order id:")) {
-                Matcher m = ORDER_ID_RE.matcher(line);
+            Matcher m = ORDER_ID_RE.matcher(line);
+            if (line.toLowerCase().contains("order id")) {
                 if (m.find()) {
-                    return m.group(1); // Return the first one found in the header
+                    return m.group(1);
                 }
+            } else if (fallbackId == null && m.find()) {
+                fallbackId = m.group(1);
             }
         }
-        return null; // If no ID is found in the header, ignore this page
+        return fallbackId;
     }
-
-
-
 }

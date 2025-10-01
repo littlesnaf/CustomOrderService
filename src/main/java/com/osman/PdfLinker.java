@@ -2,9 +2,13 @@ package com.osman;
 
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.text.PDFTextStripper;
+
 import java.io.File;
 import java.io.IOException;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -47,7 +51,7 @@ public class PdfLinker {
     }
 
     /**
-     * UPDATED: Scans an open PDF document for the "List of orders" summary, which may span
+     * Scans an open PDF document for the "List of orders" summary, which may span
      * multiple pages at the end of the document, and maps each order ID to its label page.
      */
     public static Map<String, List<Integer>> buildOrderIdToPagesMap(PDDocument doc) throws IOException {
