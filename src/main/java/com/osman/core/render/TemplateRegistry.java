@@ -11,7 +11,7 @@ public final class TemplateRegistry {
 
     static {
         TEMPLATES.put(11, MugTemplate.of(
-                2580, 1410, 3200,
+                2580, 1440, 3200,
                 144, 78, 952, 974,
                 1524, 75, 944, 975,
                 336, 1048, 1016, 1040,
