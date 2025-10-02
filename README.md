@@ -1,6 +1,6 @@
-# Mugeditor
+# CustomAmazonOrderProcessor
 
-Mugeditor is a desktop toolkit for preparing custom Amazon order artwork, labels, and packing slips at scale. The project bundles several Swing utilities and a rendering pipeline that help production teams convert Amazon Custom exports into print-ready PNGs and review supporting documents side by side.
+CustomAmazonOrderProcesso is a desktop toolkit for preparing custom Amazon order artwork, labels, and packing slips at scale. The project bundles several Swing utilities and a rendering pipeline that help production teams convert Amazon Custom exports into print-ready PNGs and review supporting documents side by side.
 
 ## Contents
 
