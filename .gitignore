@@ -12,7 +12,8 @@ target/
 *.iws
 *.iml
 *.ipr
-
+# Test data ignore
+/src/main/java/com/osman/Test Files/
 ### Eclipse ###
 .apt_generated
 .classpath
