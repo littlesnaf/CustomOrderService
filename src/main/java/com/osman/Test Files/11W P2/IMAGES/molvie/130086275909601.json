@@ -1,0 +1,285 @@
+{
+  "orderId" : "113-0250904-8962626",
+  "orderItemId" : "130086275909601",
+  "merchantId" : "A2TH9ISGO9KKXA",
+  "marketplaceId" : "ATVPDKIKX0DER",
+  "asin" : "B0C24V1DVN",
+  "title" : "HomeBee Personalized Coffee Mug | Custom Photo Text and Logo Ceramic Mug | Customized 11 Oz Tea Cup for Men & Women | Unique Gift Idea - Taza Personalizadas Design with Picture or Message | White",
+  "quantity" : 1,
+  "vendorCode" : {
+    "empty" : true,
+    "present" : false
+  },
+  "customizationData" : {
+    "type" : "PageContainerCustomization",
+    "children" : [ {
+      "type" : "PreviewContainerCustomization",
+      "name" : "FRONT",
+      "label" : "11 WHITE - photo mug",
+      "children" : [ {
+        "type" : "FlatContainerCustomization",
+        "children" : [ {
+          "type" : "PlacementContainerCustomization",
+          "name" : "FRONT  IMAGE",
+          "label" : "Image 1",
+          "children" : [ {
+            "type" : "ImageCustomization",
+            "name" : "",
+            "label" : "FRONT IMAGE",
+            "image" : {
+              "imageName" : "dfb4af0b-52b4-46bf-b805-645a810b8562.jpg",
+              "buyerFilename" : "1000045105.jpg"
+            }
+          } ],
+          "dimension" : {
+            "width" : 127,
+            "height" : 130
+          },
+          "position" : {
+            "x" : 42,
+            "y" : 131
+          },
+          "buyerPlacement" : {
+            "position" : {
+              "x" : 44.81811628144345,
+              "y" : 117.14083314943576
+            },
+            "dimension" : {
+              "width" : 1080,
+              "height" : 2340
+            },
+            "scale" : {
+              "scaleX" : 0.11453647368663523,
+              "scaleY" : 0.11453647368663518
+            },
+            "angleOfRotation" : -0.2514322267338683
+          }
+        }, {
+          "type" : "PlacementContainerCustomization",
+          "name" : "BACK IMAGE",
+          "label" : "Image 2",
+          "children" : [ {
+            "type" : "ImageCustomization",
+            "name" : "",
+            "label" : "BACK IMAGE"
+          } ],
+          "dimension" : {
+            "width" : 127,
+            "height" : 130
+          },
+          "position" : {
+            "x" : 226,
+            "y" : 131
+          }
+        }, {
+          "type" : "ContainerCustomization",
+          "name" : "FRONT  TEXT info",
+          "label" : "Text 1",
+          "children" : [ {
+            "type" : "FontCustomization",
+            "name" : "",
+            "label" : "Font",
+            "fontSelection" : {
+              "family" : "Amatic SC"
+            }
+          }, {
+            "type" : "ColorCustomization",
+            "name" : "",
+            "label" : "Font Color",
+            "colorSelection" : {
+              "name" : "Black",
+              "value" : "#000000",
+              "colorModel" : "rgb"
+            }
+          }, {
+            "type" : "ContainerCustomization",
+            "children" : [ {
+              "type" : "PlacementContainerCustomization",
+              "name" : "FRONT  TEXT",
+              "label" : "Text Input 1",
+              "children" : [ {
+                "type" : "FlatRatePriceDeltaContainerCustomization",
+                "children" : [ {
+                  "type" : "TextCustomization",
+                  "name" : "",
+                  "label" : "FRONT TEXT",
+                  "inputValue" : ""
+                } ]
+              } ],
+              "dimension" : {
+                "width" : 125,
+                "height" : 129
+              },
+              "position" : {
+                "x" : 43,
+                "y" : 131
+              }
+            } ]
+          } ]
+        }, {
+          "type" : "ContainerCustomization",
+          "name" : "BACK  TEXT",
+          "label" : "Text 2",
+          "children" : [ {
+            "type" : "FontCustomization",
+            "name" : "",
+            "label" : "Font",
+            "fontSelection" : {
+              "family" : "Amatic SC"
+            }
+          }, {
+            "type" : "ColorCustomization",
+            "name" : "",
+            "label" : "Font Color",
+            "colorSelection" : {
+              "name" : "Black",
+              "value" : "#000000",
+              "colorModel" : "rgb"
+            }
+          }, {
+            "type" : "ContainerCustomization",
+            "children" : [ {
+              "type" : "PlacementContainerCustomization",
+              "name" : "BACK TEXT",
+              "label" : "Text Input 1",
+              "children" : [ {
+                "type" : "FlatRatePriceDeltaContainerCustomization",
+                "children" : [ {
+                  "type" : "TextCustomization",
+                  "name" : "",
+                  "label" : "BACK TEXT",
+                  "inputValue" : "BEST AUNTIE EVER"
+                } ],
+                "priceDelta" : {
+                  "amount" : 0
+                }
+              } ],
+              "dimension" : {
+                "width" : 125,
+                "height" : 129
+              },
+              "position" : {
+                "x" : 228,
+                "y" : 131
+              },
+              "buyerPlacement" : {
+                "position" : {
+                  "x" : 227.73997639908862,
+                  "y" : 170.28903606785084
+                },
+                "dimension" : {
+                  "width" : 480.72559399145126,
+                  "height" : 118.5036690647482
+                },
+                "scale" : {
+                  "scaleX" : 0.26002360091154797,
+                  "scaleY" : 0.26002360091154797
+                },
+                "angleOfRotation" : 0
+              }
+            } ]
+          } ]
+        }, {
+          "type" : "OptionCustomization",
+          "name" : "Option Dropdown 1",
+          "label" : "Select Printed Area",
+          "optionSelection" : {
+            "name" : "PRINT on BOTH sides",
+            "label" : "PRINT on BOTH sides",
+            "additionalCost" : {
+              "amount" : 3.88
+            }
+          },
+          "displayValue" : "PRINT on BOTH sides"
+        } ]
+      } ],
+      "baseImage" : {
+        "imageUrl" : "https://m.media-amazon.com/images/S/gestalt-seller-images-prod-us-east-1/ATVPDKIKX0DER/A2TH9ISGO9KKXA/bcf91805-941e-46ff-9265-d73088ba1bc3.jpg",
+        "dimension" : {
+          "width" : 3000,
+          "height" : 3000
+        }
+      },
+      "snapshot" : {
+        "imageName" : "3ac40c2b-05d2-3b1b-8336-03767f76b694.jpg",
+        "dimension" : {
+          "width" : 400,
+          "height" : 400
+        }
+      },
+      "svg" : "94157828-3c40-109f-03db-6e4b4cfa1f70.svg"
+    } ]
+  },
+  "version3.0" : {
+    "customizationInfo" : {
+      "surfaces" : [ {
+        "name" : "11 WHITE - photo mug",
+        "areas" : [ {
+          "customizationType" : "ImagePrinting",
+          "Dimensions" : {
+            "width" : 127,
+            "height" : 130
+          },
+          "Position" : {
+            "x" : 42,
+            "y" : 131
+          },
+          "name" : "FRONT  IMAGE",
+          "svgImage" : "94157828-3c40-109f-03db-6e4b4cfa1f70.svg"
+        }, {
+          "customizationType" : "ImagePrinting",
+          "Dimensions" : {
+            "width" : 127,
+            "height" : 130
+          },
+          "Position" : {
+            "x" : 226,
+            "y" : 131
+          },
+          "name" : "BACK IMAGE",
+          "svgImage" : "94157828-3c40-109f-03db-6e4b4cfa1f70.svg"
+        }, {
+          "customizationType" : "TextPrinting",
+          "colorName" : "Black",
+          "fill" : "#000000",
+          "fontFamily" : "Amatic SC",
+          "Dimensions" : {
+            "width" : 125,
+            "height" : 129
+          },
+          "Position" : {
+            "x" : 43,
+            "y" : 131
+          },
+          "name" : "FRONT  TEXT",
+          "label" : "FRONT TEXT",
+          "text" : ""
+        }, {
+          "customizationType" : "ImagePrinting",
+          "Dimensions" : {
+            "width" : 125,
+            "height" : 129
+          },
+          "Position" : {
+            "x" : 228,
+            "y" : 131
+          },
+          "priceDelta" : {
+            "value" : 0.0
+          },
+          "name" : "BACK TEXT",
+          "svgImage" : "94157828-3c40-109f-03db-6e4b4cfa1f70.svg"
+        }, {
+          "customizationType" : "Options",
+          "name" : "Option Dropdown 1",
+          "label" : "Select Printed Area",
+          "optionValue" : "PRINT on BOTH sides",
+          "priceDelta" : {
+            "value" : 3.88
+          },
+          "optionImage" : ""
+        } ]
+      } ]
+    }
+  }
+}

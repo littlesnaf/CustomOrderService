@@ -1,0 +1,292 @@
+{
+  "orderId" : "111-9256070-0612239",
+  "orderItemId" : "130081499730881",
+  "merchantId" : "A2TH9ISGO9KKXA",
+  "marketplaceId" : "ATVPDKIKX0DER",
+  "asin" : "B0C24V1DVN",
+  "title" : "HomeBee Personalized Coffee Mug | Custom Photo Text and Logo Ceramic Mug | Customized 11 Oz Tea Cup for Men & Women | Unique Gift Idea - Taza Personalizadas Design with Picture or Message | White",
+  "quantity" : 1,
+  "vendorCode" : {
+    "empty" : true,
+    "present" : false
+  },
+  "customizationData" : {
+    "type" : "PageContainerCustomization",
+    "children" : [ {
+      "type" : "PreviewContainerCustomization",
+      "name" : "FRONT",
+      "label" : "11 WHITE - photo mug",
+      "children" : [ {
+        "type" : "FlatContainerCustomization",
+        "children" : [ {
+          "type" : "PlacementContainerCustomization",
+          "name" : "FRONT  IMAGE",
+          "label" : "Image 1",
+          "children" : [ {
+            "type" : "ImageCustomization",
+            "name" : "",
+            "label" : "FRONT IMAGE",
+            "image" : {
+              "imageName" : "c34e7e59-1e6a-4c96-a8f6-aa49a4a77e92.jpg",
+              "buyerFilename" : "IMG_7898.jpeg"
+            }
+          } ],
+          "dimension" : {
+            "width" : 127,
+            "height" : 130
+          },
+          "position" : {
+            "x" : 42,
+            "y" : 131
+          },
+          "buyerPlacement" : {
+            "position" : {
+              "x" : 42,
+              "y" : 111.33333333333333
+            },
+            "dimension" : {
+              "width" : 3024,
+              "height" : 4032
+            },
+            "scale" : {
+              "scaleX" : 0.0419973544973545,
+              "scaleY" : 0.0419973544973545
+            },
+            "angleOfRotation" : 0
+          }
+        }, {
+          "type" : "PlacementContainerCustomization",
+          "name" : "BACK IMAGE",
+          "label" : "Image 2",
+          "children" : [ {
+            "type" : "ImageCustomization",
+            "name" : "",
+            "label" : "BACK IMAGE"
+          } ],
+          "dimension" : {
+            "width" : 127,
+            "height" : 130
+          },
+          "position" : {
+            "x" : 226,
+            "y" : 131
+          }
+        }, {
+          "type" : "ContainerCustomization",
+          "name" : "FRONT  TEXT info",
+          "label" : "Text 1",
+          "children" : [ {
+            "type" : "FontCustomization",
+            "name" : "",
+            "label" : "Font",
+            "fontSelection" : {
+              "family" : "Amatic SC"
+            }
+          }, {
+            "type" : "ColorCustomization",
+            "name" : "",
+            "label" : "Font Color",
+            "colorSelection" : {
+              "name" : "Black",
+              "value" : "#000000",
+              "colorModel" : "rgb"
+            }
+          }, {
+            "type" : "ContainerCustomization",
+            "children" : [ {
+              "type" : "PlacementContainerCustomization",
+              "name" : "FRONT  TEXT",
+              "label" : "Text Input 1",
+              "children" : [ {
+                "type" : "FlatRatePriceDeltaContainerCustomization",
+                "children" : [ {
+                  "type" : "TextCustomization",
+                  "name" : "",
+                  "label" : "FRONT TEXT",
+                  "inputValue" : ""
+                } ]
+              } ],
+              "dimension" : {
+                "width" : 125,
+                "height" : 129
+              },
+              "position" : {
+                "x" : 43,
+                "y" : 131
+              }
+            } ]
+          } ]
+        }, {
+          "type" : "ContainerCustomization",
+          "name" : "BACK  TEXT",
+          "label" : "Text 2",
+          "children" : [ {
+            "type" : "FontCustomization",
+            "name" : "",
+            "label" : "Font",
+            "fontSelection" : {
+              "family" : "Staatliches"
+            }
+          }, {
+            "type" : "ColorCustomization",
+            "name" : "",
+            "label" : "Font Color",
+            "colorSelection" : {
+              "name" : "Black",
+              "value" : "#000000",
+              "colorModel" : "rgb"
+            }
+          }, {
+            "type" : "ContainerCustomization",
+            "children" : [ {
+              "type" : "PlacementContainerCustomization",
+              "name" : "BACK TEXT",
+              "label" : "Text Input 1",
+              "children" : [ {
+                "type" : "FlatRatePriceDeltaContainerCustomization",
+                "children" : [ {
+                  "type" : "TextCustomization",
+                  "name" : "",
+                  "label" : "BACK TEXT",
+                  "inputValue" : "Happy\n Father's\n Day"
+                } ],
+                "priceDelta" : {
+                  "amount" : 0
+                }
+              } ],
+              "dimension" : {
+                "width" : 125,
+                "height" : 129
+              },
+              "position" : {
+                "x" : 228,
+                "y" : 131
+              },
+              "buyerPlacement" : {
+                "position" : {
+                  "x" : 260.48623345306254,
+                  "y" : 146.33802241387994
+                },
+                "dimension" : {
+                  "width" : 352.61443146197473,
+                  "height" : 399.17571678832115
+                },
+                "scale" : {
+                  "scaleX" : 0.17023561073491722,
+                  "scaleY" : 0.17023561073491722
+                },
+                "angleOfRotation" : 0
+              }
+            } ]
+          } ]
+        }, {
+          "type" : "OptionCustomization",
+          "name" : "Option Dropdown 1",
+          "label" : "Select Printed Area",
+          "optionSelection" : {
+            "name" : "Print BACK of a mug ONLY",
+            "label" : "Print BACK of a mug ONLY",
+            "additionalCost" : {
+              "amount" : 0
+            },
+            "overlayImage" : {
+              "imageUrl" : "https://m.media-amazon.com/images/S/gestalt-seller-images-prod-us-east-1/ATVPDKIKX0DER/A2TH9ISGO9KKXA/80792f13-faa4-477c-a03b-5aff84da7cf8.png",
+              "dimension" : {
+                "width" : 3000,
+                "height" : 3000
+              }
+            }
+          },
+          "displayValue" : "Print BACK of a mug ONLY"
+        } ]
+      } ],
+      "baseImage" : {
+        "imageUrl" : "https://m.media-amazon.com/images/S/gestalt-seller-images-prod-us-east-1/ATVPDKIKX0DER/A2TH9ISGO9KKXA/bcf91805-941e-46ff-9265-d73088ba1bc3.jpg",
+        "dimension" : {
+          "width" : 3000,
+          "height" : 3000
+        }
+      },
+      "snapshot" : {
+        "imageName" : "7f0c4c23-4149-3783-8b99-a73adaa76595.jpg",
+        "dimension" : {
+          "width" : 400,
+          "height" : 400
+        }
+      },
+      "svg" : "470a26aa-d4f2-f92e-0ac4-50718801ffa3.svg"
+    } ]
+  },
+  "version3.0" : {
+    "customizationInfo" : {
+      "surfaces" : [ {
+        "name" : "11 WHITE - photo mug",
+        "areas" : [ {
+          "customizationType" : "ImagePrinting",
+          "Dimensions" : {
+            "width" : 127,
+            "height" : 130
+          },
+          "Position" : {
+            "x" : 42,
+            "y" : 131
+          },
+          "name" : "FRONT  IMAGE",
+          "svgImage" : "470a26aa-d4f2-f92e-0ac4-50718801ffa3.svg"
+        }, {
+          "customizationType" : "ImagePrinting",
+          "Dimensions" : {
+            "width" : 127,
+            "height" : 130
+          },
+          "Position" : {
+            "x" : 226,
+            "y" : 131
+          },
+          "name" : "BACK IMAGE",
+          "svgImage" : "470a26aa-d4f2-f92e-0ac4-50718801ffa3.svg"
+        }, {
+          "customizationType" : "TextPrinting",
+          "colorName" : "Black",
+          "fill" : "#000000",
+          "fontFamily" : "Amatic SC",
+          "Dimensions" : {
+            "width" : 125,
+            "height" : 129
+          },
+          "Position" : {
+            "x" : 43,
+            "y" : 131
+          },
+          "name" : "FRONT  TEXT",
+          "label" : "FRONT TEXT",
+          "text" : ""
+        }, {
+          "customizationType" : "ImagePrinting",
+          "Dimensions" : {
+            "width" : 125,
+            "height" : 129
+          },
+          "Position" : {
+            "x" : 228,
+            "y" : 131
+          },
+          "priceDelta" : {
+            "value" : 0.0
+          },
+          "name" : "BACK TEXT",
+          "svgImage" : "470a26aa-d4f2-f92e-0ac4-50718801ffa3.svg"
+        }, {
+          "customizationType" : "Options",
+          "name" : "Option Dropdown 1",
+          "label" : "Select Printed Area",
+          "optionValue" : "Print BACK of a mug ONLY",
+          "priceDelta" : {
+            "value" : 0.0
+          },
+          "optionImage" : "https://m.media-amazon.com/images/S/gestalt-seller-images-prod-us-east-1/ATVPDKIKX0DER/A2TH9ISGO9KKXA/80792f13-faa4-477c-a03b-5aff84da7cf8.png"
+        } ]
+      } ]
+    }
+  }
+}

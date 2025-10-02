@@ -1,0 +1,283 @@
+{
+  "orderId" : "111-4493209-1475442",
+  "orderItemId" : "130109638398721",
+  "merchantId" : "A2TH9ISGO9KKXA",
+  "marketplaceId" : "ATVPDKIKX0DER",
+  "asin" : "B0C24V1DVN",
+  "title" : "HomeBee Personalized Coffee Mug | Custom Photo Text and Logo Ceramic Mug | Customized 11 Oz Tea Cup for Men & Women | Unique Gift Idea - Taza Personalizadas Design with Picture or Message | White",
+  "quantity" : 1,
+  "vendorCode" : {
+    "empty" : true,
+    "present" : false
+  },
+  "customizationData" : {
+    "type" : "PageContainerCustomization",
+    "children" : [ {
+      "type" : "PreviewContainerCustomization",
+      "name" : "FRONT",
+      "label" : "11 WHITE - photo mug",
+      "children" : [ {
+        "type" : "FlatContainerCustomization",
+        "children" : [ {
+          "type" : "PlacementContainerCustomization",
+          "name" : "FRONT  IMAGE",
+          "label" : "Image 1",
+          "children" : [ {
+            "type" : "ImageCustomization",
+            "name" : "",
+            "label" : "FRONT IMAGE"
+          } ],
+          "dimension" : {
+            "width" : 127,
+            "height" : 130
+          },
+          "position" : {
+            "x" : 42,
+            "y" : 131
+          }
+        }, {
+          "type" : "PlacementContainerCustomization",
+          "name" : "BACK IMAGE",
+          "label" : "Image 2",
+          "children" : [ {
+            "type" : "ImageCustomization",
+            "name" : "",
+            "label" : "BACK IMAGE"
+          } ],
+          "dimension" : {
+            "width" : 127,
+            "height" : 130
+          },
+          "position" : {
+            "x" : 226,
+            "y" : 131
+          }
+        }, {
+          "type" : "ContainerCustomization",
+          "name" : "FRONT  TEXT info",
+          "label" : "Text 1",
+          "children" : [ {
+            "type" : "FontCustomization",
+            "name" : "",
+            "label" : "Font",
+            "fontSelection" : {
+              "family" : "Great Vibes"
+            }
+          }, {
+            "type" : "ColorCustomization",
+            "name" : "",
+            "label" : "Font Color",
+            "colorSelection" : {
+              "name" : "Black",
+              "value" : "#000000",
+              "colorModel" : "rgb"
+            }
+          }, {
+            "type" : "ContainerCustomization",
+            "children" : [ {
+              "type" : "PlacementContainerCustomization",
+              "name" : "FRONT  TEXT",
+              "label" : "Text Input 1",
+              "children" : [ {
+                "type" : "FlatRatePriceDeltaContainerCustomization",
+                "children" : [ {
+                  "type" : "TextCustomization",
+                  "name" : "",
+                  "label" : "FRONT TEXT",
+                  "inputValue" : "\nMr. Marty O'Connor"
+                } ],
+                "priceDelta" : {
+                  "amount" : 0
+                }
+              } ],
+              "dimension" : {
+                "width" : 125,
+                "height" : 129
+              },
+              "position" : {
+                "x" : 43,
+                "y" : 131
+              },
+              "buyerPlacement" : {
+                "position" : {
+                  "x" : 58.27884599980276,
+                  "y" : 161.43201770949833
+                },
+                "dimension" : {
+                  "width" : 826.1684583696874,
+                  "height" : 255.96792517985608
+                },
+                "scale" : {
+                  "scaleX" : 0.11431362096147,
+                  "scaleY" : 0.11431362096147
+                },
+                "angleOfRotation" : 0
+              }
+            } ]
+          } ]
+        }, {
+          "type" : "ContainerCustomization",
+          "name" : "BACK  TEXT",
+          "label" : "Text 2",
+          "children" : [ {
+            "type" : "FontCustomization",
+            "name" : "",
+            "label" : "Font",
+            "fontSelection" : {
+              "family" : "Shadows Into Light Two"
+            }
+          }, {
+            "type" : "ColorCustomization",
+            "name" : "",
+            "label" : "Font Color",
+            "colorSelection" : {
+              "name" : "Black",
+              "value" : "#000000",
+              "colorModel" : "rgb"
+            }
+          }, {
+            "type" : "ContainerCustomization",
+            "children" : [ {
+              "type" : "PlacementContainerCustomization",
+              "name" : "BACK TEXT",
+              "label" : "Text Input 1",
+              "children" : [ {
+                "type" : "FlatRatePriceDeltaContainerCustomization",
+                "children" : [ {
+                  "type" : "TextCustomization",
+                  "name" : "",
+                  "label" : "BACK TEXT",
+                  "inputValue" : "High School--here I come!"
+                } ],
+                "priceDelta" : {
+                  "amount" : 0
+                }
+              } ],
+              "dimension" : {
+                "width" : 125,
+                "height" : 129
+              },
+              "position" : {
+                "x" : 228,
+                "y" : 131
+              },
+              "buyerPlacement" : {
+                "position" : {
+                  "x" : 239.75600695071265,
+                  "y" : 171.90938000178608
+                },
+                "dimension" : {
+                  "width" : 829.3086373952514,
+                  "height" : 92.02240223463686
+                },
+                "scale" : {
+                  "scaleX" : 0.12237661772984179,
+                  "scaleY" : 0.12237661772984179
+                },
+                "angleOfRotation" : 0
+              }
+            } ]
+          } ]
+        }, {
+          "type" : "OptionCustomization",
+          "name" : "Option Dropdown 1",
+          "label" : "Select Printed Area",
+          "optionSelection" : {
+            "name" : "PRINT on BOTH sides",
+            "label" : "PRINT on BOTH sides",
+            "additionalCost" : {
+              "amount" : 3.88
+            }
+          },
+          "displayValue" : "PRINT on BOTH sides"
+        } ]
+      } ],
+      "baseImage" : {
+        "imageUrl" : "https://m.media-amazon.com/images/S/gestalt-seller-images-prod-us-east-1/ATVPDKIKX0DER/A2TH9ISGO9KKXA/bcf91805-941e-46ff-9265-d73088ba1bc3.jpg",
+        "dimension" : {
+          "width" : 3000,
+          "height" : 3000
+        }
+      },
+      "snapshot" : {
+        "imageName" : "cc60c8a9-e0e2-9e22-2a8b-74d41f80fa70.jpg",
+        "dimension" : {
+          "width" : 400,
+          "height" : 400
+        }
+      },
+      "svg" : "183c1c8c-9c8f-6d27-afbe-2ba5e3d278a3.svg"
+    } ]
+  },
+  "version3.0" : {
+    "customizationInfo" : {
+      "surfaces" : [ {
+        "name" : "11 WHITE - photo mug",
+        "areas" : [ {
+          "customizationType" : "ImagePrinting",
+          "Dimensions" : {
+            "width" : 127,
+            "height" : 130
+          },
+          "Position" : {
+            "x" : 42,
+            "y" : 131
+          },
+          "name" : "FRONT  IMAGE",
+          "svgImage" : "183c1c8c-9c8f-6d27-afbe-2ba5e3d278a3.svg"
+        }, {
+          "customizationType" : "ImagePrinting",
+          "Dimensions" : {
+            "width" : 127,
+            "height" : 130
+          },
+          "Position" : {
+            "x" : 226,
+            "y" : 131
+          },
+          "name" : "BACK IMAGE",
+          "svgImage" : "183c1c8c-9c8f-6d27-afbe-2ba5e3d278a3.svg"
+        }, {
+          "customizationType" : "ImagePrinting",
+          "Dimensions" : {
+            "width" : 125,
+            "height" : 129
+          },
+          "Position" : {
+            "x" : 43,
+            "y" : 131
+          },
+          "priceDelta" : {
+            "value" : 0.0
+          },
+          "name" : "FRONT  TEXT",
+          "svgImage" : "183c1c8c-9c8f-6d27-afbe-2ba5e3d278a3.svg"
+        }, {
+          "customizationType" : "ImagePrinting",
+          "Dimensions" : {
+            "width" : 125,
+            "height" : 129
+          },
+          "Position" : {
+            "x" : 228,
+            "y" : 131
+          },
+          "priceDelta" : {
+            "value" : 0.0
+          },
+          "name" : "BACK TEXT",
+          "svgImage" : "183c1c8c-9c8f-6d27-afbe-2ba5e3d278a3.svg"
+        }, {
+          "customizationType" : "Options",
+          "name" : "Option Dropdown 1",
+          "label" : "Select Printed Area",
+          "optionValue" : "PRINT on BOTH sides",
+          "priceDelta" : {
+            "value" : 3.88
+          },
+          "optionImage" : ""
+        } ]
+      } ]
+    }
+  }
+}

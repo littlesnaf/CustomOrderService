@@ -1,0 +1,1212 @@
+package com.osman.ui.labelfinder;
+
+import com.osman.PackSlipExtractor;
+import com.osman.PdfLinker;
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.rendering.PDFRenderer;
+import org.json.JSONException;
+import org.json.JSONObject;
+
+import javax.imageio.ImageIO;
+import javax.swing.*;
+import javax.swing.border.EmptyBorder;
+import java.awt.*;
+import java.awt.event.*;
+import java.awt.image.BufferedImage;
+import java.awt.print.PageFormat;
+import java.awt.print.Paper;
+import java.awt.print.Printable;
+import java.awt.print.PrinterException;
+import java.awt.print.PrinterJob;
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Pattern;
+import java.util.stream.Stream;
+
+public class LabelFinderUI extends JFrame {
+    private static class LabelLocation {
+        final File pdfFile;
+        final int pageNumber;
+        LabelLocation(File pdfFile, int pageNumber) { this.pdfFile = pdfFile; this.pageNumber = pageNumber; }
+    }
+    private static class PageGroup {
+        final File file;
+        final List<Integer> pages;
+        PageGroup(File file, List<Integer> pages) { this.file = file; this.pages = pages; }
+    }
+
+    private final JTextField orderIdField;
+    private final JButton findButton;
+    private final JButton printButton;
+    private final JButton chooseBaseBtn;
+    private final JCheckBox bulkModeCheck;
+    private final JLabel statusLabel;
+    private final ImagePanel combinedPanel;
+    private final DefaultListModel<LabelRef> labelRefsModel;
+    private final JList<LabelRef> labelRefsList;
+    private final DefaultListModel<Path> photosModel;
+    private final JList<Path> photosList;
+    private final DualImagePanel photoView;
+    private final Map<String, OrderExpectation> expectationIndex;
+    private final Map<String, OrderScanState> scanProgress;
+    private File baseDir;
+    private Map<String, PageGroup> labelGroups;
+    private Map<String, PageGroup> slipGroups;
+    private LabelLocation currentLabelLocation;
+    private BufferedImage combinedPreview;
+    private List<BufferedImage> labelPagesToPrint;
+    private List<BufferedImage> slipPagesToPrint;
+
+    private static final Pattern IMG_NAME = Pattern.compile("(?i).+\\s*(?:\\(\\d+\\))?\\s*\\.(png|jpe?g)$");
+    private static final Pattern XN_READY_NAME =
+            Pattern.compile("(?i)^x(?:\\(\\d+\\)|\\d+)-.+\\s*(?:\\(\\d+\\))?\\s*\\.(?:png|jpe?g)$");
+
+    public LabelFinderUI() {
+        setTitle("Label & Photo Viewer");
+        setDefaultCloseOperation(JFrame.DO_NOTHING_ON_CLOSE);
+        setSize(1600, 900);
+        setLocationRelativeTo(null);
+
+        orderIdField = new JTextField(20);
+        findButton = new JButton("Find");
+        printButton = new JButton("Print Combined");
+        printButton.setEnabled(false);
+        chooseBaseBtn = new JButton("Choose File Path");
+        bulkModeCheck = new JCheckBox("Bulk Order (no matching)");
+
+        JPanel top = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 10));
+        top.setBorder(new EmptyBorder(6, 6, 6, 6));
+        top.add(new JLabel("Order ID:"));
+        top.add(orderIdField);
+        top.add(findButton);
+        top.add(printButton);
+        top.add(chooseBaseBtn);
+        top.add(bulkModeCheck);
+
+        labelRefsModel = new DefaultListModel<>();
+        labelRefsList = new JList<>(labelRefsModel);
+        JScrollPane labelsScroll = new JScrollPane(labelRefsList);
+        labelsScroll.setBorder(BorderFactory.createTitledBorder("PDF Pages (Bulk)"));
+
+        photosModel = new DefaultListModel<>();
+        photosList = new JList<>(photosModel);
+        JScrollPane photosScroll = new JScrollPane(photosList);
+        photosScroll.setBorder(BorderFactory.createTitledBorder("Photos (select 1–2)"));
+
+        JPanel listsPanel = new JPanel(new GridLayout(1, 2, 8, 8));
+        listsPanel.add(labelsScroll);
+        listsPanel.add(photosScroll);
+        combinedPanel = new ImagePanel();
+        JScrollPane combinedScroll = new JScrollPane(combinedPanel);
+        combinedScroll.setBorder(BorderFactory.createTitledBorder("Shipping Label & Slip"));
+        JPanel leftPanel = new JPanel(new BorderLayout(8, 8));
+        leftPanel.add(listsPanel, BorderLayout.NORTH);
+        leftPanel.add(combinedScroll, BorderLayout.CENTER);
+        photoView = new DualImagePanel();
+        expectationIndex = new ConcurrentHashMap<>();
+        scanProgress = new ConcurrentHashMap<>();
+        JScrollPane photoViewScroll = new JScrollPane(photoView);
+        JSplitPane mainSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, leftPanel, photoViewScroll);
+        mainSplit.setResizeWeight(0.45);
+        statusLabel = new JLabel("Scan barcode → prints automatically. Choose base folder first.");
+        setLayout(new BorderLayout());
+        add(top, BorderLayout.NORTH);
+        add(mainSplit, BorderLayout.CENTER);
+        add(statusLabel, BorderLayout.SOUTH);
+        chooseBaseBtn.addActionListener(e -> chooseBaseFolder());
+        findButton.addActionListener(e -> onFind());
+        printButton.addActionListener(e -> printCombined());
+        orderIdField.addActionListener(e -> onFind());
+        bulkModeCheck.addItemListener(e -> onModeChanged(e.getStateChange() == ItemEvent.SELECTED));
+        labelRefsList.addListSelectionListener(e -> { if (!e.getValueIsAdjusting()) renderSelectedBulkPage(); });
+        photosList.addListSelectionListener(e -> { if (!e.getValueIsAdjusting()) renderSelectedPhotos(); });
+        addWindowListener(new WindowAdapter() {
+            @Override public void windowClosing(WindowEvent e) { cleanupAndExit(); }
+            @Override public void windowOpened(WindowEvent e) { orderIdField.requestFocusInWindow(); }
+            @Override public void windowActivated(WindowEvent e) { orderIdField.requestFocusInWindow(); }
+        });
+        orderIdField.addFocusListener(new FocusAdapter() {
+            @Override public void focusGained(FocusEvent e) {
+                SwingUtilities.invokeLater(orderIdField::selectAll);
+            }
+        });
+        addPrintShortcut(getRootPane());
+        applyModeUI();
+    }
+
+    private void onModeChanged(boolean bulk) {
+        applyModeUI();
+        clearAllViews();
+        if (baseDir != null && baseDir.isDirectory()) {
+            if (bulk) populateBulkFromBase();
+            else buildLabelAndSlipIndices();
+        }
+    }
+
+    private void applyModeUI() {
+        boolean bulk = bulkModeCheck.isSelected();
+        orderIdField.setEnabled(!bulk);
+        findButton.setEnabled(true);
+        labelRefsList.setEnabled(bulk);
+    }
+
+    private void clearAllViews() {
+        combinedPreview = null;
+        combinedPanel.setImage(null);
+        photoView.setImages(null, null);
+        labelRefsModel.clear();
+        photosModel.clear();
+        currentLabelLocation = null;
+        printButton.setEnabled(false);
+        labelPagesToPrint = new ArrayList<>();
+        slipPagesToPrint  = new ArrayList<>();
+    }
+
+    private void chooseBaseFolder() {
+        JFileChooser chooser = new JFileChooser(baseDir);
+        chooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
+        chooser.setDialogTitle("Choose Base Folder (e.g., 'Orders')");
+        if (chooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) return;
+        File selectedDir = chooser.getSelectedFile();
+        if (selectedDir == null || !selectedDir.isDirectory()) return;
+        baseDir = selectedDir;
+        clearAllViews();
+        clearProgressCaches();
+        setUIEnabled(false);
+        statusLabel.setText("Scanning folder...");
+        SwingWorker<Void, Void> worker = new SwingWorker<>() {
+            @Override protected Void doInBackground() {
+                if (bulkModeCheck.isSelected()) populateBulkFromBase();
+                else buildLabelAndSlipIndices();
+                rebuildExpectations();
+                return null;
+            }
+            @Override protected void done() {
+                try {
+                    get();
+                    if (bulkModeCheck.isSelected()) {
+                        statusLabel.setText("BULK loaded: " + labelRefsModel.size() + " pages, " + photosModel.size() + " photos.");
+                    } else {
+                        statusLabel.setText("Indexed " + labelGroups.size() + " labels, " + slipGroups.size() + " packing slips.");
+                    }
+                } catch (Exception e) {
+                    statusLabel.setText("Error: " + e.getCause().getMessage());
+                    JOptionPane.showMessageDialog(LabelFinderUI.this,
+                            "Error while scanning:\n" + e.getCause().getMessage(),
+                            "Error", JOptionPane.ERROR_MESSAGE);
+                } finally {
+                    setUIEnabled(true);
+                    orderIdField.requestFocusInWindow();
+                    orderIdField.selectAll();
+                }
+            }
+        };
+        worker.execute();
+    }
+
+    private void setUIEnabled(boolean enabled) {
+        findButton.setEnabled(enabled);
+        chooseBaseBtn.setEnabled(enabled);
+        orderIdField.setEnabled(enabled && !bulkModeCheck.isSelected());
+        bulkModeCheck.setEnabled(enabled);
+        labelRefsList.setEnabled(enabled);
+        photosList.setEnabled(enabled);
+    }
+
+    private void buildLabelAndSlipIndices() {
+        labelGroups = new HashMap<>();
+        slipGroups  = new HashMap<>();
+        if (baseDir == null || !baseDir.isDirectory()) {
+            statusLabel.setText("Base folder invalid.");
+            return;
+        }
+
+        List<File> pdfs = new ArrayList<>();
+        try (Stream<Path> stream = Files.walk(baseDir.toPath())) {
+            stream.filter(Files::isRegularFile)
+                    .filter(p -> p.getFileName().toString().toLowerCase(java.util.Locale.ROOT).endsWith(".pdf"))
+                    .forEach(p -> pdfs.add(p.toFile()));
+        } catch (IOException e) {
+            statusLabel.setText("Error reading PDFs: " + e.getMessage());
+            return;
+        }
+
+        Pattern packingSlipName = Pattern.compile("(?i)^Amazon\\.pdf$");
+        Pattern packingSlipFolder = Pattern.compile("(?i)^(?:\\d{2}\\s*[PRWB]|mix).*");
+
+        for (File pdf : pdfs) {
+            String name = pdf.getName();
+            File parent = pdf.getParentFile();
+            String parentName = parent != null ? parent.getName() : "";
+            boolean looksLikePackingSlip =
+                    packingSlipName.matcher(name).matches() ||
+                            (name.equalsIgnoreCase("Amazon.pdf") && packingSlipFolder.matcher(parentName).matches());
+
+            if (looksLikePackingSlip) {
+                try {
+                    Map<String, List<Integer>> m = PackSlipExtractor.indexOrderToPages(pdf);
+                    for (Map.Entry<String, List<Integer>> e : m.entrySet()) {
+                        slipGroups.put(e.getKey(), new PageGroup(pdf, new ArrayList<>(e.getValue())));
+                    }
+                } catch (IOException ignored) {}
+            } else {
+                try {
+                    Map<String, List<Integer>> m = PdfLinker.buildOrderIdToPagesMap(pdf);
+                    for (Map.Entry<String, List<Integer>> e : m.entrySet()) {
+                        labelGroups.put(e.getKey(), new PageGroup(pdf, new ArrayList<>(e.getValue())));
+                    }
+                } catch (IOException ignored) {}
+            }
+        }
+
+        statusLabel.setText("Indexed " + labelGroups.size() + " labels, " + slipGroups.size() + " packing slips.");
+    }
+
+    private void onFind() {
+        if (bulkModeCheck.isSelected()) {
+            populateBulkFromBase();
+            return;
+        }
+        findSingleOrderFlow();
+    }
+
+    private void findSingleOrderFlow() {
+        ScanInput scanInput = parseScanInput(orderIdField.getText());
+        String orderId = scanInput.orderId();
+        if (orderId.isEmpty()) {
+            statusLabel.setText("Please enter an Order ID.");
+            orderIdField.requestFocusInWindow();
+            return;
+        }
+        combinedPreview = null;
+        combinedPanel.setImage(null);
+        printButton.setEnabled(false);
+        BufferedImage labelImg = null;
+        BufferedImage slipImg  = null;
+        labelPagesToPrint = new ArrayList<>();
+        slipPagesToPrint  = new ArrayList<>();
+
+        PageGroup lg = (labelGroups != null) ? labelGroups.get(orderId) : null;
+        if (lg != null) {
+            List<BufferedImage> labelPages = renderPdfPagesList(lg.file, lg.pages, 150);
+            labelPagesToPrint.addAll(labelPages);
+            labelImg = stackMany(withBorder(labelPages, Color.RED, 8), 12, Color.WHITE);
+            currentLabelLocation = new LabelLocation(lg.file, lg.pages.get(0));
+        } else {
+            statusLabel.setText("Shipping label not found for: " + orderId);
+        }
+
+        PageGroup sg = (slipGroups != null) ? slipGroups.get(orderId) : null;
+        if (sg != null) {
+            List<BufferedImage> slipPages = renderPdfPagesList(sg.file, sg.pages, 150);
+            slipPagesToPrint.addAll(slipPages);
+            slipImg = stackMany(withBorder(slipPages, new Color(0,120,215), 8), 12, Color.WHITE);
+        } else if (lg != null) {
+            statusLabel.setText("Packing slip not found for: " + orderId);
+        }
+
+        combinedPreview = stackImagesVertically(labelImg, slipImg, 12, Color.WHITE);
+        if (combinedPreview != null) {
+            combinedPanel.setImage(combinedPreview);
+            printButton.setEnabled(true);
+        }
+
+        photosModel.clear();
+        photoView.setImages(null, null);
+        if (baseDir != null && baseDir.isDirectory()) {
+            try {
+                findAllMatchingPhotos(baseDir.toPath(), orderId).forEach(photosModel::addElement);
+            } catch (IOException ignored) {}
+        }
+        selectAndPreviewFirstPhotos();
+
+        try {
+            if (baseDir != null && baseDir.isDirectory()) {
+                List<Path> designs = findReadyDesignPhotos(baseDir.toPath(), orderId);
+                if (!designs.isEmpty()) {
+                    int ok = 0;
+                    for (Path p : designs) {
+                        if (applyTagWithBrew(p, "Green")) {
+                            ok++;
+                        }
+                    }
+                    if (ok > 0) {
+                        statusLabel.setText("Ready designs tagged: Green (" + ok + "/" + designs.size() + ").");
+                    } else {
+                        statusLabel.setText("Tried to tag " + designs.size() + " item(s) with 'tag' command, but it failed. Is 'tag' installed and in your PATH?");
+                    }
+                } else {
+                    statusLabel.setText("No ready design found to tag for: " + orderId);
+                }
+            }
+        } catch (IOException ioex) {
+            statusLabel.setText("Tagging skipped (IO error).");
+        }
+
+        boolean hasPrintableContent = !labelPagesToPrint.isEmpty() || !slipPagesToPrint.isEmpty();
+        ScanUpdate scanUpdate = null;
+        boolean expectationMissing = false;
+
+        if (hasPrintableContent) {
+            scanUpdate = trackScanProgress(orderId, scanInput.itemKey(), scanInput.rawItemId());
+            if (scanUpdate == null) {
+                expectationMissing = true;
+            } else if (!scanUpdate.counted) {
+                String message;
+                if (scanUpdate.duplicate) {
+                    message = composeDuplicateMessage(scanUpdate);
+                } else if (scanUpdate.unknownItem) {
+                    message = composeUnknownItemMessage(scanUpdate);
+                } else if (scanUpdate.alreadyComplete) {
+                    message = composeAlreadyCompleteMessage(scanUpdate);
+                } else {
+                    message = composeGenericHoldMessage(scanUpdate);
+                }
+                statusLabel.setText(message);
+                orderIdField.setText("");
+                orderIdField.requestFocusInWindow();
+                orderIdField.selectAll();
+                return;
+            } else if (!scanUpdate.completed) {
+                statusLabel.setText(composeInProgressMessage(scanUpdate));
+                orderIdField.setText("");
+                orderIdField.requestFocusInWindow();
+                orderIdField.selectAll();
+                return;
+            }
+        }
+
+        boolean printed = false;
+        String completionMessage = null;
+        if (hasPrintableContent) {
+            printed = printCombinedDirect();
+            if (printed) {
+                if (scanUpdate != null && scanUpdate.completed) {
+                    markOrderComplete(orderId);
+                    completionMessage = composeCompletionMessage(scanUpdate);
+                } else if (expectationMissing) {
+                    completionMessage = "Printed (no quantity data for order: " + orderId + ").";
+                }
+            }
+            orderIdField.setText("");
+            orderIdField.requestFocusInWindow();
+        } else {
+            orderIdField.requestFocusInWindow();
+            orderIdField.selectAll();
+        }
+
+        if (printed) {
+            String photoMessage = describePhotoOutcome(orderId);
+            String status = completionMessage;
+            if (photoMessage != null) {
+                status = (status == null) ? photoMessage : status + ' ' + photoMessage;
+            }
+            if (status == null) {
+                status = "Printed.";
+            }
+            statusLabel.setText(status);
+        }
+    }
+
+    private static boolean applyTagWithBrew(Path filePath, String tagName) {
+        try {
+            ProcessBuilder pb = new ProcessBuilder(
+                    "tag",
+                    "-a",
+                    tagName,
+                    filePath.toAbsolutePath().toString()
+            );
+            Process p = pb.start();
+            int exitCode = p.waitFor();
+            return exitCode == 0;
+        } catch (IOException | InterruptedException e) {
+            System.err.println("Error running 'tag' command. Is Homebrew and 'tag' installed correctly?");
+            e.printStackTrace();
+            return false;
+        }
+    }
+
+    public static void main(String[] args) {
+        SwingUtilities.invokeLater(() -> new LabelFinderUI().setVisible(true));
+    }
+
+    private List<BufferedImage> renderPdfPagesList(File pdf, List<Integer> pages1Based, int dpi) {
+        List<BufferedImage> out = new ArrayList<>();
+        if (pdf == null || pages1Based == null || pages1Based.isEmpty()) return out;
+        try (PDDocument doc = PDDocument.load(pdf)) {
+            PDFRenderer renderer = new PDFRenderer(doc);
+            for (int p : pages1Based) {
+                BufferedImage img = renderer.renderImageWithDPI(p - 1, dpi);
+                out.add(img);
+            }
+        } catch (IOException ignored) {}
+        return out;
+    }
+
+    private static BufferedImage stackMany(List<BufferedImage> images, int gap, Color bg) {
+        if (images == null || images.isEmpty()) return null;
+        int wMax = 0, totalH = 0, count = 0;
+        for (BufferedImage im : images) {
+            if (im == null) continue;
+            wMax = Math.max(wMax, im.getWidth());
+            totalH += im.getHeight();
+            count++;
+        }
+        if (wMax == 0 || totalH == 0) return null;
+        totalH += gap * Math.max(0, count - 1);
+        BufferedImage out = new BufferedImage(wMax, totalH, BufferedImage.TYPE_INT_RGB);
+        Graphics2D g = out.createGraphics();
+        g.setColor(bg);
+        g.fillRect(0, 0, wMax, totalH);
+        int y = 0;
+        for (BufferedImage im : images) {
+            if (im == null) continue;
+            g.drawImage(im, 0, y, null);
+            y += im.getHeight();
+        }
+        g.dispose();
+        return out;
+    }
+
+    private static List<BufferedImage> withBorder(List<BufferedImage> images, Color color, int size) {
+        List<BufferedImage> out = new ArrayList<>();
+        if (images == null) return out;
+        for (BufferedImage im : images) { out.add(addBorder(im, color, size)); }
+        return out;
+    }
+
+    private static BufferedImage stackImagesVertically(BufferedImage top, BufferedImage bottom, int gap, Color bg) {
+        if (top == null && bottom == null) return null;
+        if (top == null) return bottom;
+        if (bottom == null) return top;
+        int w = Math.max(top.getWidth(), bottom.getWidth());
+        int h = top.getHeight() + gap + bottom.getHeight();
+        BufferedImage out = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
+        Graphics2D g = out.createGraphics();
+        g.setColor(bg);
+        g.fillRect(0, 0, w, h);
+        g.drawImage(top, 0, 0, null);
+        g.drawImage(bottom, 0, top.getHeight() + gap, null);
+        g.dispose();
+        return out;
+    }
+
+    private void printCombined() {
+        List<BufferedImage> pages = new ArrayList<>();
+        if (labelPagesToPrint != null) pages.addAll(labelPagesToPrint);
+        if (slipPagesToPrint  != null) pages.addAll(slipPagesToPrint);
+        if (pages.isEmpty()) {
+            if (combinedPreview == null) { statusLabel.setText("Nothing to print."); return; }
+            pages.add(combinedPreview);
+        }
+        PrinterJob job = PrinterJob.getPrinterJob();
+        job.setJobName("Shipping Label & Slip (4x6)");
+        BufferedImage first = pages.get(0);
+        boolean landscape = first.getWidth() > first.getHeight();
+        PageFormat pf = create4x6PageFormat(job, landscape);
+        job.setPrintable(new MultiPagePrintable(pages), pf);
+        if (job.printDialog()) {
+            try {
+                job.print();
+                statusLabel.setText("Print job sent.");
+            } catch (PrinterException e) {
+                JOptionPane.showMessageDialog(this, "Could not print.\nError: " + e.getMessage(), "Print Error", JOptionPane.ERROR_MESSAGE);
+            }
+        } else {
+            statusLabel.setText("Print job canceled.");
+        }
+    }
+
+    private boolean printCombinedDirect() {
+        List<BufferedImage> pages = new ArrayList<>();
+        if (labelPagesToPrint != null) pages.addAll(labelPagesToPrint);
+        if (slipPagesToPrint  != null) pages.addAll(slipPagesToPrint);
+        if (pages.isEmpty()) {
+            if (combinedPreview == null) { statusLabel.setText("Nothing to print."); return false; }
+            pages.add(combinedPreview);
+        }
+        PrinterJob job = PrinterJob.getPrinterJob();
+        job.setJobName("Shipping Label & Slip (4x6) - Direct");
+        BufferedImage first = pages.get(0);
+        boolean landscape = first.getWidth() > first.getHeight();
+        PageFormat pf = create4x6PageFormat(job, landscape);
+        job.setPrintable(new MultiPagePrintable(pages), pf);
+        try {
+            job.print();
+            statusLabel.setText("Printed (direct).");
+            return true;
+        } catch (PrinterException e) {
+            JOptionPane.showMessageDialog(this, "Direct print failed.\n" + e.getMessage(), "Print Error", JOptionPane.ERROR_MESSAGE);
+            return false;
+        }
+    }
+
+    private void cleanupAndExit() {
+        dispose();
+        System.exit(0);
+    }
+
+    private void populateBulkFromBase() {
+        if (baseDir == null || !baseDir.isDirectory()) {
+            statusLabel.setText("Select a valid base folder for BULK.");
+            return;
+        }
+        labelRefsModel.clear();
+        try (Stream<Path> stream = Files.walk(baseDir.toPath())) {
+            stream.filter(Files::isRegularFile)
+                    .filter(p -> p.getFileName().toString().toLowerCase(java.util.Locale.ROOT).endsWith(".pdf"))
+                    .sorted(Comparator.comparing(p -> p.getFileName().toString(), String.CASE_INSENSITIVE_ORDER))
+                    .forEach(pdfPath -> {
+                        try (PDDocument doc = PDDocument.load(pdfPath.toFile())) {
+                            for (int p = 1; p <= doc.getNumberOfPages(); p++) {
+                                labelRefsModel.addElement(new LabelRef(pdfPath.toFile(), p));
+                            }
+                        } catch (IOException ignored) {}
+                    });
+        } catch (IOException e) {
+            statusLabel.setText("Error reading bulk PDFs: " + e.getMessage());
+        }
+        photosModel.clear();
+        try (Stream<Path> stream = Files.walk(baseDir.toPath())) {
+            stream.filter(Files::isRegularFile)
+                    .filter(p -> IMG_NAME.matcher(p.getFileName().toString()).matches())
+                    .sorted(Comparator.comparing(p -> p.getFileName().toString(), String.CASE_INSENSITIVE_ORDER))
+                    .forEach(photosModel::addElement);
+        } catch (IOException e){
+            statusLabel.setText("Error reading bulk photos: " + e.getMessage());
+        }
+        if (!labelRefsModel.isEmpty()) labelRefsList.setSelectedIndex(0);
+        if (!photosModel.isEmpty()) photosList.setSelectedIndex(0);
+        statusLabel.setText("BULK loaded: " + labelRefsModel.size() + " pages, " + photosModel.size() + " photos.");
+    }
+
+    private void renderSelectedBulkPage() {
+        LabelRef ref = labelRefsList.getSelectedValue();
+        if (ref == null) {
+            clearAllViews();
+            return;
+        }
+        currentLabelLocation = new LabelLocation(ref.file, ref.page1Based);
+        try (PDDocument doc = PDDocument.load(ref.file)) {
+            PDFRenderer renderer = new PDFRenderer(doc);
+            BufferedImage img = renderer.renderImageWithDPI(ref.page1Based - 1, 150);
+            combinedPreview = addBorder(img, Color.DARK_GRAY, 8);
+            combinedPanel.setImage(combinedPreview);
+            printButton.setEnabled(true);
+            labelPagesToPrint = new ArrayList<>(List.of(img));
+            slipPagesToPrint  = new ArrayList<>();
+        } catch (IOException e) {
+            clearAllViews();
+        }
+    }
+
+    private void renderSelectedPhotos() {
+        List<Path> selected = photosList.getSelectedValuesList();
+        if (selected == null || selected.isEmpty()) {
+            photoView.setImages(null, null);
+            return;
+        }
+        try {
+            BufferedImage a = ImageIO.read(selected.get(0).toFile());
+            BufferedImage b = selected.size() > 1 ? ImageIO.read(selected.get(1).toFile()) : null;
+            photoView.setImages(a, b);
+            if (selected.size() > 2) {
+                statusLabel.setText("Only the first 2 selected photos are shown.");
+            }
+        } catch (IOException ex) {
+            photoView.setImages(null, null);
+        }
+    }
+
+    private static List<Path> findAllMatchingPhotos(Path root, String orderId) throws IOException {
+        final String needle = orderId.toLowerCase(java.util.Locale.ROOT);
+        List<Path> results = new ArrayList<>();
+        try (Stream<Path> s = Files.walk(root, 10)) {
+            s.filter(Files::isRegularFile).forEach(p -> {
+                String fileName = p.getFileName().toString();
+                if (IMG_NAME.matcher(fileName).matches() && fileName.toLowerCase(java.util.Locale.ROOT).contains(needle)) {
+                    results.add(p);
+                }
+            });
+        }
+        results.sort(Comparator.comparing(a -> a.getFileName().toString(), String.CASE_INSENSITIVE_ORDER));
+        return results;
+    }
+
+    private void clearProgressCaches() {
+        expectationIndex.clear();
+        scanProgress.clear();
+    }
+
+    private void rebuildExpectations() {
+        expectationIndex.clear();
+        if (baseDir == null || !baseDir.isDirectory()) {
+            return;
+        }
+        try (Stream<Path> stream = Files.walk(baseDir.toPath(), 6)) {
+            stream.filter(Files::isRegularFile)
+                    .filter(p -> p.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".json"))
+                    .forEach(p -> {
+                        OrderContribution contribution = readOrderContribution(p.toFile());
+                        if (contribution == null || contribution.orderId == null || contribution.orderId.isBlank()) {
+                            return;
+                        }
+                        OrderExpectation expectation = expectationIndex.computeIfAbsent(contribution.orderId, OrderExpectation::new);
+                        expectation.registerItem(contribution.orderItemId, contribution.itemQuantity);
+                    });
+        } catch (IOException ignored) {
+        }
+    }
+
+    private OrderExpectation resolveExpectation(String orderId) {
+        if (orderId == null || orderId.isBlank()) {
+            return null;
+        }
+        OrderExpectation cached = expectationIndex.get(orderId);
+        if (cached != null && !cached.isEmpty()) {
+            return cached;
+        }
+        OrderExpectation loaded = loadExpectationForOrder(orderId);
+        if (loaded != null && !loaded.isEmpty()) {
+            expectationIndex.put(orderId, loaded);
+            return loaded;
+        }
+        return null;
+    }
+
+    private OrderExpectation loadExpectationForOrder(String orderId) {
+        if (baseDir == null || !baseDir.isDirectory()) {
+            return null;
+        }
+        OrderExpectation expectation = new OrderExpectation(orderId);
+        try (Stream<Path> stream = Files.walk(baseDir.toPath(), 6)) {
+            stream.filter(Files::isRegularFile)
+                    .filter(p -> p.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".json"))
+                    .forEach(p -> {
+                        OrderContribution contribution = readOrderContribution(p.toFile());
+                        if (contribution == null) {
+                            return;
+                        }
+                        if (!orderId.equals(contribution.orderId)) {
+                            return;
+                        }
+                        expectation.registerItem(contribution.orderItemId, contribution.itemQuantity);
+                    });
+        } catch (IOException ignored) {
+        }
+        return expectation.isEmpty() ? null : expectation;
+    }
+
+    private static OrderContribution readOrderContribution(File jsonFile) {
+        if (jsonFile == null || !jsonFile.isFile()) {
+            return null;
+        }
+        try {
+            String content = Files.readString(jsonFile.toPath());
+            JSONObject root = new JSONObject(content);
+            String orderId = root.optString("orderId", "");
+            String itemId = root.optString("orderItemId", "");
+            if (orderId.isBlank() || itemId.isBlank()) {
+                return null;
+            }
+            int quantity = Math.max(root.optInt("quantity", 1), 1);
+            return new OrderContribution(orderId, itemId, quantity);
+        } catch (IOException | JSONException ignored) {
+            return null;
+        }
+    }
+
+    private ScanUpdate trackScanProgress(String orderId, String itemKey, String rawItemId) {
+        OrderExpectation expectation = resolveExpectation(orderId);
+        if (expectation == null) {
+            return null;
+        }
+        OrderScanState state = scanProgress.computeIfAbsent(orderId, key -> new OrderScanState(orderId, expectation));
+        return state.recordScan(itemKey, rawItemId);
+    }
+
+    private void markOrderComplete(String orderId) {
+        if (orderId == null || orderId.isBlank()) {
+            return;
+        }
+        scanProgress.remove(orderId);
+        expectationIndex.remove(orderId);
+    }
+
+    private String describePhotoOutcome(String orderId) {
+        if (photosModel.isEmpty()) {
+            if (currentLabelLocation != null) {
+                return "No matching photo found for: " + orderId;
+            }
+            return null;
+        }
+        if (photosModel.size() == 1) {
+            return "Auto-selected 1 photo for preview.";
+        }
+        return "Auto-selected first 2 photos for preview.";
+    }
+
+    private ScanInput parseScanInput(String rawInput) {
+        if (rawInput == null) {
+            return new ScanInput("", null, null);
+        }
+        String trimmed = rawInput.trim();
+        if (trimmed.isEmpty()) {
+            return new ScanInput("", null, null);
+        }
+        String[] parts = trimmed.split("\\^", 2);
+        String id = parts[0].trim();
+        String rawItem = null;
+        String key = null;
+        if (parts.length > 1) {
+            rawItem = parts[1].trim();
+            if (!rawItem.isEmpty()) {
+                key = normalizeItemKey(rawItem);
+            }
+        }
+        return new ScanInput(id, rawItem, key);
+    }
+
+    private static String normalizeItemKey(String rawItemId) {
+        if (rawItemId == null) {
+            return null;
+        }
+        String reduced = reduceOrderItemId(rawItemId);
+        if (reduced != null && !reduced.isBlank()) {
+            return reduced;
+        }
+        String trimmed = rawItemId.trim();
+        return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private static String reduceOrderItemId(String itemId) {
+        if (itemId == null) {
+            return null;
+        }
+        String trimmed = itemId.trim();
+        if (trimmed.isEmpty()) {
+            return null;
+        }
+        if (trimmed.length() <= 6) {
+            return trimmed;
+        }
+        return trimmed.substring(trimmed.length() - 6);
+    }
+
+    private static String shortenItemReference(String value) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        if (trimmed.length() <= 6) {
+            return trimmed;
+        }
+        return "…" + trimmed.substring(trimmed.length() - 6);
+    }
+
+    private String composeInProgressMessage(ScanUpdate update) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Order ").append(update.orderId)
+                .append(": scanned ")
+                .append(update.scanned).append('/').append(update.expected);
+        String itemSegment = formatItemSegment(update);
+        if (itemSegment != null) {
+            sb.append(" (last: ").append(itemSegment).append(')');
+        }
+        int remaining = Math.max(update.expected - update.scanned, 0);
+        if (remaining > 0) {
+            sb.append(". Waiting for ").append(remaining)
+                    .append(remaining == 1 ? " more item." : " more items.");
+        }
+        return sb.toString();
+    }
+
+    private String composeCompletionMessage(ScanUpdate update) {
+        return "Order " + update.orderId + ": scanned "
+                + update.scanned + '/' + update.expected + ". Printing.";
+    }
+
+    private String composeDuplicateMessage(ScanUpdate update) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Order ").append(update.orderId).append(": ");
+        String itemSegment = formatItemSegment(update);
+        if (itemSegment != null) {
+            sb.append(itemSegment).append(" already scanned.");
+        } else {
+            sb.append("Item already scanned.");
+        }
+        sb.append(" Progress ").append(update.scanned).append('/')
+                .append(update.expected).append('.');
+        return sb.toString();
+    }
+
+    private String composeUnknownItemMessage(ScanUpdate update) {
+        String display = update.itemDisplay != null ? update.itemDisplay : "item";
+        return "Order " + update.orderId + ": barcode item " + display
+                + " not expected. Scanned " + update.scanned + '/'
+                + update.expected + '.';
+    }
+
+    private String composeAlreadyCompleteMessage(ScanUpdate update) {
+        return "Order " + update.orderId + " already completed ("
+                + update.scanned + '/' + update.expected + ").";
+    }
+
+    private String composeGenericHoldMessage(ScanUpdate update) {
+        return "Order " + update.orderId + ": waiting. Progress "
+                + update.scanned + '/' + update.expected + '.';
+    }
+
+    private static String formatItemSegment(ScanUpdate update) {
+        if (update.itemDisplay == null || update.itemDisplay.isBlank()) {
+            return null;
+        }
+        if (update.itemExpected > 1 && update.itemProgress > 0) {
+            return update.itemDisplay + " " + update.itemProgress + '/' + update.itemExpected;
+        }
+        return update.itemDisplay;
+    }
+
+    private record ScanInput(String orderId, String rawItemId, String itemKey) {
+        ScanInput {
+            orderId = (orderId == null) ? "" : orderId;
+            rawItemId = (rawItemId == null || rawItemId.isBlank()) ? null : rawItemId;
+            itemKey = (itemKey == null || itemKey.isBlank()) ? null : itemKey;
+        }
+    }
+
+    private static final class OrderExpectation {
+        private final String orderId;
+        private final Map<String, ItemSpec> items = new LinkedHashMap<>();
+
+        OrderExpectation(String orderId) {
+            this.orderId = orderId;
+        }
+
+        void registerItem(String itemId, int quantity) {
+            int sanitized = quantity <= 0 ? 1 : quantity;
+            String canonical = (itemId == null || itemId.isBlank()) ? null : itemId.trim();
+            if (canonical == null) {
+                items.computeIfAbsent(null, k -> new ItemSpec(null, null)).expected += sanitized;
+                return;
+            }
+            String key = reduceOrderItemId(canonical);
+            ItemSpec spec = items.computeIfAbsent(key, k -> new ItemSpec(key, canonical));
+            spec.expected += sanitized;
+        }
+
+        Collection<ItemSpec> specs() {
+            return items.values();
+        }
+
+        int expectedForItem(String itemKey) {
+            ItemSpec spec = items.get(itemKey);
+            return spec == null ? 0 : spec.expected;
+        }
+
+        int resolvedTotal() {
+            return items.values().stream().mapToInt(spec -> spec.expected).sum();
+        }
+
+        boolean isEmpty() {
+            return items.isEmpty();
+        }
+    }
+
+    private static final class ItemSpec {
+        final String key;
+        final String fullId;
+        int expected;
+
+        ItemSpec(String key, String fullId) {
+            this.key = key;
+            this.fullId = (fullId == null || fullId.isBlank()) ? null : fullId.trim();
+        }
+    }
+
+    private static final class OrderScanState {
+        private final String orderId;
+        private final Map<String, ItemCounter> keyedCounters = new LinkedHashMap<>();
+        private final List<ItemCounter> orderedCounters = new ArrayList<>();
+        private final int expectedTotal;
+        private int scannedTotal;
+
+        OrderScanState(String orderId, OrderExpectation expectation) {
+            this.orderId = orderId;
+            int sum = 0;
+            for (ItemSpec spec : expectation.specs()) {
+                int expected = Math.max(spec.expected, 0);
+                if (expected <= 0) {
+                    continue;
+                }
+                ItemCounter counter = new ItemCounter(spec.key, spec.fullId, expected);
+                if (spec.key != null) {
+                    keyedCounters.put(spec.key, counter);
+                }
+                orderedCounters.add(counter);
+                sum += expected;
+            }
+            int resolved = Math.max(sum, expectation.resolvedTotal());
+            if (resolved > sum) {
+                int remaining = resolved - sum;
+                orderedCounters.add(new ItemCounter(null, null, remaining));
+                sum = resolved;
+            }
+            expectedTotal = Math.max(sum, 1);
+        }
+
+        ScanUpdate recordScan(String itemKey, String rawItemId) {
+            if (scannedTotal >= expectedTotal) {
+                return new ScanUpdate(orderId, scannedTotal, expectedTotal, true, false, false, false, true, null, 0, 0);
+            }
+            if (itemKey != null) {
+                ItemCounter counter = keyedCounters.get(itemKey);
+                if (counter != null) {
+                    if (counter.scanned >= counter.expected) {
+                        return new ScanUpdate(orderId, scannedTotal, expectedTotal, scannedTotal >= expectedTotal, false, true, false, scannedTotal >= expectedTotal, counter.display(), counter.scanned, counter.expected);
+                    }
+                    counter.scanned++;
+                    scannedTotal++;
+                    return new ScanUpdate(orderId, scannedTotal, expectedTotal, scannedTotal >= expectedTotal, true, false, false, scannedTotal >= expectedTotal, counter.display(), counter.scanned, counter.expected);
+                }
+                String display = shortenItemReference(rawItemId != null ? rawItemId : itemKey);
+                return new ScanUpdate(orderId, scannedTotal, expectedTotal, scannedTotal >= expectedTotal, false, false, true, scannedTotal >= expectedTotal, display, 0, 0);
+            }
+            ItemCounter next = orderedCounters.stream().filter(c -> c.scanned < c.expected).findFirst().orElse(null);
+            if (next == null) {
+                return new ScanUpdate(orderId, scannedTotal, expectedTotal, true, false, false, false, true, null, 0, 0);
+            }
+            next.scanned++;
+            scannedTotal++;
+            return new ScanUpdate(orderId, scannedTotal, expectedTotal, scannedTotal >= expectedTotal, true, false, false, scannedTotal >= expectedTotal, next.display(), next.scanned, next.expected);
+        }
+    }
+
+    private static final class ItemCounter {
+        final String key;
+        final String fullId;
+        final int expected;
+        int scanned;
+
+        ItemCounter(String key, String fullId, int expected) {
+            this.key = key;
+            this.fullId = (fullId == null || fullId.isBlank()) ? null : fullId.trim();
+            this.expected = expected;
+        }
+
+        String display() {
+            String candidate = (fullId != null) ? fullId : key;
+            if (candidate == null || candidate.isBlank()) {
+                return null;
+            }
+            return shortenItemReference(candidate);
+        }
+    }
+
+    private static final class ScanUpdate {
+        final String orderId;
+        final int scanned;
+        final int expected;
+        final boolean completed;
+        final boolean counted;
+        final boolean duplicate;
+        final boolean unknownItem;
+        final boolean alreadyComplete;
+        final String itemDisplay;
+        final int itemProgress;
+        final int itemExpected;
+
+        ScanUpdate(String orderId,
+                   int scanned,
+                   int expected,
+                   boolean completed,
+                   boolean counted,
+                   boolean duplicate,
+                   boolean unknownItem,
+                   boolean alreadyComplete,
+                   String itemDisplay,
+                   int itemProgress,
+                   int itemExpected) {
+            this.orderId = orderId;
+            this.scanned = scanned;
+            this.expected = expected;
+            this.completed = completed;
+            this.counted = counted;
+            this.duplicate = duplicate;
+            this.unknownItem = unknownItem;
+            this.alreadyComplete = alreadyComplete;
+            this.itemDisplay = itemDisplay;
+            this.itemProgress = itemProgress;
+            this.itemExpected = itemExpected;
+        }
+    }
+
+    private record OrderContribution(String orderId, String orderItemId, int itemQuantity) {
+    }
+
+    private void addPrintShortcut(JRootPane rootPane) {
+        int mask = Toolkit.getDefaultToolkit().getMenuShortcutKeyMaskEx();
+        KeyStroke ks = KeyStroke.getKeyStroke(KeyEvent.VK_P, mask);
+        rootPane.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(ks, "printCombinedAction");
+        rootPane.getActionMap().put("printCombinedAction", new AbstractAction() {
+            @Override public void actionPerformed(ActionEvent e) { printCombined(); }
+        });
+    }
+
+    private static BufferedImage addBorder(BufferedImage src, Color color, int size) {
+        if (src == null) return null;
+        int w = src.getWidth() + size * 2;
+        int h = src.getHeight() + size * 2;
+        BufferedImage out = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
+        Graphics2D g = out.createGraphics();
+        g.setColor(Color.WHITE);
+        g.fillRect(0, 0, w, h);
+        g.setColor(color);
+        g.fillRect(0, 0, w, size);
+        g.fillRect(0, h - size, w, size);
+        g.fillRect(0, 0, size, h);
+        g.fillRect(w - size, 0, size, h);
+        g.drawImage(src, size, size, null);
+        g.dispose();
+        return out;
+    }
+
+    private static class ImagePanel extends JPanel {
+        private BufferedImage image;
+        public void setImage(BufferedImage img) { this.image = img; revalidate(); repaint(); }
+        @Override public Dimension getPreferredSize() { return image == null ? new Dimension(900, 1200) : new Dimension(image.getWidth(), image.getHeight()); }
+        @Override protected void paintComponent(Graphics g) {
+            super.paintComponent(g);
+            if (image != null) {
+                int x = Math.max((getWidth() - image.getWidth()) / 2, 0);
+                int y = Math.max((getHeight() - image.getHeight()) / 2, 0);
+                ((Graphics2D) g).setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+                g.drawImage(image, x, y, this);
+            }
+        }
+    }
+
+    private static class DualImagePanel extends JPanel {
+        private BufferedImage imgA;
+        private BufferedImage imgB;
+        public void setImages(BufferedImage a, BufferedImage b) { this.imgA = a; this.imgB = b; revalidate(); repaint(); }
+        @Override protected void paintComponent(Graphics g) {
+            super.paintComponent(g);
+            if (imgA == null && imgB == null) return;
+            Graphics2D g2 = (Graphics2D) g;
+            g2.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+            int panelWidth = getWidth();
+            int panelHeight = getHeight();
+            if (imgB == null) {
+                drawFitted(g2, imgA, 0, 0, panelWidth, panelHeight);
+            } else {
+                int wL = panelWidth / 2;
+                int wR = panelWidth - wL;
+                drawFitted(g2, imgA, 0, 0, wL, panelHeight);
+                drawFitted(g2, imgB, wL, 0, wR, panelHeight);
+                g2.setColor(new Color(220, 220, 220));
+                g2.fillRect(wL - 1, 0, 2, panelHeight);
+            }
+        }
+        private void drawFitted(Graphics2D g2, BufferedImage img, int x, int y, int w, int h) {
+            if (img == null) return;
+            double scale = Math.min((double) w / img.getWidth(), (double) h / img.getHeight());
+            int dw = (int) (img.getWidth() * scale);
+            int dh = (int) (img.getHeight() * scale);
+            int dx = x + (w - dw) / 2;
+            int dy = y + (h - dh) / 2;
+            g2.drawImage(img, dx, dy, dw, dh, null);
+        }
+    }
+
+    private static class LabelRef {
+        final File file;
+        final int page1Based;
+        LabelRef(File file, int page1Based) { this.file = file; this.page1Based = page1Based; }
+        String toDisplayString() { return file.getName() + "  —  p." + page1Based; }
+        @Override public String toString() { return toDisplayString(); }
+    }
+
+    private static class MultiPagePrintable implements Printable {
+        private final List<BufferedImage> pages;
+        MultiPagePrintable(List<BufferedImage> pages) {
+            this.pages = pages == null ? java.util.Collections.emptyList() : pages;
+        }
+        @Override
+        public int print(Graphics g, PageFormat pf, int pageIndex) throws PrinterException {
+            if (pageIndex < 0 || pageIndex >= pages.size()) return NO_SUCH_PAGE;
+            BufferedImage img = pages.get(pageIndex);
+            if (img == null) return NO_SUCH_PAGE;
+            Graphics2D g2d = (Graphics2D) g;
+            g2d.translate(pf.getImageableX(), pf.getImageableY());
+            double pw = pf.getImageableWidth();
+            double ph = pf.getImageableHeight();
+            double scale = Math.min(pw / img.getWidth(), ph / img.getHeight());
+            int dw = (int) Math.floor(img.getWidth() * scale);
+            int dh = (int) Math.floor(img.getHeight() * scale);
+            int dx = (int) ((pw - dw) / 2.0);
+            int dy = (int) ((ph - dh) / 2.0);
+            g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+            g2d.drawImage(img, dx, dy, dw, dh, null);
+            return PAGE_EXISTS;
+        }
+    }
+
+    private static PageFormat create4x6PageFormat(PrinterJob job, boolean landscape) {
+        PageFormat pf = job.defaultPage();
+        Paper paper = new Paper();
+        double inch = 72.0;
+        double w = 4 * inch;
+        double h = 6 * inch;
+        if (landscape) { double t = w; w = h; h = t; }
+        double topMargin = h * 0.10;
+        double sideMargin = 0.10 * inch;
+        paper.setSize(w, h);
+        paper.setImageableArea(sideMargin, topMargin, w - 2 * sideMargin, h - topMargin - sideMargin);
+        pf.setPaper(paper);
+        pf.setOrientation(landscape ? PageFormat.LANDSCAPE : PageFormat.PORTRAIT);
+        return pf;
+    }
+
+    private void selectAndPreviewFirstPhotos() {
+        if (photosModel == null || photosModel.isEmpty()) {
+            photoView.setImages(null, null);
+            return;
+        }
+        int last = Math.min(1, photosModel.size() - 1);
+        photosList.clearSelection();
+        photosList.setSelectionInterval(0, last);
+        renderSelectedPhotos();
+    }
+
+    private static List<Path> findReadyDesignPhotos(Path root, String orderId) throws IOException {
+        final String needle = "(" + orderId.toLowerCase(java.util.Locale.ROOT) + ")";
+        List<Path> out = new ArrayList<>();
+        try (Stream<Path> s = Files.walk(root, 12)) {
+            s.filter(Files::isRegularFile).forEach(p -> {
+                String fileName = p.getFileName().toString();
+                if (!IMG_NAME.matcher(fileName).matches()) return;
+                if (!fileName.toLowerCase(java.util.Locale.ROOT).contains(needle)) return;
+                String fullPathLower = p.toAbsolutePath().toString().toLowerCase(java.util.Locale.ROOT);
+                boolean inReadyDir = fullPathLower.contains("ready design");
+                boolean isXn = XN_READY_NAME.matcher(fileName).matches();
+                if (isXn || inReadyDir) {
+                    out.add(p);
+                }
+            });
+        }
+        out.sort(Comparator.comparing(a -> a.getFileName().toString(), String.CASE_INSENSITIVE_ORDER));
+        return out;
+    }
+}
