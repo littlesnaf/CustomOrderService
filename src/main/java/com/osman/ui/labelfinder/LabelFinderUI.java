@@ -26,6 +26,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -33,6 +34,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -73,6 +75,11 @@ public class LabelFinderUI extends JFrame {
     private final Map<String, OrderExpectation> expectationIndex;
     private final Map<String, OrderScanState> scanProgress;
     private final List<File> baseFolders;
+    private final Set<String> photoRefreshInFlight;
+    private final Object photoIndexLock = new Object();
+    private volatile String activeOrderId;
+    private List<PhotoIndexEntry> photoIndex;
+    private Set<Path> photoIndexPaths;
     private File baseDir;
     private Map<String, PageGroup> labelGroups;
     private Map<String, PageGroup> slipGroups;
@@ -125,6 +132,10 @@ public class LabelFinderUI extends JFrame {
         expectationIndex = new ConcurrentHashMap<>();
         scanProgress = new ConcurrentHashMap<>();
         baseFolders = new ArrayList<>();
+        photoRefreshInFlight = Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
+        activeOrderId = null;
+        photoIndex = new ArrayList<>();
+        photoIndexPaths = new LinkedHashSet<>();
         JScrollPane photoViewScroll = new JScrollPane(photoView);
         JSplitPane mainSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, leftPanel, photoViewScroll);
         mainSplit.setResizeWeight(0.45);
@@ -184,6 +195,7 @@ public class LabelFinderUI extends JFrame {
         labelRefsList.setEnabled(bulk);
     }
     private void clearAllViews() {
+        activeOrderId = null;
         combinedPreview = null;
         combinedPanel.setImage(null);
         photoView.setImages(null, null);
@@ -237,13 +249,19 @@ public class LabelFinderUI extends JFrame {
         }
         baseDir = getPrimaryBaseFolder();
         clearAllViews();
+        synchronized (photoIndexLock) {
+            photoIndex = new ArrayList<>();
+            photoIndexPaths = new LinkedHashSet<>();
+        }
+        photoRefreshInFlight.clear();
         clearProgressCaches();
         setUIEnabled(false);
         String scanningMessage = (baseFolders.size() == 1) ? "Scanning folder..." : "Scanning folders...";
         statusLabel.setText(scanningMessage);
         SwingWorker<Void, Void> worker = new SwingWorker<>() {
             @Override
-            protected Void doInBackground() {
+            protected Void doInBackground() throws Exception {
+                rebuildPhotoIndex();
                 if (bulkModeCheck.isSelected()) {
                     populateBulkFromBase();
                 }
@@ -261,7 +279,8 @@ public class LabelFinderUI extends JFrame {
                         statusLabel.setText("BULK loaded: " + labelRefsModel.size() + " pages, " + photosModel.size() + " photos.");
                     }
                     else {
-                        statusLabel.setText("Indexed " + labelGroups.size() + " labels, " + slipGroups.size() + " packing slips.");
+                        int photoCount = (photoIndex == null) ? 0 : photoIndex.size();
+                        statusLabel.setText("Indexed " + labelGroups.size() + " labels, " + slipGroups.size() + " packing slips, " + photoCount + " photos.");
                     }
                 }
                 catch (Exception e) {
@@ -307,6 +326,38 @@ public class LabelFinderUI extends JFrame {
         bulkModeCheck.setEnabled(enabled);
         labelRefsList.setEnabled(enabled);
         photosList.setEnabled(enabled);
+    }
+    private void rebuildPhotoIndex() throws IOException {
+        if (!hasBaseFolders()) {
+            synchronized (photoIndexLock) {
+                photoIndex = new ArrayList<>();
+                photoIndexPaths = new LinkedHashSet<>();
+            }
+            return;
+        }
+        LinkedHashSet<Path> seen = new LinkedHashSet<>();
+        for (File root : baseFolders) {
+            if (root == null || !root.isDirectory()) {
+                continue;
+            }
+            try (Stream<Path> stream = Files.walk(root.toPath())) {
+                stream.filter(Files::isRegularFile).filter(p -> IMG_NAME.matcher(p.getFileName().toString()).matches()).forEach(p -> seen.add(p.toAbsolutePath().normalize()));
+            }
+        }
+        List<PhotoIndexEntry> indexed = new ArrayList<>(seen.size());
+        LinkedHashSet<Path> pathSet = new LinkedHashSet<>(seen.size());
+        for (Path path : seen) {
+            Path normalized = path.toAbsolutePath().normalize();
+            if (pathSet.add(normalized)) {
+                String lower = normalized.getFileName().toString().toLowerCase(Locale.ROOT);
+                indexed.add(new PhotoIndexEntry(normalized, lower));
+            }
+        }
+        indexed.sort(Comparator.comparing(PhotoIndexEntry::lowerName));
+        synchronized (photoIndexLock) {
+            photoIndex = indexed;
+            photoIndexPaths = pathSet;
+        }
     }
     private void buildLabelAndSlipIndices() {
         labelGroups = new HashMap<>();
@@ -356,7 +407,8 @@ public class LabelFinderUI extends JFrame {
                 }
             }
         }
-        statusLabel.setText("Indexed " + labelGroups.size() + " labels, " + slipGroups.size() + " packing slips.");
+        int photoCount = (photoIndex == null) ? 0 : photoIndex.size();
+        statusLabel.setText("Indexed " + labelGroups.size() + " labels, " + slipGroups.size() + " packing slips, " + photoCount + " photos.");
     }
     private void onFind() {
         if (bulkModeCheck.isSelected()) {
@@ -373,6 +425,7 @@ public class LabelFinderUI extends JFrame {
             orderIdField.requestFocusInWindow();
             return;
         }
+        activeOrderId = orderId;
         combinedPreview = null;
         combinedPanel.setImage(null);
         printButton.setEnabled(false);
@@ -404,51 +457,12 @@ public class LabelFinderUI extends JFrame {
             combinedPanel.setImage(combinedPreview);
             printButton.setEnabled(true);
         }
-        photosModel.clear();
         photoView.setImages(null, null);
-        LinkedHashSet<Path> photoMatches = new LinkedHashSet<>();
-        for (File root : baseFolders) {
-            if (root == null || !root.isDirectory()) {
-                continue;
-            }
-            try {
-                photoMatches.addAll(findAllMatchingPhotos(root.toPath(), orderId));
-            }
-            catch (IOException ignored) {
-            }
-        }
-        photoMatches.forEach(photosModel::addElement);
-        selectAndPreviewFirstPhotos();
-        try {
-            LinkedHashSet<Path> designMatches = new LinkedHashSet<>();
-            for (File root : baseFolders) {
-                if (root == null || !root.isDirectory()) {
-                    continue;
-                }
-                designMatches.addAll(findReadyDesignPhotos(root.toPath(), orderId));
-            }
-            if (!designMatches.isEmpty()) {
-                List<Path> designs = new ArrayList<>(designMatches);
-                int ok = 0;
-                for (Path p : designs) {
-                    if (applyTagWithBrew(p, "Green")) {
-                        ok++;
-                    }
-                }
-                if (ok > 0) {
-                    statusLabel.setText("Ready designs tagged: Green (" + ok + "/" + designs.size() + ").");
-                }
-                else {
-                    statusLabel.setText("Tried to tag " + designs.size() + " item(s) with 'tag' command, but it failed. Is 'tag' installed and in your PATH?");
-                }
-            }
-            else {
-                statusLabel.setText("No ready design found to tag for: " + orderId);
-            }
-        }
-        catch (IOException ioex) {
-            statusLabel.setText("Tagging skipped (IO error).");
-        }
+        List<Path> photoMatches = collectPhotosFromIndex(orderId);
+        displayPhotosForOrder(orderId, photoMatches, false);
+        List<Path> designMatches = collectReadyDesignPhotos(orderId);
+        tagReadyDesigns(orderId, designMatches, true, true);
+        refreshPhotosForOrderAsync(orderId);
         boolean hasPrintableContent = !labelPagesToPrint.isEmpty() || !slipPagesToPrint.isEmpty();
         ScanUpdate scanUpdate = null;
         boolean expectationMissing = false;
@@ -687,20 +701,13 @@ public class LabelFinderUI extends JFrame {
             }
         }
         photosModel.clear();
-        LinkedHashSet<Path> photoSet = new LinkedHashSet<>();
-        for (File root : baseFolders) {
-            if (root == null || !root.isDirectory()) {
-                continue;
-            }
-            try (Stream<Path> stream = Files.walk(root.toPath())) {
-                stream.filter(Files::isRegularFile).filter(p -> IMG_NAME.matcher(p.getFileName().toString()).matches()).sorted(Comparator.comparing(p -> p.getFileName().toString(), String.CASE_INSENSITIVE_ORDER)).forEach(photoSet::add);
-            }
-            catch (IOException e) {
-                statusLabel.setText("Error reading bulk photos: " + e.getMessage());
-                return;
-            }
+        List<Path> indexedPhotos = collectAllPhotosFromIndex();
+        if (indexedPhotos.isEmpty()) {
+            statusLabel.setText("No photos indexed. Choose a base folder.");
         }
-        photoSet.forEach(photosModel::addElement);
+        else {
+            indexedPhotos.forEach(photosModel::addElement);
+        }
         if (!labelRefsModel.isEmpty()) labelRefsList.setSelectedIndex(0);
         if (!photosModel.isEmpty()) photosList.setSelectedIndex(0);
         statusLabel.setText("BULK loaded: " + labelRefsModel.size() + " pages, " + photosModel.size() + " photos.");
@@ -743,19 +750,182 @@ public class LabelFinderUI extends JFrame {
             photoView.setImages(null, null);
         }
     }
-    private static List<Path> findAllMatchingPhotos(Path root, String orderId) throws IOException {
-        final String needle = orderId.toLowerCase(java.util.Locale.ROOT);
-        List<Path> results = new ArrayList<>();
-        try (Stream<Path> s = Files.walk(root, 10)) {
-            s.filter(Files::isRegularFile).forEach(p -> {
-                String fileName = p.getFileName().toString();
-                if (IMG_NAME.matcher(fileName).matches() && fileName.toLowerCase(java.util.Locale.ROOT).contains(needle)) {
-                    results.add(p);
-                }
-            });
+    private List<Path> collectPhotosFromIndex(String orderId) {
+        if (orderId == null || orderId.isBlank()) {
+            return new ArrayList<>();
         }
-        results.sort(Comparator.comparing(a -> a.getFileName().toString(), String.CASE_INSENSITIVE_ORDER));
-        return results;
+        String needle = orderId.toLowerCase(Locale.ROOT);
+        synchronized (photoIndexLock) {
+            if (photoIndex == null || photoIndex.isEmpty()) {
+                return new ArrayList<>();
+            }
+            List<Path> matches = new ArrayList<>();
+            for (PhotoIndexEntry entry : photoIndex) {
+                if (entry.lowerName().contains(needle)) {
+                    matches.add(entry.path());
+                }
+            }
+            return matches;
+        }
+    }
+    private List<Path> collectAllPhotosFromIndex() {
+        synchronized (photoIndexLock) {
+            if (photoIndex == null || photoIndex.isEmpty()) {
+                return new ArrayList<>();
+            }
+            List<Path> out = new ArrayList<>(photoIndex.size());
+            for (PhotoIndexEntry entry : photoIndex) {
+                out.add(entry.path());
+            }
+            return out;
+        }
+    }
+    private void displayPhotosForOrder(String orderId, List<Path> matches, boolean preserveSelection) {
+        List<Path> previouslySelected = preserveSelection ? new ArrayList<>(photosList.getSelectedValuesList()) : Collections.emptyList();
+        photosModel.clear();
+        for (Path match : matches) {
+            photosModel.addElement(match);
+        }
+        if (matches.isEmpty()) {
+            photoView.setImages(null, null);
+            return;
+        }
+        if (preserveSelection && !previouslySelected.isEmpty()) {
+            LinkedHashSet<Path> desired = new LinkedHashSet<>(previouslySelected);
+            photosList.clearSelection();
+            for (int i = 0; i < matches.size(); i++) {
+                if (desired.contains(matches.get(i))) {
+                    photosList.addSelectionInterval(i, i);
+                }
+            }
+            if (photosList.isSelectionEmpty()) {
+                selectAndPreviewFirstPhotos();
+            }
+            else {
+                renderSelectedPhotos();
+            }
+        }
+        else {
+            selectAndPreviewFirstPhotos();
+        }
+    }
+    private void refreshPhotosForOrderAsync(String orderId) {
+        if (orderId == null || orderId.isBlank() || !hasBaseFolders()) {
+            return;
+        }
+        if (!photoRefreshInFlight.add(orderId)) {
+            return;
+        }
+        SwingWorker<List<Path>, Void> worker = new SwingWorker<>() {
+            @Override
+            protected List<Path> doInBackground() {
+                try {
+                    return scanPhotosFromDisk(orderId);
+                }
+                catch (IOException ignored) {
+                    return Collections.emptyList();
+                }
+            }
+            @Override
+            protected void done() {
+                try {
+                    List<Path> diskMatches = get();
+                    List<Path> newEntries = addPhotosToIndex(diskMatches);
+                    List<Path> designMatches = collectReadyDesignPhotos(orderId);
+                    boolean newReadyDesignFound = !newEntries.isEmpty() && designMatches.stream().anyMatch(newEntries::contains);
+                    if (orderId.equals(activeOrderId)) {
+                        List<Path> refreshed = collectPhotosFromIndex(orderId);
+                        displayPhotosForOrder(orderId, refreshed, true);
+                        if (newReadyDesignFound) {
+                            tagReadyDesigns(orderId, designMatches, true, false);
+                        }
+                    }
+                    else if (newReadyDesignFound) {
+                        tagReadyDesigns(orderId, designMatches, false, false);
+                    }
+                }
+                catch (Exception ignored) {
+                }
+                finally {
+                    photoRefreshInFlight.remove(orderId);
+                }
+            }
+        };
+        worker.execute();
+    }
+    private List<Path> addPhotosToIndex(List<Path> candidates) {
+        if (candidates == null || candidates.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<Path> newEntries = new ArrayList<>();
+        synchronized (photoIndexLock) {
+            if (photoIndex == null) {
+                photoIndex = new ArrayList<>();
+            }
+            if (photoIndexPaths == null) {
+                photoIndexPaths = new LinkedHashSet<>();
+            }
+            for (Path candidate : candidates) {
+                if (candidate == null) {
+                    continue;
+                }
+                Path normalized = candidate.toAbsolutePath().normalize();
+                if (photoIndexPaths.add(normalized)) {
+                    photoIndex.add(new PhotoIndexEntry(normalized, normalized.getFileName().toString().toLowerCase(Locale.ROOT)));
+                    newEntries.add(normalized);
+                }
+            }
+            if (!newEntries.isEmpty()) {
+                photoIndex.sort(Comparator.comparing(PhotoIndexEntry::lowerName));
+            }
+        }
+        return newEntries;
+    }
+    private List<Path> scanPhotosFromDisk(String orderId) throws IOException {
+        if (orderId == null || orderId.isBlank() || !hasBaseFolders()) {
+            return Collections.emptyList();
+        }
+        String needle = orderId.toLowerCase(Locale.ROOT);
+        LinkedHashSet<Path> results = new LinkedHashSet<>();
+        for (File root : baseFolders) {
+            if (root == null || !root.isDirectory()) {
+                continue;
+            }
+            try (Stream<Path> stream = Files.walk(root.toPath(), 10)) {
+                stream.filter(Files::isRegularFile).forEach(p -> {
+                    String fileName = p.getFileName().toString();
+                    if (IMG_NAME.matcher(fileName).matches() && fileName.toLowerCase(Locale.ROOT).contains(needle)) {
+                        results.add(p.toAbsolutePath().normalize());
+                    }
+                });
+            }
+        }
+        List<Path> sorted = new ArrayList<>(results);
+        sorted.sort(Comparator.comparing(p -> p.getFileName().toString(), String.CASE_INSENSITIVE_ORDER));
+        return sorted;
+    }
+    private void tagReadyDesigns(String orderId, List<Path> designMatches, boolean updateStatus, boolean allowEmptyStatusMessage) {
+        if (designMatches == null || designMatches.isEmpty()) {
+            if (updateStatus && allowEmptyStatusMessage) {
+                statusLabel.setText("No ready design found to tag for: " + orderId);
+            }
+            return;
+        }
+        int ok = 0;
+        for (Path p : designMatches) {
+            if (applyTagWithBrew(p, "Green")) {
+                ok++;
+            }
+        }
+        if (!updateStatus) {
+            return;
+        }
+        if (ok > 0) {
+            statusLabel.setText("Ready designs tagged: Green (" + ok + "/" + designMatches.size() + ").");
+        }
+        else {
+            statusLabel.setText("Tried to tag " + designMatches.size() + " item(s) with 'tag' command, but it failed. Is 'tag' installed and in your PATH?");
+        }
     }
     /**
      * Enables drag-and-drop of folders so operators can quickly switch data sources.
@@ -1264,6 +1434,8 @@ public class LabelFinderUI extends JFrame {
             g2.drawImage(img, dx, dy, dw, dh, null);
         }
     }
+    private record PhotoIndexEntry(Path path, String lowerName) {
+    }
     /**
      * Lightweight description of a PDF and page pair for the bulk label list.
      */
@@ -1345,23 +1517,29 @@ public class LabelFinderUI extends JFrame {
         photosList.setSelectionInterval(0, last);
         renderSelectedPhotos();
     }
-    private static List<Path> findReadyDesignPhotos(Path root, String orderId) throws IOException {
-        final String needle = "(" + orderId.toLowerCase(java.util.Locale.ROOT) + ")";
-        List<Path> out = new ArrayList<>();
-        try (Stream<Path> s = Files.walk(root, 12)) {
-            s.filter(Files::isRegularFile).forEach(p -> {
-                String fileName = p.getFileName().toString();
-                if (!IMG_NAME.matcher(fileName).matches()) return;
-                if (!fileName.toLowerCase(java.util.Locale.ROOT).contains(needle)) return;
-                String fullPathLower = p.toAbsolutePath().toString().toLowerCase(java.util.Locale.ROOT);
-                boolean inReadyDir = fullPathLower.contains("ready design");
-                boolean isXn = XN_READY_NAME.matcher(fileName).matches();
-                if (isXn || inReadyDir) {
-                    out.add(p);
-                }
-            });
+    private List<Path> collectReadyDesignPhotos(String orderId) {
+        if (orderId == null || orderId.isBlank()) {
+            return new ArrayList<>();
         }
-        out.sort(Comparator.comparing(a -> a.getFileName().toString(), String.CASE_INSENSITIVE_ORDER));
-        return out;
+        String needle = "(" + orderId.toLowerCase(Locale.ROOT) + ")";
+        synchronized (photoIndexLock) {
+            if (photoIndex == null || photoIndex.isEmpty()) {
+                return new ArrayList<>();
+            }
+            List<Path> out = new ArrayList<>();
+            for (PhotoIndexEntry entry : photoIndex) {
+                if (!entry.lowerName().contains(needle)) {
+                    continue;
+                }
+                Path path = entry.path();
+                String fileName = path.getFileName().toString();
+                boolean isXn = XN_READY_NAME.matcher(fileName).matches();
+                boolean inReadyDir = path.toString().toLowerCase(Locale.ROOT).contains("ready design");
+                if (isXn || inReadyDir) {
+                    out.add(path);
+                }
+            }
+            return out;
+        }
     }
 }
