@@ -188,7 +188,7 @@ public final class MugRenderer {
         Font orderIdFont = infoFont.deriveFont(infoFont.getSize2D() * 1.3f);
         g2d.setColor(Color.BLACK);
 
-        int infoBoxY = template.finalHeight - 190;
+        int infoBoxY = template.finalHeight - 191;
         int infoBoxX = 158;
         int infoBoxWidth = 2330;
         int infoBoxHeight = 146;
