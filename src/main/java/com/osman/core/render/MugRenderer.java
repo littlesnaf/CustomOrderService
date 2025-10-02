@@ -188,14 +188,14 @@ public final class MugRenderer {
         Font orderIdFont = infoFont.deriveFont(infoFont.getSize2D() * 1.3f);
         g2d.setColor(Color.BLACK);
 
-        int infoBoxY = template.finalHeight - 147;
+        int infoBoxY = template.finalHeight - 190;
         int infoBoxX = 158;
         int infoBoxWidth = 2330;
         int infoBoxHeight = 146;
 
         FontMetrics fm = g2d.getFontMetrics(infoFont);
         int lineHeight = fm.getHeight();
-        int baselineCenter = infoBoxY + (infoBoxHeight - (2 * lineHeight)) / 2 + fm.getAscent();
+        int baselineCenter = infoBoxY + (infoBoxHeight - (2 * lineHeight)) / 2 + fm.getAscent() - 30;
         int ascent = fm.getAscent();
         int descent = fm.getDescent();
         int correction = (ascent - descent) / 2;
@@ -226,11 +226,8 @@ public final class MugRenderer {
         String barcodePayload = buildBarcodePayload(orderInfo);
         BufferedImage barcode = generateBarcodeWithText(barcodePayload, 1000, 120);
         int barcodeX = infoBoxX + (infoBoxWidth - barcode.getWidth()) / 2;
-        int barcodeCenterY = baselineCenter + lineHeight / 2 - correction + alignmentOffset;
+        int barcodeCenterY = infoBoxY + infoBoxHeight / 2;
         int barcodeY = barcodeCenterY - barcode.getHeight() / 2;
-        int minBarcodeY = infoBoxY;
-        int maxBarcodeY = infoBoxY + infoBoxHeight - barcode.getHeight();
-        barcodeY = Math.max(minBarcodeY, Math.min(barcodeY, maxBarcodeY));
         g2d.drawImage(barcode, barcodeX, barcodeY, null);
     }
 
