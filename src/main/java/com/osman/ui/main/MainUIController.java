@@ -17,6 +17,6 @@ public final class MainUIController {
     }
 
     public static void main(String[] args) {
-        SwingUtilities.invokeLater(() -> new MainUIController());
+        SwingUtilities.invokeLater(MainUIController::new);
     }
 }

@@ -1,5 +1,6 @@
 package com.osman.ui.labelfinder;
-
+import com.osman.config.PreferencesStore;
+import java.util.stream.Collectors;
 import com.osman.PackSlipExtractor;
 import com.osman.PdfLinker;
 import org.apache.pdfbox.pdmodel.PDDocument;
@@ -38,6 +39,8 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
+import com.osman.config.PreferencesStore;
+import java.util.stream.Collectors;
 
 /**
  * Swing UI for locating shipping labels, packing slips, and corresponding order photos.
@@ -89,6 +92,13 @@ public class LabelFinderUI extends JFrame {
     private List<BufferedImage> slipPagesToPrint;
     private static final Pattern IMG_NAME = Pattern.compile("(?i).+\\s*(?:\\(\\d+\\))?\\s*\\.(png|jpe?g)$");
     private static final Pattern XN_READY_NAME = Pattern.compile("(?i)^x(?:\\(\\d+\\)|\\d+)-.+\\s*(?:\\(\\d+\\))?\\s*\\.(?:png|jpe?g)$");
+    private static final String PREF_LAST_BASE_DIRS   = "lastBaseDirs";     // çoklu dizinleri '|' ile saklarız
+    private static final String PREF_BULK_MODE        = "bulkMode";         // "true"/"false"
+    private static final String PREF_WIN_BOUNDS       = "winBounds";        // x,y,w,h
+    private static final String PREF_DIVIDER_LOCATION = "dividerLocation";  // JSplitPane divider
+    private final PreferencesStore prefs = PreferencesStore.global();
+    private JSplitPane mainSplit;
+
     /**
      * Constructs the UI, wires listeners, and prepares the initial application state.
      */
@@ -137,7 +147,11 @@ public class LabelFinderUI extends JFrame {
         photoIndex = new ArrayList<>();
         photoIndexPaths = new LinkedHashSet<>();
         JScrollPane photoViewScroll = new JScrollPane(photoView);
-        JSplitPane mainSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, leftPanel, photoViewScroll);
+        mainSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, leftPanel, photoViewScroll);
+
+        mainSplit.addPropertyChangeListener(JSplitPane.DIVIDER_LOCATION_PROPERTY, evt -> {
+            prefs.putString(PREF_DIVIDER_LOCATION, String.valueOf(mainSplit.getDividerLocation()));
+        });
         mainSplit.setResizeWeight(0.45);
         statusLabel = new JLabel("Scan barcode → prints automatically. Choose base folder first.");
         setLayout(new BorderLayout());
@@ -159,6 +173,7 @@ public class LabelFinderUI extends JFrame {
         addWindowListener(new WindowAdapter() {
             @Override
             public void windowClosing(WindowEvent e) {
+                savePreferences();
                 cleanupAndExit();
             }
             @Override
@@ -170,14 +185,28 @@ public class LabelFinderUI extends JFrame {
                 orderIdField.requestFocusInWindow();
             }
         });
+        addComponentListener(new ComponentAdapter() {
+            @Override
+            public void componentMoved(ComponentEvent e) {
+                savePreferences();
+            }
+            @Override
+            public void componentResized(ComponentEvent e) {
+                savePreferences();
+            }
+        });
         orderIdField.addFocusListener(new FocusAdapter() {
             @Override
             public void focusGained(FocusEvent e) {
                 SwingUtilities.invokeLater(orderIdField::selectAll);
             }
+
         });
         addPrintShortcut(getRootPane());
+
         applyModeUI();
+        restorePreferences();
+
     }
     private void onModeChanged(boolean bulk) {
         applyModeUI();
@@ -193,6 +222,7 @@ public class LabelFinderUI extends JFrame {
         orderIdField.setEnabled(!bulk);
         findButton.setEnabled(true);
         labelRefsList.setEnabled(bulk);
+
     }
     private void clearAllViews() {
         activeOrderId = null;
@@ -241,6 +271,8 @@ public class LabelFinderUI extends JFrame {
         baseFolders.addAll(normalized);
         baseDir = getPrimaryBaseFolder();
         refreshBaseFolders();
+        prefs.putString(PREF_LAST_BASE_DIRS, serializeBaseDirs(folders));
+
     }
     private void refreshBaseFolders() {
         if (!hasBaseFolders()) {
@@ -1484,10 +1516,93 @@ public class LabelFinderUI extends JFrame {
     /**
      * Builds a 4x6 inch page format tailored for thermal shipping label printers.
      *
-     * @param job printer job to provide defaults from
-     * @param landscape whether the content should be rotated to landscape orientation
+     *
      * @return configured page format
      */
+    private void restorePreferences() {
+        // Bulk mode
+        boolean bulk = Boolean.parseBoolean(prefs.getString(PREF_BULK_MODE).orElse("false"));
+        bulkModeCheck.setSelected(bulk);
+        applyModeUI();
+
+        // Pencere konumu/boyutu
+        prefs.getString(PREF_WIN_BOUNDS).ifPresent(s -> {
+            String[] parts = s.split(",");
+            if (parts.length == 4) {
+                try {
+                    int x = Integer.parseInt(parts[0]);
+                    int y = Integer.parseInt(parts[1]);
+                    int w = Integer.parseInt(parts[2]);
+                    int h = Integer.parseInt(parts[3]);
+                    setBounds(x, y, w, h);
+                } catch (NumberFormatException ignored) { /* geçersizse yoksay */ }
+            }
+        });
+
+        // Splitter
+        prefs.getString(PREF_DIVIDER_LOCATION).ifPresent(s -> {
+            try {
+                int loc = Integer.parseInt(s);
+                // mainSplit alanı burada erişilebilir durumda
+                // (constructor’da restorePreferences() çağrısı, mainSplit oluşturulduktan sonra olmalı)
+                // mainSplit zaten alan, doğrudan set edebiliriz:
+                // mainSplit.setDividerLocation(loc);  // DİKKAT: layout sonrası daha sağlıklı
+                SwingUtilities.invokeLater(() -> mainSplit.setDividerLocation(loc));
+            } catch (NumberFormatException ignored) { }
+        });
+
+        // Son base dizin(ler)i yükle
+        prefs.getString(PREF_LAST_BASE_DIRS).ifPresent(serialized -> {
+            List<File> dirs = deserializeBaseDirs(serialized);
+            if (!dirs.isEmpty()) {
+                loadBaseFolders(dirs); // bu zaten UI’yı scan edecek
+            }
+        });
+
+
+    }
+
+    private void savePreferences() {
+        // pencere boyut/konum
+        Rectangle r = getBounds();
+        String win = r.x + "," + r.y + "," + r.width + "," + r.height;
+        prefs.putString(PREF_WIN_BOUNDS, win);
+
+        // divider
+        prefs.putString(PREF_DIVIDER_LOCATION, String.valueOf(((JSplitPane) getContentPane()
+                .getComponents()[1]).getDividerLocation())); // ama biz zaten mainSplit değişkenini tutuyoruz:
+
+
+        // bulk mode
+        prefs.putString(PREF_BULK_MODE, String.valueOf(bulkModeCheck.isSelected()));
+
+        // base dir(ler)
+        if (!baseFolders.isEmpty()) {
+            prefs.putString(PREF_LAST_BASE_DIRS, serializeBaseDirs(baseFolders));
+        }
+
+    }
+
+    private static String serializeBaseDirs(Collection<File> dirs) {
+        if (dirs == null || dirs.isEmpty()) return "";
+        return dirs.stream()
+                .filter(f -> f != null)
+                .map(f -> f.getAbsolutePath())
+                .collect(Collectors.joining("|"));
+    }
+
+    private static List<File> deserializeBaseDirs(String serialized) {
+        List<File> list = new ArrayList<>();
+        if (serialized == null || serialized.isBlank()) return list;
+        for (String s : serialized.split("\\|")) {
+            if (s == null || s.isBlank()) continue;
+            File f = new File(s.trim());
+            if (f.exists() && f.isDirectory()) {
+                list.add(f.getAbsoluteFile());
+            }
+        }
+        return list;
+    }
     private static PageFormat create4x6PageFormat(PrinterJob job, boolean landscape) {
         PageFormat pf = job.defaultPage();
         Paper paper = new Paper();
