@@ -25,7 +25,15 @@ public final class OrnamentSkuTool {
 
     private static final String[] INPUT_PATHS = new String[]{};
 
-    private static final Pattern SKU_PATTERN = Pattern.compile("\\bSKU[0-9A-Z\\-]+(?:\\.[A-Z]+)?\\b");
+    private static final Pattern SKU_PATTERN = Pattern.compile(
+            "(?i)\\b(?:" +
+
+                    "(?:SKU|SLU|SKY)\\s*[-:]?\\s*[A-Z]*\\d{3,}[A-Z0-9]*" +
+                    "|" +
+
+                    "(?:OR|RM|PF|ORN)\\d{3,}[A-Z0-9]*" +
+                    ")(?:\\.[A-Z]{2,4})?\\b"
+    );
     private static final Pattern ORDER_PATTERN = Pattern.compile("Order\\s*#\\s*:\\s*([0-9\\-]+)");
     private static final String KW_PACKING_SLIP = "Packing Slip";
     private static final String KW_CONTINUED = "Continued on Next Page";
