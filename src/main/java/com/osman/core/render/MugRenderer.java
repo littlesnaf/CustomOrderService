@@ -7,6 +7,7 @@ import com.google.zxing.oned.Code128Writer;
 import com.osman.core.json.JsonOrderLoader;
 import com.osman.core.json.OrderPayload;
 import com.osman.core.model.OrderInfo;
+import com.osman.core.render.SvgPreprocessor.MissingEmbeddedImageException;
 import com.osman.core.render.SvgPreprocessor.ProcessedSvg;
 import com.osman.core.render.TemplateRegistry.MugTemplate;
 import com.osman.logging.AppLogger;
@@ -108,12 +109,28 @@ public final class MugRenderer {
             throw new IOException("SVG Couldn't Find: " + jsonFile.getAbsolutePath());
         }
 
+        try {
+            verifyDeclaredImageAssets(payload, svgFile, orderRoot);
+        } catch (IOException e) {
+            String message = "Order %s is missing declared image assets: %s".formatted(orderInfo.getOrderId(), e.getMessage());
+            LOGGER.log(Level.SEVERE, message, e);
+            throw new IOException(message, e);
+        }
+
         String baseName = deriveOutputBaseName(orderRoot, outputDirectory, customerNameForFile, orderInfo);
         String suffix = (fileNameSuffix == null) ? "" : fileNameSuffix;
         String finalBaseName = "x" + orderInfo.getQuantity() + "-" + baseName + "(" + orderInfo.getOrderId() + ") " + suffix;
         File finalOutputFile = ensureUniqueFile(outputDirectory, finalBaseName.trim(), ".png");
 
-        ProcessedSvg processedSvg = SvgPreprocessor.preprocess(svgFile, orderInfo, outputDirectory);
+        ProcessedSvg processedSvg;
+        try {
+            processedSvg = SvgPreprocessor.preprocess(svgFile, orderInfo, outputDirectory);
+        } catch (MissingEmbeddedImageException e) {
+            String detail = String.join(", ", e.getMissingAssets());
+            String message = "Order %s is missing SVG-linked image assets: %s".formatted(orderInfo.getOrderId(), detail);
+            LOGGER.log(Level.SEVERE, message, e);
+            throw new IOException(message, e);
+        }
 
         BufferedImage finalCanvas = new BufferedImage(template.finalWidth, template.finalHeight, BufferedImage.TYPE_INT_RGB);
         Graphics2D g2d = finalCanvas.createGraphics();
@@ -374,6 +391,63 @@ public final class MugRenderer {
             baseName = sanitizeName(outputDir.getName());
         }
         return baseName;
+    }
+
+    private static void verifyDeclaredImageAssets(OrderPayload payload,
+                                                  File svgFile,
+                                                  File orderRoot) throws IOException {
+        if (payload == null || payload.images() == null) {
+            return;
+        }
+        List<String> missing = new ArrayList<>();
+        File svgParent = (svgFile == null) ? orderRoot : svgFile.getParentFile();
+        JsonOrderLoader.ImageFileInfo images = payload.images();
+        collectMissingImage(images.frontImageFile(), "front image", svgParent, orderRoot, missing);
+        collectMissingImage(images.backImageFile(), "back image", svgParent, orderRoot, missing);
+        if (!missing.isEmpty()) {
+            throw new IOException(String.join(", ", missing));
+        }
+    }
+
+    private static void collectMissingImage(String assetName,
+                                            String label,
+                                            File svgParent,
+                                            File orderRoot,
+                                            List<String> missing) throws IOException {
+        if (assetName == null || assetName.isBlank() || isRemoteReference(assetName)) {
+            return;
+        }
+        if (!assetExists(svgParent, orderRoot, assetName)) {
+            String parentDesc = (svgParent != null) ? svgParent.getAbsolutePath() : "<unknown>";
+            String orderDesc = (orderRoot != null) ? orderRoot.getAbsolutePath() : "<unknown>";
+            missing.add("%s '%s' not found under %s or %s".formatted(label, assetName, parentDesc, orderDesc));
+        }
+    }
+
+    private static boolean assetExists(File svgParent, File orderRoot, String assetName) throws IOException {
+        if (svgParent != null) {
+            File direct = new File(svgParent, assetName);
+            if (direct.exists()) {
+                return true;
+            }
+        }
+        if (orderRoot != null) {
+            File rootDirect = new File(orderRoot, assetName);
+            if (rootDirect.exists()) {
+                return true;
+            }
+            try (Stream<Path> stream = Files.walk(orderRoot.toPath(), 4)) {
+                final String needle = assetName.toLowerCase(Locale.ROOT);
+                return stream.filter(Files::isRegularFile)
+                        .anyMatch(p -> p.getFileName().toString().toLowerCase(Locale.ROOT).equals(needle));
+            }
+        }
+        return false;
+    }
+
+    private static boolean isRemoteReference(String href) {
+        String lower = href.toLowerCase(Locale.ROOT);
+        return lower.startsWith("http://") || lower.startsWith("https://");
     }
 
     private static String deriveNameFromPhotos(File orderDirectory, String orderId) throws IOException {

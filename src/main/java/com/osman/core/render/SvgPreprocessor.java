@@ -36,6 +36,7 @@ public final class SvgPreprocessor {
         Pattern imagePattern = Pattern.compile("<image\\b([^>]*?)(?:xlink:href|href)=\"([^\"]+)\"([^>]*)>");
         Matcher matcher = imagePattern.matcher(content);
         List<File> tempFiles = new ArrayList<>();
+        List<String> missingImages = new ArrayList<>();
         StringBuffer sb = new StringBuffer();
 
         while (matcher.find()) {
@@ -45,8 +46,16 @@ public final class SvgPreprocessor {
                 continue;
             }
 
-            File originalImageFile = new File(svgFile.getParentFile(), href);
-            BufferedImage sanitizedImage = ImageMagickAdapter.sanitize(originalImageFile);
+            boolean remoteReference = isRemoteReference(href);
+            File originalImageFile = remoteReference ? null : new File(svgFile.getParentFile(), href);
+            if (!remoteReference && (originalImageFile == null || !originalImageFile.exists())) {
+                String expectedPath = (originalImageFile == null) ? href : originalImageFile.getAbsolutePath();
+                missingImages.add(href + " (expected at " + expectedPath + ")");
+                matcher.appendReplacement(sb, Matcher.quoteReplacement(matcher.group(0)));
+                continue;
+            }
+
+            BufferedImage sanitizedImage = remoteReference ? null : ImageMagickAdapter.sanitize(originalImageFile);
             if (sanitizedImage != null) {
                 File tempPngFile = File.createTempFile("magick_", ".png", tempDir);
                 ImageIO.write(sanitizedImage, "png", tempPngFile);
@@ -61,8 +70,17 @@ public final class SvgPreprocessor {
         }
         matcher.appendTail(sb);
 
+        if (!missingImages.isEmpty()) {
+            throw new MissingEmbeddedImageException(svgFile, missingImages);
+        }
+
         String withFallbacks = addJavaFallbackFonts(sb.toString());
         return new ProcessedSvg(withFallbacks, tempFiles);
+    }
+
+    private static boolean isRemoteReference(String href) {
+        String lower = href.toLowerCase(Locale.ROOT);
+        return lower.startsWith("http://") || lower.startsWith("https://");
     }
 
     private static String addJavaFallbackFonts(String svg) {
@@ -164,5 +182,18 @@ public final class SvgPreprocessor {
     }
 
     public record ProcessedSvg(String content, List<File> tempFiles) {
+    }
+
+    public static final class MissingEmbeddedImageException extends IOException {
+        private final List<String> missingAssets;
+
+        public MissingEmbeddedImageException(File svgFile, List<String> missingAssets) {
+            super("Missing image assets referenced by SVG '" + svgFile.getName() + "': " + String.join(", ", missingAssets));
+            this.missingAssets = List.copyOf(missingAssets);
+        }
+
+        public List<String> getMissingAssets() {
+            return missingAssets;
+        }
     }
 }
