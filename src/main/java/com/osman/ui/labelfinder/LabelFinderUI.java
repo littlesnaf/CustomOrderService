@@ -1,8 +1,9 @@
 package com.osman.ui.labelfinder;
-import com.osman.config.PreferencesStore;
-import java.util.stream.Collectors;
+
 import com.osman.PackSlipExtractor;
 import com.osman.PdfLinker;
+import com.osman.config.PreferencesStore;
+import com.osman.logging.AppLogger;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.rendering.PDFRenderer;
 import org.json.JSONException;
@@ -36,10 +37,11 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
-import com.osman.config.PreferencesStore;
 import java.util.stream.Collectors;
 
 /**
@@ -47,6 +49,7 @@ import java.util.stream.Collectors;
  * Supports single-order lookup, bulk label browsing, and streamlined printing workflows.
  */
 public class LabelFinderUI extends JFrame {
+    private static final Logger LOGGER = AppLogger.get();
     private static class LabelLocation {
         final File pdfFile;
         final int pageNumber;
@@ -570,9 +573,13 @@ public class LabelFinderUI extends JFrame {
             int exitCode = p.waitFor();
             return exitCode == 0;
         }
-        catch (IOException | InterruptedException e) {
-            System.err.println("Error running 'tag' command. Is Homebrew and 'tag' installed correctly?");
-            e.printStackTrace();
+        catch (IOException e) {
+            LOGGER.log(Level.SEVERE, "Failed to apply Finder tag via 'tag' command", e);
+            return false;
+        }
+        catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            LOGGER.log(Level.WARNING, "Tag application interrupted", e);
             return false;
         }
     }

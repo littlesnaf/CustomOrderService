@@ -1,20 +1,26 @@
 package com.osman.core.render;
 
+import com.osman.logging.AppLogger;
+
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.IOException;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Bridges to the local ImageMagick installation so we can normalize source artwork before compositing.
  */
 public final class ImageMagickAdapter {
+    private static final Logger LOGGER = AppLogger.get();
+
     private ImageMagickAdapter() {
     }
 
     public static BufferedImage sanitize(File imageFile) {
         if (imageFile == null || !imageFile.exists()) {
-            System.err.println("No source for ImageMagick " + imageFile);
+            LOGGER.warning(() -> "No source for ImageMagick " + imageFile);
             return null;
         }
         try {
@@ -44,9 +50,11 @@ public final class ImageMagickAdapter {
                 return ImageIO.read(tempFile);
             }
         } catch (IOException e) {
+            LOGGER.log(Level.SEVERE, "Failed to sanitize image with ImageMagick", e);
             return null;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            LOGGER.log(Level.WARNING, "ImageMagick sanitization interrupted", e);
         }
         return null;
     }

@@ -9,6 +9,7 @@ import com.osman.core.json.OrderPayload;
 import com.osman.core.model.OrderInfo;
 import com.osman.core.render.SvgPreprocessor.ProcessedSvg;
 import com.osman.core.render.TemplateRegistry.MugTemplate;
+import com.osman.logging.AppLogger;
 import org.apache.batik.transcoder.TranscoderException;
 import org.apache.batik.transcoder.TranscoderInput;
 import org.apache.batik.transcoder.TranscoderOutput;
@@ -35,11 +36,14 @@ import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Rendering pipeline that transforms Amazon Custom orders into production-ready PNG files.
  */
 public final class MugRenderer {
+    private static final Logger LOGGER = AppLogger.get();
     private MugRenderer() {
     }
 
@@ -172,7 +176,7 @@ public final class MugRenderer {
                 g2d.fillRect(template.area2X, template.area2Y, template.area2Width, template.area2Height);
             }
         } catch (IOException e) {
-            System.err.println("Crop or Draw error: " + e.getMessage());
+            LOGGER.log(Level.SEVERE, "Failed to crop or draw mug artwork", e);
         } finally {
             deleteIfExists(crop1);
             deleteIfExists(crop2);
