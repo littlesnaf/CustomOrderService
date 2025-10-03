@@ -14,7 +14,7 @@ import com.osman.logging.AppLogger;
 import org.apache.batik.transcoder.TranscoderException;
 import org.apache.batik.transcoder.TranscoderInput;
 import org.apache.batik.transcoder.TranscoderOutput;
-import org.apache.batik.transcoder.image.PNGTranscoder;
+import org.apache.batik.transcoder.image.ImageTranscoder;
 
 import javax.imageio.ImageIO;
 import java.awt.Color;
@@ -25,7 +25,6 @@ import java.awt.RenderingHints;
 import java.awt.geom.AffineTransform;
 import java.awt.image.BufferedImage;
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.StringReader;
 import java.nio.file.Files;
@@ -39,6 +38,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.awt.image.RasterFormatException;
 
 /**
  * Rendering pipeline that transforms Amazon Custom orders into production-ready PNG files.
@@ -141,19 +141,15 @@ public final class MugRenderer {
         boolean drawLeft = !"BACK_ONLY".equals(payload.designSide());
         boolean drawRight = !"FRONT_ONLY".equals(payload.designSide());
 
-        File tempMaster = null;
         try {
-            tempMaster = File.createTempFile("temp_master_", ".png", outputDirectory);
-            convertSvgToHighResPng(processedSvg.content(),
+            BufferedImage masterImage = renderSvgToImage(processedSvg.content(),
                     svgFile.getParentFile(),
-                    tempMaster.getAbsolutePath(),
                     template.renderSize,
                     template.renderSize);
 
-            drawCropsToCanvas(g2d, tempMaster, outputDirectory, drawLeft, drawRight, template);
+            drawCropsToCanvas(g2d, masterImage, drawLeft, drawRight, template);
             drawMirroredInfoText(g2d, orderInfo, null, template, payload.totalQuantity());
         } finally {
-            deleteIfExists(tempMaster);
             processedSvg.tempFiles().forEach(MugRenderer::deleteIfExists);
         }
 
@@ -163,40 +159,32 @@ public final class MugRenderer {
     }
 
     private static void drawCropsToCanvas(Graphics2D g2d,
-                                          File masterFile,
-                                          File tempDir,
+                                          BufferedImage masterImage,
                                           boolean drawLeft,
                                           boolean drawRight,
                                           MugTemplate template) {
-        File crop1 = null;
-        File crop2 = null;
         try {
-            crop1 = File.createTempFile("crop1_", ".png", tempDir);
-            crop2 = File.createTempFile("crop2_", ".png", tempDir);
-
-            cropImage(masterFile.getAbsolutePath(), crop1.getAbsolutePath(),
-                    template.crop1X, template.crop1Y, template.crop1Width, template.crop1Height);
-            cropImage(masterFile.getAbsolutePath(), crop2.getAbsolutePath(),
-                    template.crop2X, template.crop2Y, template.crop2Width, template.crop2Height);
-
             if (drawLeft) {
-                g2d.drawImage(ImageIO.read(crop1), template.area1X, template.area1Y, template.area1Width, template.area1Height, null);
+                BufferedImage crop1 = cropSubImage(masterImage,
+                        template.crop1X, template.crop1Y,
+                        template.crop1Width, template.crop1Height);
+                g2d.drawImage(crop1, template.area1X, template.area1Y, template.area1Width, template.area1Height, null);
             } else {
                 g2d.setColor(Color.WHITE);
                 g2d.fillRect(template.area1X, template.area1Y, template.area1Width, template.area1Height);
             }
 
             if (drawRight) {
-                g2d.drawImage(ImageIO.read(crop2), template.area2X, template.area2Y, template.area2Width, template.area2Height, null);
+                BufferedImage crop2 = cropSubImage(masterImage,
+                        template.crop2X, template.crop2Y,
+                        template.crop2Width, template.crop2Height);
+                g2d.drawImage(crop2, template.area2X, template.area2Y, template.area2Width, template.area2Height, null);
             } else {
                 g2d.setColor(Color.WHITE);
                 g2d.fillRect(template.area2X, template.area2Y, template.area2Width, template.area2Height);
             }
         } catch (IOException e) {
             LOGGER.log(Level.SEVERE, "Failed to crop or draw mug artwork", e);
-        } finally {
-            deleteIfExists(crop1);
-            deleteIfExists(crop2);
         }
     }
 
@@ -339,32 +327,40 @@ public final class MugRenderer {
         g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
     }
 
-    private static void convertSvgToHighResPng(String svgContent,
-                                               File baseDirectory,
-                                               String outputPath,
-                                               float targetWidth,
-                                               float targetHeight) throws IOException, TranscoderException {
-        try (FileOutputStream out = new FileOutputStream(outputPath)) {
-            PNGTranscoder transcoder = new PNGTranscoder();
-            transcoder.addTranscodingHint(PNGTranscoder.KEY_WIDTH, targetWidth);
-            transcoder.addTranscodingHint(PNGTranscoder.KEY_HEIGHT, targetHeight);
-            transcoder.addTranscodingHint(PNGTranscoder.KEY_BACKGROUND_COLOR, new Color(0, 0, 0, 0));
-            transcoder.addTranscodingHint(PNGTranscoder.KEY_ALLOW_EXTERNAL_RESOURCES, true);
-            TranscoderInput input = new TranscoderInput(new StringReader(svgContent));
+    private static BufferedImage renderSvgToImage(String svgContent,
+                                                  File baseDirectory,
+                                                  float targetWidth,
+                                                  float targetHeight) throws TranscoderException {
+        BufferedImageTranscoder transcoder = new BufferedImageTranscoder();
+        transcoder.addTranscodingHint(ImageTranscoder.KEY_WIDTH, targetWidth);
+        transcoder.addTranscodingHint(ImageTranscoder.KEY_HEIGHT, targetHeight);
+        transcoder.addTranscodingHint(ImageTranscoder.KEY_BACKGROUND_COLOR, new Color(0, 0, 0, 0));
+        transcoder.addTranscodingHint(ImageTranscoder.KEY_ALLOW_EXTERNAL_RESOURCES, true);
+
+        TranscoderInput input = new TranscoderInput(new StringReader(svgContent));
+        if (baseDirectory != null) {
             input.setURI(baseDirectory.toURI().toString());
-            TranscoderOutput output = new TranscoderOutput(out);
-            transcoder.transcode(input, output);
-            out.flush();
         }
+        transcoder.transcode(input, (TranscoderOutput) null);
+        return transcoder.getBufferedImage();
     }
 
-    private static void cropImage(String sourcePath, String outputPath, int x, int y, int width, int height) throws IOException {
-        BufferedImage sourceImage = ImageIO.read(new File(sourcePath));
-        if (sourceImage == null) {
-            throw new IOException("Image couldn't read for crop : " + sourcePath);
+    private static BufferedImage cropSubImage(BufferedImage source,
+                                              int x,
+                                              int y,
+                                              int width,
+                                              int height) throws IOException {
+        try {
+            BufferedImage sub = source.getSubimage(x, y, width, height);
+            BufferedImage copy = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
+            Graphics2D g = copy.createGraphics();
+            g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+            g.drawImage(sub, 0, 0, null);
+            g.dispose();
+            return copy;
+        } catch (RasterFormatException e) {
+            throw new IOException("Crop dimensions out of bounds", e);
         }
-        BufferedImage cropped = sourceImage.getSubimage(x, y, width, height);
-        ImageIO.write(cropped, "png", new File(outputPath));
     }
 
     private static String deriveOutputBaseName(File orderRoot,
@@ -561,6 +557,27 @@ public final class MugRenderer {
         try {
             Files.deleteIfExists(f.toPath());
         } catch (IOException ignored) {
+        }
+    }
+
+    private static final class BufferedImageTranscoder extends ImageTranscoder {
+        private BufferedImage image;
+
+        @Override
+        public BufferedImage createImage(int w, int h) {
+            return new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
+        }
+
+        @Override
+        public void writeImage(BufferedImage img, TranscoderOutput out) {
+            this.image = img;
+        }
+
+        public BufferedImage getBufferedImage() {
+            if (image == null) {
+                throw new IllegalStateException("No image produced during SVG transcoding");
+            }
+            return image;
         }
     }
 }
