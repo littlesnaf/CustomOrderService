@@ -7,7 +7,6 @@ import com.google.zxing.oned.Code128Writer;
 import com.osman.core.json.JsonOrderLoader;
 import com.osman.core.json.OrderPayload;
 import com.osman.core.model.OrderInfo;
-import com.osman.core.render.SvgPreprocessor.MissingEmbeddedImageException;
 import com.osman.core.render.SvgPreprocessor.ProcessedSvg;
 import com.osman.core.render.TemplateRegistry.MugTemplate;
 import com.osman.logging.AppLogger;
@@ -30,9 +29,11 @@ import java.io.StringReader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -122,15 +123,9 @@ public final class MugRenderer {
         String finalBaseName = "x" + orderInfo.getQuantity() + "-" + baseName + "(" + orderInfo.getOrderId() + ") " + suffix;
         File finalOutputFile = ensureUniqueFile(outputDirectory, finalBaseName.trim(), ".png");
 
-        ProcessedSvg processedSvg;
-        try {
-            processedSvg = SvgPreprocessor.preprocess(svgFile, orderInfo, outputDirectory);
-        } catch (MissingEmbeddedImageException e) {
-            String detail = String.join(", ", e.getMissingAssets());
-            String message = "Order %s is missing SVG-linked image assets: %s".formatted(orderInfo.getOrderId(), detail);
-            LOGGER.log(Level.SEVERE, message, e);
-            throw new IOException(message, e);
-        }
+        Set<String> declaredImageNames = determineDeclaredImageNames(payload);
+
+        ProcessedSvg processedSvg = SvgPreprocessor.preprocess(svgFile, orderInfo, declaredImageNames, outputDirectory);
 
         BufferedImage finalCanvas = new BufferedImage(template.finalWidth, template.finalHeight, BufferedImage.TYPE_INT_RGB);
         Graphics2D g2d = finalCanvas.createGraphics();
@@ -403,6 +398,25 @@ public final class MugRenderer {
         if (!missing.isEmpty()) {
             throw new IOException(String.join(", ", missing));
         }
+    }
+
+    private static Set<String> determineDeclaredImageNames(OrderPayload payload) {
+        Set<String> names = new HashSet<>();
+        if (payload == null || payload.images() == null) {
+            return names;
+        }
+        String designSide = payload.designSide();
+        boolean allowFront = designSide == null || !"BACK_ONLY".equalsIgnoreCase(designSide);
+        boolean allowBack = designSide == null || !"FRONT_ONLY".equalsIgnoreCase(designSide);
+        String front = payload.images().frontImageFile();
+        String back = payload.images().backImageFile();
+        if (allowFront && front != null && !front.isBlank()) {
+            names.add(front);
+        }
+        if (allowBack && back != null && !back.isBlank()) {
+            names.add(back);
+        }
+        return names;
     }
 
     private static void collectMissingImage(String assetName,

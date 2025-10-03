@@ -1,6 +1,7 @@
 package com.osman.core.render;
 
 import com.osman.core.model.OrderInfo;
+import com.osman.logging.AppLogger;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
@@ -12,6 +13,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -22,25 +25,33 @@ public final class SvgPreprocessor {
     private static final String BLANK_LOGO_URL = "https://m.media-amazon.com/images/S/";
     private static final String TRANSPARENT_PIXEL_DATA_URI = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
     private static final String[] JAVA_LOGICAL_FALLBACKS = new String[]{"SansSerif", "Dialog"};
+    private static final Logger LOGGER = AppLogger.get();
 
     private SvgPreprocessor() {
     }
 
-    public static ProcessedSvg preprocess(File svgFile, OrderInfo orderInfo, File tempDir) throws IOException {
+    public static ProcessedSvg preprocess(File svgFile,
+                                          OrderInfo orderInfo,
+                                          Set<String> declaredImageNames,
+                                          File tempDir) throws IOException {
         String content = Files.readString(svgFile.toPath());
         content = content.replace("FONT_PLACEHOLDER", orderInfo.getFontName());
         if (content.contains(BLANK_LOGO_URL)) {
             content = content.replace(BLANK_LOGO_URL, TRANSPARENT_PIXEL_DATA_URI);
         }
 
-        Pattern imagePattern = Pattern.compile("<image\\b([^>]*?)(?:xlink:href|href)=\"([^\"]+)\"([^>]*)>");
+        Pattern imagePattern = Pattern.compile("<image\\b([^>]*?)(xlink:href|href)\\s*=\\s*(['\"])([^'\"]+)\\3([^>]*)>", Pattern.CASE_INSENSITIVE);
         Matcher matcher = imagePattern.matcher(content);
         List<File> tempFiles = new ArrayList<>();
-        List<String> missingImages = new ArrayList<>();
         StringBuffer sb = new StringBuffer();
+        Set<String> normalizedDeclaredImages = normalizeDeclaredImageNames(declaredImageNames);
 
         while (matcher.find()) {
-            String href = matcher.group(2);
+            String href = matcher.group(4);
+            String attributeName = matcher.group(2);
+            String quote = matcher.group(3);
+            String leadingAttributes = matcher.group(1);
+            String trailingAttributes = matcher.group(5);
             if (href.startsWith("data:")) {
                 matcher.appendReplacement(sb, matcher.group(0));
                 continue;
@@ -48,10 +59,17 @@ public final class SvgPreprocessor {
 
             boolean remoteReference = isRemoteReference(href);
             File originalImageFile = remoteReference ? null : new File(svgFile.getParentFile(), href);
+            String normalizedHref = normalizeImageName(href);
+            boolean declaredRequired = normalizedHref != null && normalizedDeclaredImages.contains(normalizedHref);
             if (!remoteReference && (originalImageFile == null || !originalImageFile.exists())) {
                 String expectedPath = (originalImageFile == null) ? href : originalImageFile.getAbsolutePath();
-                missingImages.add(href + " (expected at " + expectedPath + ")");
-                matcher.appendReplacement(sb, Matcher.quoteReplacement(matcher.group(0)));
+                if (declaredRequired) {
+                    LOGGER.log(Level.WARNING, () -> "SVG references missing declared image '" + href + "' expected at " + expectedPath);
+                } else {
+                    LOGGER.log(Level.FINE, () -> "Skipping template image '" + href + "' because it is not declared in the order JSON and was not found at " + expectedPath);
+                }
+                String replacement = "<image" + leadingAttributes + attributeName + "=" + quote + TRANSPARENT_PIXEL_DATA_URI + quote + trailingAttributes + ">";
+                matcher.appendReplacement(sb, Matcher.quoteReplacement(replacement));
                 continue;
             }
 
@@ -61,26 +79,66 @@ public final class SvgPreprocessor {
                 ImageIO.write(sanitizedImage, "png", tempPngFile);
                 tempFiles.add(tempPngFile);
                 String newHref = tempPngFile.toURI().toString();
-                String replacement = "<image" + matcher.group(1) + "xlink:href=\"" + newHref + "\"" + matcher.group(3) + ">";
+                String replacement = "<image" + leadingAttributes + attributeName + "=" + quote + newHref + quote + trailingAttributes + ">";
                 matcher.appendReplacement(sb, Matcher.quoteReplacement(replacement));
             } else {
-                String replacement = "<image" + matcher.group(1) + "xlink:href=\"" + TRANSPARENT_PIXEL_DATA_URI + "\"" + matcher.group(3) + ">";
+                String replacement = "<image" + leadingAttributes + attributeName + "=" + quote + TRANSPARENT_PIXEL_DATA_URI + quote + trailingAttributes + ">";
                 matcher.appendReplacement(sb, Matcher.quoteReplacement(replacement));
             }
         }
         matcher.appendTail(sb);
 
-        if (!missingImages.isEmpty()) {
-            throw new MissingEmbeddedImageException(svgFile, missingImages);
-        }
-
         String withFallbacks = addJavaFallbackFonts(sb.toString());
         return new ProcessedSvg(withFallbacks, tempFiles);
+    }
+
+    private static Set<String> normalizeDeclaredImageNames(Set<String> declaredImageNames) {
+        Set<String> normalized = new HashSet<>();
+        if (declaredImageNames == null || declaredImageNames.isEmpty()) {
+            return normalized;
+        }
+        for (String name : declaredImageNames) {
+            String normalizedName = normalizeImageName(name);
+            if (normalizedName != null) {
+                normalized.add(normalizedName);
+            }
+        }
+        return normalized;
     }
 
     private static boolean isRemoteReference(String href) {
         String lower = href.toLowerCase(Locale.ROOT);
         return lower.startsWith("http://") || lower.startsWith("https://");
+    }
+
+    private static String normalizeImageName(String href) {
+        if (href == null || href.isBlank()) {
+            return null;
+        }
+        String value = href.trim();
+        int fragmentIndex = value.indexOf('#');
+        if (fragmentIndex >= 0) {
+            value = value.substring(0, fragmentIndex);
+        }
+        int queryIndex = value.indexOf('?');
+        if (queryIndex >= 0) {
+            value = value.substring(0, queryIndex);
+        }
+        value = value.replace('\\', '/');
+        if (value.startsWith("file:")) {
+            try {
+                value = new java.net.URI(value).getPath();
+            } catch (Exception ignored) {
+            }
+        }
+        int lastSlash = value.lastIndexOf('/');
+        if (lastSlash >= 0 && lastSlash + 1 < value.length()) {
+            value = value.substring(lastSlash + 1);
+        }
+        if (value.isBlank()) {
+            return null;
+        }
+        return value.toLowerCase(Locale.ROOT);
     }
 
     private static String addJavaFallbackFonts(String svg) {
@@ -182,18 +240,5 @@ public final class SvgPreprocessor {
     }
 
     public record ProcessedSvg(String content, List<File> tempFiles) {
-    }
-
-    public static final class MissingEmbeddedImageException extends IOException {
-        private final List<String> missingAssets;
-
-        public MissingEmbeddedImageException(File svgFile, List<String> missingAssets) {
-            super("Missing image assets referenced by SVG '" + svgFile.getName() + "': " + String.join(", ", missingAssets));
-            this.missingAssets = List.copyOf(missingAssets);
-        }
-
-        public List<String> getMissingAssets() {
-            return missingAssets;
-        }
     }
 }

@@ -9,35 +9,20 @@ import org.apache.pdfbox.text.PDFTextStripper;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.Enumeration;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/**
- * Command-line helper that splits merged ornament PDFs into per-SKU documents.
- */
 public final class OrnamentSkuTool {
 
     private static final String[] INPUT_PATHS = new String[]{};
 
-    private static final Pattern SKU_PATTERN = Pattern.compile(
-            "(?i)\\b(?:" +
-
-                    "(?:SKU|SLU|SKY)\\s*[-:]?\\s*[A-Z]*\\d{3,}[A-Z0-9]*" +
-                    "|" +
-
-                    "(?:OR|RM|PF|ORN)\\d{3,}[A-Z0-9]*" +
-                    ")(?:\\.[A-Z]{2,4})?\\b"
-    );
     private static final Pattern ORDER_PATTERN = Pattern.compile("Order\\s*#\\s*:\\s*([0-9\\-]+)");
     private static final String KW_PACKING_SLIP = "Packing Slip";
     private static final String KW_CONTINUED = "Continued on Next Page";
     private static final String KW_NOT_CONTINUED = "Not Continued on Next Page";
+
+    private enum Account { UNIQXMAS, OTHER }
 
     private OrnamentSkuTool() {
     }
@@ -133,8 +118,14 @@ public final class OrnamentSkuTool {
         PDFTextStripper stripper = new PDFTextStripper();
         int total = doc.getNumberOfPages();
 
+        Account account = detectAccount(doc);
+        Pattern skuPattern = (account == Account.UNIQXMAS)
+                ? OrnamentSkuPatterns.ACCOUNT1
+                : OrnamentSkuPatterns.ACCOUNT2;
+
         List<Bundle> result = new ArrayList<>();
         Integer lastLabelPage = null;
+        String lastLabelText = null;
         Bundle current = null;
         boolean inSlip = false;
         boolean prevContinued = false;
@@ -157,12 +148,15 @@ public final class OrnamentSkuTool {
                         current.labelPageIndex = lastLabelPage;
                         inSlip = true;
                         prevContinued = false;
+                        if (lastLabelText != null) {
+                            current.skus.addAll(extractSkus(lastLabelText, skuPattern, account));
+                        }
                     }
                 }
                 if (current != null) {
                     current.slipPageIndices.add(i);
                     current.orderId = firstMatch(ORDER_PATTERN, text, current.orderId);
-                    current.skus.addAll(extractSkus(text));
+                    current.skus.addAll(extractSkus(text, skuPattern, account));
                     prevContinued = hasCont;
                     if (hasNotCont) {
                         result.add(current);
@@ -189,6 +183,7 @@ public final class OrnamentSkuTool {
                 prevContinued = false;
             }
             lastLabelPage = i;
+            lastLabelText = text;
         }
 
         if (current != null) {
@@ -202,6 +197,15 @@ public final class OrnamentSkuTool {
             }
         }
         return filtered;
+    }
+
+    private static Account detectAccount(PDDocument doc) throws IOException {
+        PDFTextStripper s = new PDFTextStripper();
+        int pages = Math.min(3, doc.getNumberOfPages());
+        s.setStartPage(1);
+        s.setEndPage(pages);
+        String t = normalizeForSkuScan(s.getText(doc)).toLowerCase(Locale.ROOT);
+        return t.contains("uniqxmas") ? Account.UNIQXMAS : Account.OTHER;
     }
 
     private static void mergeBundles(List<List<Path>> singlePagesPerDoc, List<BundleRef> bundles, Path outFile) throws IOException {
@@ -223,13 +227,38 @@ public final class OrnamentSkuTool {
         mu.mergeDocuments(MemoryUsageSetting.setupMainMemoryOnly());
     }
 
-    private static Set<String> extractSkus(String text) {
-        Set<String> out = new java.util.LinkedHashSet<>();
-        Matcher matcher = SKU_PATTERN.matcher(text);
+    private static Set<String> extractSkus(String text, Pattern skuPattern, Account account) {
+        Set<String> out = new LinkedHashSet<>();
+        String scan = normalizeForSkuScan(text);
+        Matcher matcher = skuPattern.matcher(scan);
         while (matcher.find()) {
-            out.add(matcher.group());
+            String tok = normalizeSkuToken(matcher.group(), account);
+            if (tok != null && !tok.isBlank()) {
+                out.add(tok);
+            }
         }
         return out;
+    }
+
+    private static String normalizeForSkuScan(String text) {
+        if (text == null) return "";
+        String t = text.replace("\u00AD", "")
+                .replace("\u200B", "")
+                .replace("\u200C", "")
+                .replace("\u200D", "")
+                .replace("\uFEFF", "");
+        t = t.replaceAll("[\\t\\f\\r]+", " ");
+        return t;
+    }
+
+    private static String normalizeSkuToken(String raw, Account account) {
+        if (raw == null) return null;
+        String s = raw.trim().toUpperCase(Locale.ROOT);
+        if (account == Account.UNIQXMAS) {
+            s = s.replaceFirst("^SLU\\b", "SKU").replaceFirst("^SKY\\b", "SKU");
+        }
+        s = s.replaceAll("\\s+", "");
+        return s;
     }
 
     private static String firstMatch(Pattern pattern, String text, String fallback) {
@@ -267,9 +296,8 @@ public final class OrnamentSkuTool {
         final int docId;
         Integer labelPageIndex;
         final List<Integer> slipPageIndices = new ArrayList<>();
-        final Set<String> skus = new java.util.LinkedHashSet<>();
+        final Set<String> skus = new LinkedHashSet<>();
         String orderId;
-
         Bundle(int docId) {
             this.docId = docId;
         }
