@@ -5,14 +5,9 @@ import java.util.regex.Pattern;
 
 public final class OrnamentSkuPatterns {
 
-    // Account1: UniqXmas (SKU, SLU, SKY)
-    public static final Pattern ACCOUNT1 = Pattern.compile(
-            "(?i)\\b(?:SKU|SLU|SKY)\\s*[-:]?\\s*[A-Z]*\\d{2,}[A-Z0-9.-]*\\b"
-    );
-
-    // Account2: OR/RM/PF/ORN
-    public static final Pattern ACCOUNT2 = Pattern.compile(
-            "(?i)\\b(?:OR|RM|PF|ORN)\\s*[-:]?\\s*\\d{2,}[A-Z0-9-]*\\b"
+    // Pattern to match SKU formats like "SKU-ABC123", "RN 45678", "PF: 7890A", etc.
+    public static final Pattern ANY = Pattern.compile(
+            "(?i)\\b(?:SKU\\s*[-:]?\\s*[A-Z]*\\d{2,}[A-Z0-9.-]*|(?:OR|RN|RM|PF|ORN)\\s*[-:]?\\s*\\d{2,}(?:\\s*[-/]?\\s*[A-Z0-9]+)*)\\b"
     );
 
     private OrnamentSkuPatterns() {}

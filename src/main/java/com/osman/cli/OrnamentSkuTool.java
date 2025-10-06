@@ -21,17 +21,11 @@ public final class OrnamentSkuTool {
     private static final String KW_PACKING_SLIP = "Packing Slip";
     private static final String KW_CONTINUED = "Continued on Next Page";
     private static final String KW_NOT_CONTINUED = "Not Continued on Next Page";
-
-    private enum Account { UNIQXMAS, OTHER }
-
-    private OrnamentSkuTool() {
-    }
+    private OrnamentSkuTool() {}
 
     public static void main(String[] args) throws Exception {
         List<Path> inputs = resolveInputs();
-        if (inputs.isEmpty()) {
-            throw new IOException("No input file");
-        }
+        if (inputs.isEmpty()) throw new IOException("No input file");
 
         Path outDir = inputs.get(0).getParent().resolve("ready-ornaments");
         Files.createDirectories(outDir);
@@ -40,49 +34,51 @@ public final class OrnamentSkuTool {
         cleanDir(tmpRoot);
         Files.createDirectories(tmpRoot);
 
-        List<List<Path>> singlePagesPerDoc = new ArrayList<>();
-        List<List<Bundle>> bundlesPerDoc = new ArrayList<>();
+        try (OrnamentDebugLogger debug = OrnamentDebugLogger.create(outDir)) {
+            List<List<Path>> singlePagesPerDoc = new ArrayList<>();
+            List<List<Bundle>> bundlesPerDoc = new ArrayList<>();
 
-        for (int docId = 0; docId < inputs.size(); docId++) {
-            Path input = inputs.get(docId);
-            Path tmpDir = tmpRoot.resolve("doc_" + docId);
-            Files.createDirectories(tmpDir);
+            for (int docId = 0; docId < inputs.size(); docId++) {
+                Path input = inputs.get(docId);
+                Path tmpDir = tmpRoot.resolve("doc_" + docId);
+                Files.createDirectories(tmpDir);
 
-            try (PDDocument doc = PDDocument.load(input.toFile())) {
-                List<Path> singlePageFiles = splitToSinglePages(doc, tmpDir);
-                singlePagesPerDoc.add(singlePageFiles);
-                List<Bundle> bundles = buildBundles(doc, docId);
-                bundlesPerDoc.add(bundles);
-            }
-        }
-
-        Map<String, List<BundleRef>> skuIndex = new LinkedHashMap<>();
-        List<BundleRef> mixBundles = new ArrayList<>();
-
-        for (int docId = 0; docId < bundlesPerDoc.size(); docId++) {
-            for (Bundle b : bundlesPerDoc.get(docId)) {
-                if (b.skus.isEmpty() || b.skus.size() > 1) {
-                    mixBundles.add(new BundleRef(docId, b));
-                }
-                for (String sku : b.skus) {
-                    skuIndex.computeIfAbsent(sku, k -> new ArrayList<>()).add(new BundleRef(docId, b));
+                try (PDDocument doc = PDDocument.load(input.toFile())) {
+                    List<Path> singlePageFiles = splitToSinglePages(doc, tmpDir);
+                    singlePagesPerDoc.add(singlePageFiles);
+                    List<Bundle> bundles = buildBundles(doc, docId, debug);
+                    bundlesPerDoc.add(bundles);
                 }
             }
-        }
 
-        for (Map.Entry<String, List<BundleRef>> entry : skuIndex.entrySet()) {
-            String sku = entry.getKey();
-            List<BundleRef> list = entry.getValue();
-            Path skuOut = outDir.resolve(sanitize(sku) + ".pdf");
-            mergeBundles(singlePagesPerDoc, list, skuOut);
-        }
+            Map<String, List<BundleRef>> skuIndex = new LinkedHashMap<>();
+            List<BundleRef> mixBundles = new ArrayList<>();
 
-        if (!mixBundles.isEmpty()) {
-            Path mixOut = outDir.resolve("MIX.pdf");
-            mergeBundles(singlePagesPerDoc, mixBundles, mixOut);
-        }
+            for (int docId = 0; docId < bundlesPerDoc.size(); docId++) {
+                for (Bundle b : bundlesPerDoc.get(docId)) {
+                    if (b.skus.isEmpty() || b.skus.size() > 1) {
+                        mixBundles.add(new BundleRef(docId, b));
+                    }
+                    for (String sku : b.skus) {
+                        skuIndex.computeIfAbsent(sku, k -> new ArrayList<>()).add(new BundleRef(docId, b));
+                    }
+                }
+            }
 
-        cleanDir(tmpRoot);
+            for (Map.Entry<String, List<BundleRef>> entry : skuIndex.entrySet()) {
+                String sku = entry.getKey();
+                List<BundleRef> list = entry.getValue();
+                Path skuOut = outDir.resolve(sanitize(sku) + ".pdf");
+                mergeBundles(singlePagesPerDoc, list, skuOut);
+            }
+
+            if (!mixBundles.isEmpty()) {
+                Path mixOut = outDir.resolve("MIX.pdf");
+                mergeBundles(singlePagesPerDoc, mixBundles, mixOut);
+            }
+        } finally {
+            cleanDir(tmpRoot);
+        }
     }
 
     private static List<Path> resolveInputs() throws IOException {
@@ -90,9 +86,7 @@ public final class OrnamentSkuTool {
         if (INPUT_PATHS.length > 0) {
             for (String p : INPUT_PATHS) {
                 Path path = Path.of(p);
-                if (Files.exists(path)) {
-                    inputs.add(path);
-                }
+                if (Files.exists(path)) inputs.add(path);
             }
         }
         return inputs;
@@ -114,14 +108,13 @@ public final class OrnamentSkuTool {
         return files;
     }
 
-    private static List<Bundle> buildBundles(PDDocument doc, int docId) throws IOException {
+    private static List<Bundle> buildBundles(PDDocument doc, int docId, OrnamentDebugLogger debug)
+            throws IOException {
         PDFTextStripper stripper = new PDFTextStripper();
         int total = doc.getNumberOfPages();
 
-        Account account = detectAccount(doc);
-        Pattern skuPattern = (account == Account.UNIQXMAS)
-                ? OrnamentSkuPatterns.ACCOUNT1
-                : OrnamentSkuPatterns.ACCOUNT2;
+        // Single SKU pattern used for both label and slip pages
+        Pattern skuPattern = OrnamentSkuPatterns.ANY;
 
         List<Bundle> result = new ArrayList<>();
         Integer lastLabelPage = null;
@@ -134,6 +127,7 @@ public final class OrnamentSkuTool {
             stripper.setStartPage(i + 1);
             stripper.setEndPage(i + 1);
             String text = safe(stripper.getText(doc));
+            debug.logPage(docId, i, text);
             String trimmed = text.trim();
 
             boolean isSlip = text.contains(KW_PACKING_SLIP);
@@ -142,23 +136,24 @@ public final class OrnamentSkuTool {
             boolean hasNotCont = text.contains(KW_NOT_CONTINUED);
 
             if (isSlip) {
-                if (current == null) {
-                    if (lastLabelPage != null) {
-                        current = new Bundle(docId);
-                        current.labelPageIndex = lastLabelPage;
-                        inSlip = true;
-                        prevContinued = false;
-                        if (lastLabelText != null) {
-                            current.skus.addAll(extractSkus(lastLabelText, skuPattern, account));
-                        }
+                if (current == null && lastLabelPage != null) {
+                    current = new Bundle(docId);
+                    current.labelPageIndex = lastLabelPage;
+                    inSlip = true;
+                    prevContinued = false;
+                    if (lastLabelText != null) {
+                        current.skus.addAll(extractSkus(lastLabelText, skuPattern, debug));
+                        debug.logSkuSet("Label page " + (lastLabelPage + 1), current.skus);
                     }
                 }
                 if (current != null) {
                     current.slipPageIndices.add(i);
                     current.orderId = firstMatch(ORDER_PATTERN, text, current.orderId);
-                    current.skus.addAll(extractSkus(text, skuPattern, account));
+                    current.skus.addAll(extractSkus(text, skuPattern, debug));
+                    debug.logSkuSet("Slip page " + (i + 1), current.skus);
                     prevContinued = hasCont;
                     if (hasNotCont) {
+                        debug.logBundleCompleted(current.orderId, current.skus);
                         result.add(current);
                         current = null;
                         inSlip = false;
@@ -169,14 +164,13 @@ public final class OrnamentSkuTool {
             }
 
             if (inSlip && prevContinued && isBlank) {
-                if (current != null) {
-                    current.slipPageIndices.add(i);
-                }
+                if (current != null) current.slipPageIndices.add(i);
                 prevContinued = false;
                 continue;
             }
 
             if (current != null) {
+                debug.logBundleCompleted(current.orderId, current.skus);
                 result.add(current);
                 current = null;
                 inSlip = false;
@@ -186,109 +180,54 @@ public final class OrnamentSkuTool {
             lastLabelText = text;
         }
 
-        if (current != null) {
-            result.add(current);
-        }
+        if (current != null) result.add(current);
 
         List<Bundle> filtered = new ArrayList<>();
         for (Bundle b : result) {
-            if (b.labelPageIndex != null && !b.slipPageIndices.isEmpty()) {
-                filtered.add(b);
-            }
+            if (b.labelPageIndex != null && !b.slipPageIndices.isEmpty()) filtered.add(b);
         }
         return filtered;
     }
 
-    private static Account detectAccount(PDDocument doc) throws IOException {
-        PDFTextStripper s = new PDFTextStripper();
-        int pages = Math.min(3, doc.getNumberOfPages());
-        s.setStartPage(1);
-        s.setEndPage(pages);
-        String t = normalizeForSkuScan(s.getText(doc)).toLowerCase(Locale.ROOT);
-        return t.contains("uniqxmas") ? Account.UNIQXMAS : Account.OTHER;
-    }
-
     private static void mergeBundles(List<List<Path>> singlePagesPerDoc, List<BundleRef> bundles, Path outFile) throws IOException {
-        if (bundles.isEmpty()) {
-            return;
-        }
+        if (bundles.isEmpty()) return;
         PDFMergerUtility mu = new PDFMergerUtility();
         mu.setDestinationFileName(outFile.toString());
-
         for (BundleRef ref : bundles) {
             List<Path> files = singlePagesPerDoc.get(ref.docId);
             Bundle b = ref.bundle;
             mu.addSource(files.get(b.labelPageIndex).toFile());
-            for (Integer pi : b.slipPageIndices) {
-                mu.addSource(files.get(pi).toFile());
-            }
+            for (Integer pi : b.slipPageIndices) mu.addSource(files.get(pi).toFile());
         }
-
         mu.mergeDocuments(MemoryUsageSetting.setupMainMemoryOnly());
     }
 
-    private static Set<String> extractSkus(String text, Pattern skuPattern, Account account) {
+    private static Set<String> extractSkus(String text, Pattern skuPattern, OrnamentDebugLogger debug) {
         Set<String> out = new LinkedHashSet<>();
-        String scan = normalizeForSkuScan(text);
+        String scan = OrnamentSkuNormalizer.normalizeForScan(text);
         Matcher matcher = skuPattern.matcher(scan);
         while (matcher.find()) {
-            String tok = normalizeSkuToken(matcher.group(), account);
-            if (tok != null && !tok.isBlank()) {
-                out.add(tok);
-            }
+            String raw = matcher.group();
+            String tok = OrnamentSkuNormalizer.normalizeToken(raw);
+            debug.logToken(raw, tok);
+            if (tok != null && !tok.isBlank()) out.add(tok);
         }
         return out;
     }
 
-    private static String normalizeForSkuScan(String text) {
-        if (text == null) return "";
-        String t = text.replace("\u00AD", "")
-                .replace("\u200B", "")
-                .replace("\u200C", "")
-                .replace("\u200D", "")
-                .replace("\uFEFF", "");
-        t = t.replaceAll("[\\t\\f\\r]+", " ");
-        return t;
-    }
-
-    private static String normalizeSkuToken(String raw, Account account) {
-        if (raw == null) return null;
-        String s = raw.trim().toUpperCase(Locale.ROOT);
-        if (account == Account.UNIQXMAS) {
-            s = s.replaceFirst("^SLU\\b", "SKU").replaceFirst("^SKY\\b", "SKU");
-        }
-        s = s.replaceAll("\\s+", "");
-        return s;
-    }
-
     private static String firstMatch(Pattern pattern, String text, String fallback) {
         Matcher matcher = pattern.matcher(text);
-        if (matcher.find()) {
-            return matcher.group(1);
-        }
-        return fallback;
+        return matcher.find() ? matcher.group(1) : fallback;
     }
 
-    private static String safe(String text) {
-        return text == null ? "" : text;
-    }
-
-    private static String sanitize(String name) {
-        return name.replaceAll("[^a-zA-Z0-9._-]", "_");
-    }
+    private static String safe(String text) { return text == null ? "" : text; }
+    private static String sanitize(String name) { return name.replaceAll("[^a-zA-Z0-9._-]", "_"); }
 
     private static void cleanDir(Path dir) throws IOException {
-        if (!Files.exists(dir)) {
-            return;
-        }
+        if (!Files.exists(dir)) return;
         try (var stream = Files.walk(dir)) {
             stream.sorted((a, b) -> b.getNameCount() - a.getNameCount())
-                    .forEach(path -> {
-                        try {
-                            Files.deleteIfExists(path);
-                        } catch (IOException ignored) {
-                        }
-                    });
+                    .forEach(path -> { try { Files.deleteIfExists(path); } catch (IOException ignored) {} });
         }
     }
 
@@ -298,11 +237,8 @@ public final class OrnamentSkuTool {
         final List<Integer> slipPageIndices = new ArrayList<>();
         final Set<String> skus = new LinkedHashSet<>();
         String orderId;
-        Bundle(int docId) {
-            this.docId = docId;
-        }
+        Bundle(int docId) { this.docId = docId; }
     }
 
-    private record BundleRef(int docId, Bundle bundle) {
-    }
+    private record BundleRef(int docId, Bundle bundle) {}
 }

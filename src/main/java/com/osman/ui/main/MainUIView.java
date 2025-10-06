@@ -1,6 +1,7 @@
 package com.osman.ui.main;
 
 import com.osman.config.ConfigService;
+import com.osman.config.PreferencesStore;
 import com.osman.core.render.FontRegistry;
 import com.osman.core.render.MugRenderer;
 
@@ -23,49 +24,65 @@ import java.util.stream.Stream;
  * Responsibilities:
  * <ul>
  *   <li>Font directory selection and initial font loading (via {@link FontRegistry}).</li>
+ *   <li><b>NEW:</b> Remember the last chosen <i>font file</i> (ttf/otf/ttc) and auto-load it on startup.</li>
  *   <li>Picking base folders and/or .zip files to process.</li>
  *   <li>Extracting zips and discovering "leaf" order folders.</li>
  *   <li>Calling {@link MugRenderer#processOrderFolderMulti(File, File, String, String)}.</li>
  * </ul>
- * <b>Note:</b> We preserved the working pipeline. Only unused helpers were removed and all logs are now English.
  */
 public class MainUIView {
 
+    private static final String OUTPUT_FOLDER_NAME = "Ready Designs";
+    private static final String PREF_LAST_FONT_FILE = "font.lastFile";
+
     private final ConfigService configService = ConfigService.getInstance();
+    private final PreferencesStore prefs = PreferencesStore.global();
 
     private JFrame frame;
     private JTextArea logArea;
     private JButton processButton;
-    private JButton chooseFontBtn;
+    private JButton chooseFontDirBtn;
+    private JButton chooseFontFileBtn;
     private JLabel fontPathLabel;
+    private JLabel fontFileLabel;
     private JProgressBar progressBar;
 
     private volatile boolean cancelRequested = false;
     private String fontDirectory;
+    private Path lastFontFilePath;
     private final List<String> failedItems = Collections.synchronizedList(new ArrayList<>());
-    private static final String OUTPUT_FOLDER_NAME = "Ready Designs";
 
     /** Launches the window and triggers initial font scan. */
     public MainUIView() {
         fontDirectory = configService.getFontDirectory().toString();
+        lastFontFilePath = prefs.getPath(PREF_LAST_FONT_FILE).orElse(null);
 
         frame = new JFrame("Bulk Processor (Folders & Zip)");
         frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
-        frame.setSize(980, 720);
+        frame.setSize(980, 760);
         frame.setLayout(new BorderLayout(8, 8));
 
-        // Top: font folder row
-        JPanel topPanel = new JPanel(new BorderLayout(8, 8));
+        // Top: font rows
+        JPanel topPanel = new JPanel(new GridLayout(0, 1, 8, 4));
         frame.add(topPanel, BorderLayout.NORTH);
 
-        JPanel fontRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 8));
-        chooseFontBtn = new JButton("Choose Font Folder…");
-        chooseFontBtn.addActionListener(e -> chooseFontDir());
-        fontRow.add(new JLabel("Font folder:"));
-        fontRow.add(chooseFontBtn);
+        JPanel fontDirRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 8));
+        chooseFontDirBtn = new JButton("Choose Font Folder…");
+        chooseFontDirBtn.addActionListener(e -> chooseFontDir());
+        fontDirRow.add(new JLabel("Font folder:"));
+        fontDirRow.add(chooseFontDirBtn);
         fontPathLabel = new JLabel(shortenPath(fontDirectory, 70));
-        fontRow.add(fontPathLabel);
-        topPanel.add(fontRow, BorderLayout.NORTH);
+        fontDirRow.add(fontPathLabel);
+        topPanel.add(fontDirRow);
+
+        JPanel fontFileRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
+        chooseFontFileBtn = new JButton("Choose Font File…");
+        chooseFontFileBtn.addActionListener(e -> chooseFontFile());
+        fontFileRow.add(new JLabel("Font file:"));
+        fontFileRow.add(chooseFontFileBtn);
+        fontFileLabel = new JLabel(lastFontFilePath != null ? shortenPath(lastFontFilePath.toString(), 70) : "(none)");
+        fontFileRow.add(fontFileLabel);
+        topPanel.add(fontFileRow);
 
         // Center: log
         logArea = new JTextArea();
@@ -118,7 +135,38 @@ public class MainUIView {
         }
     }
 
-    /** Loads fonts from the selected folder on a background thread. */
+    /** Opens a file chooser to select a specific font file and persists the choice. */
+    private void chooseFontFile() {
+        JFileChooser chooser = new JFileChooser(lastFontFilePath != null ? lastFontFilePath.getParent().toFile() : new File(fontDirectory));
+        chooser.setFileSelectionMode(JFileChooser.FILES_ONLY);
+        chooser.setDialogTitle("Choose a font file (TTF/OTF/TTC)");
+        chooser.setAcceptAllFileFilterUsed(false);
+        chooser.addChoosableFileFilter(new FileNameExtensionFilter("Font files (*.ttf, *.otf, *.ttc)", "ttf", "otf", "ttc"));
+
+        if (chooser.showOpenDialog(frame) != JFileChooser.APPROVE_OPTION) return;
+
+        File f = chooser.getSelectedFile();
+        if (f == null || !f.isFile()) return;
+
+        try {
+            int loaded = loadSingleFontFile(f.toPath());
+            if (loaded > 0) {
+                lastFontFilePath = f.toPath();
+                prefs.putPath(PREF_LAST_FONT_FILE, lastFontFilePath);
+                fontFileLabel.setText(shortenPath(lastFontFilePath.toString(), 70));
+                log("Font file loaded: " + f.getName());
+                processButton.setEnabled(true);
+            } else {
+                log("Font file not loaded: " + f.getName());
+                JOptionPane.showMessageDialog(frame, "The selected font could not be loaded.", "Font Load Warning", JOptionPane.WARNING_MESSAGE);
+            }
+        } catch (Exception ex) {
+            log("ERROR loading font file '" + f.getName() + "': " + ex.getMessage());
+            JOptionPane.showMessageDialog(frame, "Error loading font file:\n" + ex.getMessage(), "Font Load Error", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    /** Loads fonts from the selected folder on a background thread, then auto-loads the last font file if present. */
     private void loadInitialFonts() {
         processButton.setEnabled(false);
         progressBar.setIndeterminate(true);
@@ -140,7 +188,9 @@ public class MainUIView {
                 try {
                     int count = get();
                     if (count >= 0) {
-                        log(count + " fonts loaded successfully.");
+                        log(count + " fonts loaded from folder.");
+                        // Try auto-load the last explicitly chosen font file (if any)
+                        autoLoadLastFontFile();
                         log("You can now process your orders.");
                         processButton.setEnabled(true);
                     } else {
@@ -156,6 +206,49 @@ public class MainUIView {
                 }
             }
         }.execute();
+    }
+
+    /** Attempts to load and reflect the last chosen font file in the UI. */
+    private void autoLoadLastFontFile() {
+        if (lastFontFilePath == null) return;
+        File f = lastFontFilePath.toFile();
+        if (!f.isFile()) {
+            log("Saved font file not found: " + lastFontFilePath);
+            return;
+        }
+        try {
+            int loaded = loadSingleFontFile(lastFontFilePath);
+            if (loaded > 0) {
+                fontFileLabel.setText(shortenPath(lastFontFilePath.toString(), 70));
+                log("Restored last font file: " + f.getName());
+            }
+        } catch (Exception ex) {
+            log("Could not auto-load last font file '" + f.getName() + "': " + ex.getMessage());
+        }
+    }
+
+    /** Load a single font file via FontRegistry if available, falling back to AWT registration. */
+    private int loadSingleFontFile(Path fontFile) throws Exception {
+        try {
+            // Preferred path: via your FontRegistry (if it exposes a single-file loader)
+            // Return value should be "number of fonts loaded" if available.
+            return FontRegistry.loadFontFile(fontFile.toString());
+        } catch (NoSuchMethodError | UnsupportedOperationException ignored) {
+            // Fallback: register with Java AWT (handles most TTF/OTF/TTC cases)
+            try (var is = Files.newInputStream(fontFile)) {
+                Font awtFont;
+                try {
+                    awtFont = Font.createFont(Font.TRUETYPE_FONT, is);
+                } catch (Exception e1) {
+                    // Some PostScript Type 1 fonts may require this:
+                    try (var is2 = Files.newInputStream(fontFile)) {
+                        awtFont = Font.createFont(Font.TYPE1_FONT, is2);
+                    }
+                }
+                GraphicsEnvironment.getLocalGraphicsEnvironment().registerFont(awtFont);
+                return 1;
+            }
+        }
     }
 
     /** Lets the user pick base folders and/or zip files, then processes them. */
@@ -462,7 +555,6 @@ public class MainUIView {
 
                 ZipEntry zipEntry = entries.nextElement();
 
-                // ignore mac metadata files
                 if (zipEntry.getName().startsWith("__MACOSX/") || zipEntry.getName().contains("/._")) {
                     continue;
                 }
@@ -536,13 +628,9 @@ public class MainUIView {
     }
 
     // ------------------------------------------------------------
-    // Order folder discovery helpers (kept as-is, used by the flow)
+    // Order folder discovery helpers (kept as-is)
     // ------------------------------------------------------------
 
-    /**
-     * Finds "leaf" order folders (folders that actually contain .svg and .json)
-     * under the given root, up to the provided depth.
-     */
     private static List<File> findOrderLeafFolders(File scanRoot, int maxDepth) {
         List<File> out = new ArrayList<>();
         collectOrderLeafFolders(scanRoot, out, 0, Math.max(1, maxDepth));
@@ -602,7 +690,7 @@ public class MainUIView {
                     .filter(Objects::nonNull)
                     .map(Path::toString)
                     .map(s -> s.toLowerCase(Locale.ROOT))
-                    .anyMatch(name -> name.endsWith(extLower));
+                    .anyMatch(n -> n.endsWith(extLower));
         } catch (Exception e) {
             return false;
         }
