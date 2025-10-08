@@ -37,9 +37,6 @@ public class OrnamentSkuView extends JFrame {
     private static final Pattern QTY_INLINE = Pattern.compile("(?i)\\bqty\\b\\s*[:x-]?\\s*(\\d{1,3})");
     private static final Pattern QTY_BEFORE_PRICE = Pattern.compile("(?s)\\b(\\d{1,3})\\s*\\$\\s*\\d"); // <-- güncel
     private static final Pattern STANDALONE_INT = Pattern.compile("^\\s*(\\d{1,3})\\s*$");
-    private static final String KW_PACKING_SLIP = "Packing Slip";
-    private static final String KW_CONTINUED = "Continued on Next Page";
-    private static final String KW_NOT_CONTINUED = "Not Continued on Next Page";
 
     public static void main(String[] args) {
         SwingUtilities.invokeLater(() -> new OrnamentSkuView().setVisible(true));
@@ -298,82 +295,74 @@ public class OrnamentSkuView extends JFrame {
         stripper.setSortByPosition(true);
         int total = doc.getNumberOfPages();
         List<Bundle> result = new ArrayList<>();
+        Bundle current = null;
         Integer lastLabelPage = null;
         String lastLabelText = null;
-        Bundle current = null;
-        boolean inSlip = false;
-        boolean prevContinued = false;
+        boolean pendingContinuation = false;
+
         for (int i = 0; i < total; i++) {
             stripper.setStartPage(i + 1);
             stripper.setEndPage(i + 1);
-            String text = safe(stripper.getText(doc));
-            debug.logPage(docId, i, text);
-            String trimmed = text.trim();
-            boolean isSlip = text.contains(KW_PACKING_SLIP);
-            boolean isBlank = trimmed.isEmpty();
-            boolean hasCont = text.contains(KW_CONTINUED);
-            boolean hasNotCont = text.contains(KW_NOT_CONTINUED);
-            if (isSlip) {
-                if (current == null) {
-                    if (lastLabelPage != null) {
-                        current = new Bundle(docId);
-                        current.labelPageIndex = lastLabelPage;
-                        inSlip = true;
-                        prevContinued = false;
-                        if (lastLabelText != null) {
-                            Map<String, Integer> labelOcc = countSkuOccurrences(lastLabelText, debug);
-                            current.skus.addAll(labelOcc.keySet());
-                            for (Map.Entry<String, Integer> en : labelOcc.entrySet()) {
-                                current.skuCounts.merge(en.getKey(), en.getValue(), Integer::sum);
-                            }
-                            debug.logSkuSet("Label page " + (lastLabelPage + 1), current.skus);
-                        }
-                    }
-                }
-                if (current != null) {
-                    current.slipPageIndices.add(i);
-                    current.orderId = firstMatch(ORDER_PATTERN, text, current.orderId);
-                    Map<String, Integer> occ = countSkuOccurrences(text, debug);
-                    current.skus.addAll(occ.keySet());
-                    for (Map.Entry<String, Integer> en : occ.entrySet()) {
+
+            String pageText = safe(stripper.getText(doc));
+            debug.logPage(docId, i, pageText);
+
+            String normalized = normalizeForMarkers(pageText);
+            boolean hasContinued = normalized.contains("continued on next page");
+            boolean hasNotContinued = normalized.contains("not continued on next page");
+            boolean hasPackingSlip = normalized.contains("packing slip");
+            boolean isSlipMarker = hasPackingSlip || hasContinued || hasNotContinued;
+            boolean isBlank = normalized.isEmpty();
+
+            if (isSlipMarker || (pendingContinuation && isBlank)) {
+                if (current == null && lastLabelPage != null && lastLabelText != null) {
+                    current = new Bundle(docId);
+                    current.labelPageIndex = lastLabelPage;
+                    current.orderId = firstMatch(ORDER_PATTERN, lastLabelText, current.orderId);
+                    Map<String, Integer> labelOcc = countSkuOccurrences(lastLabelText, debug);
+                    current.skus.addAll(labelOcc.keySet());
+                    for (Map.Entry<String, Integer> en : labelOcc.entrySet()) {
                         current.skuCounts.merge(en.getKey(), en.getValue(), Integer::sum);
                     }
-                    debug.logSkuSet("Slip page " + (i + 1), current.skus);
-                    prevContinued = hasCont;
-                    if (hasNotCont) {
-                        debug.logBundleCompleted(current.orderId, current.skus);
-                        result.add(current);
-                        current = null;
-                        inSlip = false;
-                        prevContinued = false;
-                    }
+                    debug.logSkuSet("Label page " + (lastLabelPage + 1), current.skus);
+                }
+
+                if (current == null) {
+                    pendingContinuation = hasContinued;
+                    continue;
+                }
+
+                current.slipPageIndices.add(i);
+                current.orderId = firstMatch(ORDER_PATTERN, pageText, current.orderId);
+                Map<String, Integer> occ = countSkuOccurrences(pageText, debug);
+                current.skus.addAll(occ.keySet());
+                for (Map.Entry<String, Integer> en : occ.entrySet()) {
+                    current.skuCounts.merge(en.getKey(), en.getValue(), Integer::sum);
+                }
+                debug.logSkuSet("Slip page " + (i + 1), current.skus);
+                pendingContinuation = hasContinued;
+
+                if (hasNotContinued) {
+                    finalizeBundle(result, current, debug);
+                    current = null;
+                    pendingContinuation = false;
                 }
                 continue;
             }
-            if (inSlip && prevContinued && isBlank) {
-                if (current != null) current.slipPageIndices.add(i);
-                prevContinued = false;
-                continue;
-            }
+
             if (current != null) {
-                debug.logBundleCompleted(current.orderId, current.skus);
-                result.add(current);
+                finalizeBundle(result, current, debug);
                 current = null;
-                inSlip = false;
-                prevContinued = false;
             }
             lastLabelPage = i;
-            lastLabelText = text;
+            lastLabelText = pageText;
+            pendingContinuation = false;
         }
+
         if (current != null) {
-            debug.logBundleCompleted(current.orderId, current.skus);
-            result.add(current);
+            finalizeBundle(result, current, debug);
         }
-        List<Bundle> filtered = new ArrayList<>();
-        for (Bundle b : result) {
-            if (b.labelPageIndex != null && !b.slipPageIndices.isEmpty()) filtered.add(b);
-        }
-        return filtered;
+        return result;
     }
 
     private static void mergeBundles(List<List<Path>> singlePagesPerDoc, List<BundleRef> bundles, Path outFile) throws IOException {
@@ -389,6 +378,22 @@ public class OrnamentSkuView extends JFrame {
             }
         }
         mu.mergeDocuments(MemoryUsageSetting.setupMainMemoryOnly());
+    }
+
+    private static String normalizeForMarkers(String text) {
+        if (text == null) return "";
+        return text.replace('\u00A0', ' ')
+                .replaceAll("\\s+", " ")
+                .trim()
+                .toLowerCase(Locale.ROOT);
+    }
+
+    private static void finalizeBundle(List<Bundle> result, Bundle bundle, OrnamentDebugLogger debug) {
+        if (bundle == null) return;
+        if (bundle.labelPageIndex != null && !bundle.slipPageIndices.isEmpty()) {
+            debug.logBundleCompleted(bundle.orderId, bundle.skus);
+            result.add(bundle);
+        }
     }
 
     private static Map<String, Integer> countSkuOccurrences(String text, OrnamentDebugLogger debug) {

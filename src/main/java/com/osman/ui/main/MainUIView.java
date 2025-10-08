@@ -2,6 +2,8 @@ package com.osman.ui.main;
 
 import com.osman.config.ConfigService;
 import com.osman.config.PreferencesStore;
+import com.osman.core.fs.OrderDiscoveryService;
+import com.osman.core.fs.ZipExtractor;
 import com.osman.core.render.FontRegistry;
 import com.osman.core.render.MugRenderer;
 
@@ -9,13 +11,10 @@ import javax.swing.*;
 import javax.swing.filechooser.FileNameExtensionFilter;
 import java.awt.*;
 import java.io.File;
-import java.io.FileOutputStream;
-import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.List;
-import java.util.zip.ZipEntry;
 import java.util.stream.Stream;
 
 /**
@@ -37,6 +36,7 @@ public class MainUIView {
 
     private final ConfigService configService = ConfigService.getInstance();
     private final PreferencesStore prefs = PreferencesStore.global();
+    private final OrderDiscoveryService orderDiscoveryService = new OrderDiscoveryService();
 
     private JFrame frame;
     private JTextArea logArea;
@@ -369,7 +369,7 @@ public class MainUIView {
                 if (!scanRoot.isDirectory()) scanRoot = customerFolder;
             }
 
-            List<File> leafOrders = findOrderLeafFolders(scanRoot, 6);
+            List<File> leafOrders = orderDiscoveryService.findOrderLeafFolders(scanRoot, 6);
             if (!leafOrders.isEmpty()) {
                 if (leafOrders.size() > 1) log("  -> Multiple orders detected (" + leafOrders.size() + " folders).");
                 else log("  -> Single order folder detected.");
@@ -450,15 +450,37 @@ public class MainUIView {
 
             log("  -> Extracting zip: " + zip.getName());
             try {
-                unzip(zip, extractDir);
-                if (zip.delete()) log("    -> Extracted and deleted: " + zip.getName());
-                else log("    -> WARNING: Extracted but could not delete zip: " + zip.getName());
+                ZipExtractor.unzip(zip, extractDir, zipLoggingListener(zip));
+                if (zip.delete()) {
+                    log("    -> Extracted and deleted: " + zip.getName());
+                } else {
+                    log("    -> WARNING: Extracted but could not delete zip: " + zip.getName());
+                }
+            } catch (ZipExtractionCancelledException cancelled) {
+                log("    -> Extraction cancelled for zip: " + zip.getName());
+                return;
             } catch (Exception ex) {
                 String errorMsg = "  -> ERROR extracting " + zip.getName() + ": " + ex.getMessage();
                 log(errorMsg);
                 failedItems.add(zip.getName() + " - Reason: " + ex.getMessage());
             }
         }
+    }
+
+    private ZipExtractor.Listener zipLoggingListener(File zipFile) {
+        return new ZipExtractor.Listener() {
+            @Override
+            public void onFileExtracted(File file) {
+                if (cancelRequested) {
+                    throw new ZipExtractionCancelledException();
+                }
+            }
+
+            @Override
+            public void onEntrySkipped(String name, String reason) {
+                log("    -> SKIPPED entry '" + name + "' (" + zipFile.getName() + "): " + reason);
+            }
+        };
     }
 
     /** Processes a standalone .zip file as if it were an orders container. */
@@ -476,11 +498,11 @@ public class MainUIView {
             }
             log("  -> Extracting to: " + extractRoot.getAbsolutePath());
 
-            unzip(zipFile, extractRoot);
+            ZipExtractor.unzip(zipFile, extractRoot, zipLoggingListener(zipFile));
             String customerName = baseName;
 
             File scanRoot = extractRoot;
-            List<File> leafOrders = findOrderLeafFolders(scanRoot, 6);
+            List<File> leafOrders = orderDiscoveryService.findOrderLeafFolders(scanRoot, 6);
 
             if (!leafOrders.isEmpty()) {
                 log("  -> " + leafOrders.size() + " order folder(s) found inside the zip.");
@@ -520,6 +542,9 @@ public class MainUIView {
                     failedItems.add(zipFile.getName() + " - Reason: " + ex.getMessage());
                 }
             }
+        } catch (ZipExtractionCancelledException cancelled) {
+            log("  -> Extraction cancelled: " + zipFile.getName());
+            return;
         } catch (Exception ex) {
             String errorMsg = "  -> CRITICAL (" + zipFile.getName() + "): " + ex.getMessage();
             log(errorMsg);
@@ -534,69 +559,10 @@ public class MainUIView {
         }
     }
 
-    /** Secure unzip routine (guards against Zip Slip). */
-    private void unzip(File zipFile, File destDir) throws java.io.IOException {
-        log("  -> Starting extraction for: " + zipFile.getName());
-        int extractedCount = 0;
-        int errorCount = 0;
-
-        try (java.util.zip.ZipFile zf = new java.util.zip.ZipFile(zipFile)) {
-            Enumeration<? extends ZipEntry> entries = zf.entries();
-
-            if (!entries.hasMoreElements()) {
-                log("  -> WARNING: Zip file appears to be empty. No entries found.");
-            }
-
-            while (entries.hasMoreElements()) {
-                if (cancelRequested) {
-                    log("  -> Unzip canceled by user.");
-                    break;
-                }
-
-                ZipEntry zipEntry = entries.nextElement();
-
-                if (zipEntry.getName().startsWith("__MACOSX/") || zipEntry.getName().contains("/._")) {
-                    continue;
-                }
-
-                try {
-                    File newFile = new File(destDir, zipEntry.getName());
-                    String destPath = destDir.getCanonicalPath() + File.separator;
-                    String newPath = newFile.getCanonicalPath();
-                    if (!newPath.startsWith(destPath)) {
-                        throw new java.io.IOException("Zip entry is outside target folder: " + zipEntry.getName());
-                    }
-
-                    if (zipEntry.isDirectory()) {
-                        if (!newFile.isDirectory() && !newFile.mkdirs()) {
-                            throw new java.io.IOException("Could not create folder: " + newFile);
-                        }
-                    } else {
-                        File parent = newFile.getParentFile();
-                        if (!parent.isDirectory() && !parent.mkdirs()) {
-                            throw new java.io.IOException("Could not create folder: " + parent);
-                        }
-
-                        byte[] buffer = new byte[8192];
-                        try (InputStream is = zf.getInputStream(zipEntry);
-                             FileOutputStream fos = new FileOutputStream(newFile)) {
-                            int len;
-                            while ((len = is.read(buffer)) > 0) {
-                                fos.write(buffer, 0, len);
-                            }
-                        }
-                        extractedCount++;
-                    }
-                } catch (Exception e) {
-                    log("  -> SKIPPED (error): Could not extract entry '" + zipEntry.getName() + "'. Reason: " + e.getMessage());
-                    errorCount++;
-                }
-            }
-        } catch (java.util.zip.ZipException e) {
-            log("  -> CRITICAL ERROR: Failed to open zip file. It may be corrupt or not a valid zip archive. " + e.getMessage());
-            throw e;
+    private static final class ZipExtractionCancelledException extends RuntimeException {
+        ZipExtractionCancelledException() {
+            super("Zip extraction cancelled");
         }
-        log("  -> Extraction finished. " + extractedCount + " files extracted, " + errorCount + " errors.");
     }
 
     /** Returns true if both files resolve to the same canonical path. */
@@ -625,74 +591,5 @@ public class MainUIView {
     /** Entry point. */
     public static void main(String[] args) {
         SwingUtilities.invokeLater(MainUIView::new);
-    }
-
-    // ------------------------------------------------------------
-    // Order folder discovery helpers (kept as-is)
-    // ------------------------------------------------------------
-
-    private static List<File> findOrderLeafFolders(File scanRoot, int maxDepth) {
-        List<File> out = new ArrayList<>();
-        collectOrderLeafFolders(scanRoot, out, 0, Math.max(1, maxDepth));
-        out.removeIf(f -> f.equals(scanRoot));
-        out.sort(Comparator.comparing(File::getAbsolutePath, String.CASE_INSENSITIVE_ORDER));
-        return out;
-    }
-
-    private static void collectOrderLeafFolders(File dir, List<File> out, int depth, int maxDepth) {
-        if (dir == null || !dir.isDirectory()) return;
-        if (depth > maxDepth) return;
-
-        String dn = dir.getName();
-        boolean isContainer = dn.equalsIgnoreCase("images") || dn.equalsIgnoreCase("img") || dn.equalsIgnoreCase(OUTPUT_FOLDER_NAME);
-
-        File[] subs = dir.listFiles(File::isDirectory);
-        if (subs == null) subs = new File[0];
-
-        List<File> potentialChildren = new ArrayList<>();
-        for (File sub : subs) {
-            String n = sub.getName();
-            if (n.startsWith(".") || n.equalsIgnoreCase("__MACOSX")) continue;
-            potentialChildren.add(sub);
-        }
-
-        boolean addedChildAsLeaf = false;
-        for (File sub : potentialChildren) {
-            if (isOrderFolder(sub)) {
-                out.add(sub);
-                addedChildAsLeaf = true;
-            } else {
-                collectOrderLeafFolders(sub, out, depth + 1, maxDepth);
-            }
-        }
-
-        if (!addedChildAsLeaf && isOrderFolder(dir) && !isContainer) {
-            if (!out.contains(dir)) out.add(dir);
-        }
-    }
-
-    /** A folder qualifies as an order folder if it contains both .svg and .json within 3 levels. */
-    private static boolean isOrderFolder(File dir) {
-        String name = dir.getName();
-        if (name.equalsIgnoreCase("images") || name.equalsIgnoreCase("img") || name.equalsIgnoreCase(OUTPUT_FOLDER_NAME)) {
-            return false;
-        }
-        return containsExtRecursively(dir, ".svg", 3) && containsExtRecursively(dir, ".json", 3);
-    }
-
-    private static boolean containsExtRecursively(File dir, String ext, int maxDepth) {
-        if (dir == null || !dir.isDirectory()) return false;
-        final String extLower = ext.toLowerCase(Locale.ROOT);
-        try (var stream = Files.walk(dir.toPath(), Math.max(1, maxDepth))) {
-            return stream
-                    .filter(Files::isRegularFile)
-                    .map(Path::getFileName)
-                    .filter(Objects::nonNull)
-                    .map(Path::toString)
-                    .map(s -> s.toLowerCase(Locale.ROOT))
-                    .anyMatch(n -> n.endsWith(extLower));
-        } catch (Exception e) {
-            return false;
-        }
     }
 }

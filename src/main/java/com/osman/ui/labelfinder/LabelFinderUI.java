@@ -45,8 +45,17 @@ import java.util.stream.Stream;
 import java.util.stream.Collectors;
 
 /**
- * Swing UI for locating shipping labels, packing slips, and corresponding order photos.
- * Supports single-order lookup, bulk label browsing, and streamlined printing workflows.
+ * Swing UI for locating shipping labels, packing slips, and matching order photos across one or more base folders.
+ * <p>
+ * Key capabilities:
+ * <ul>
+ *   <li>Interactive lookup by order ID with bulk/auto mode toggles.</li>
+ *   <li>Workspace management (remembered base directories, window bounds, split positions).</li>
+ *   <li>Combined label + slip previews, photo gallery, and single-click printing via {@link #printCombined()}.</li>
+ *   <li>Drag-and-drop support for quickly loading PDFs or photo directories straight into the UI.</li>
+ *   <li>Background scanning and indexing with status updates so large datasets remain responsive.</li>
+ * </ul>
+ * The class is intentionally self-contained so it can be launched both stand-alone and from other desktop flows.
  */
 public class LabelFinderUI extends JFrame {
     private static final Logger LOGGER = AppLogger.get();
@@ -95,7 +104,7 @@ public class LabelFinderUI extends JFrame {
     private List<BufferedImage> slipPagesToPrint;
     private static final Pattern IMG_NAME = Pattern.compile("(?i).+\\s*(?:\\(\\d+\\))?\\s*\\.(png|jpe?g)$");
     private static final Pattern XN_READY_NAME = Pattern.compile("(?i)^x(?:\\(\\d+\\)|\\d+)-.+\\s*(?:\\(\\d+\\))?\\s*\\.(?:png|jpe?g)$");
-    private static final String PREF_LAST_BASE_DIRS   = "lastBaseDirs";     // çoklu dizinleri '|' ile saklarız
+
     private static final String PREF_BULK_MODE        = "bulkMode";         // "true"/"false"
     private static final String PREF_WIN_BOUNDS       = "winBounds";        // x,y,w,h
     private static final String PREF_DIVIDER_LOCATION = "dividerLocation";  // JSplitPane divider
@@ -274,7 +283,6 @@ public class LabelFinderUI extends JFrame {
         baseFolders.addAll(normalized);
         baseDir = getPrimaryBaseFolder();
         refreshBaseFolders();
-        prefs.putString(PREF_LAST_BASE_DIRS, serializeBaseDirs(folders));
 
     }
     private void refreshBaseFolders() {
@@ -1550,21 +1558,13 @@ public class LabelFinderUI extends JFrame {
         prefs.getString(PREF_DIVIDER_LOCATION).ifPresent(s -> {
             try {
                 int loc = Integer.parseInt(s);
-                // mainSplit alanı burada erişilebilir durumda
-                // (constructor’da restorePreferences() çağrısı, mainSplit oluşturulduktan sonra olmalı)
-                // mainSplit zaten alan, doğrudan set edebiliriz:
-                // mainSplit.setDividerLocation(loc);  // DİKKAT: layout sonrası daha sağlıklı
+
                 SwingUtilities.invokeLater(() -> mainSplit.setDividerLocation(loc));
             } catch (NumberFormatException ignored) { }
         });
 
-        // Son base dizin(ler)i yükle
-        prefs.getString(PREF_LAST_BASE_DIRS).ifPresent(serialized -> {
-            List<File> dirs = deserializeBaseDirs(serialized);
-            if (!dirs.isEmpty()) {
-                loadBaseFolders(dirs); // bu zaten UI’yı scan edecek
-            }
-        });
+
+
 
 
     }
@@ -1585,7 +1585,7 @@ public class LabelFinderUI extends JFrame {
 
         // base dir(ler)
         if (!baseFolders.isEmpty()) {
-            prefs.putString(PREF_LAST_BASE_DIRS, serializeBaseDirs(baseFolders));
+
         }
 
     }

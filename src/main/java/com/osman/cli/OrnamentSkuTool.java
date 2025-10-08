@@ -13,14 +13,21 @@ import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+/**
+ * CLI workflow that splits merged ornament PDFs exported from Amazon into per-SKU packets.
+ */
 public final class OrnamentSkuTool {
 
     private static final String[] INPUT_PATHS = new String[]{};
 
     private static final Pattern ORDER_PATTERN = Pattern.compile("Order\\s*#\\s*:\\s*([0-9\\-]+)");
-    private static final String KW_PACKING_SLIP = "Packing Slip";
-    private static final String KW_CONTINUED = "Continued on Next Page";
-    private static final String KW_NOT_CONTINUED = "Not Continued on Next Page";
+    private static final Pattern RE_CONT =
+            Pattern.compile("\\bcontinued\\s*on\\s*next\\s*page\\b",
+                    Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE | Pattern.DOTALL);
+    private static final Pattern RE_NOT_CONT =
+            Pattern.compile("\\bnot\\s*continued\\s*on\\s*next\\s*page\\b",
+                    Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE | Pattern.DOTALL);
+
     private OrnamentSkuTool() {}
 
     public static void main(String[] args) throws Exception {
@@ -108,85 +115,83 @@ public final class OrnamentSkuTool {
         return files;
     }
 
+    /**
+     * Rule:
+     * - If the previous page had "Continued on Next Page", the current page is slip (regardless of flags).
+     * - If current page has "Continued on Next Page" or "Not Continued on Next Page", it is slip.
+     * - Otherwise, it is a shipping label.
+     * - "Not Continued on Next Page" closes the bundle immediately.
+     */
     private static List<Bundle> buildBundles(PDDocument doc, int docId, OrnamentDebugLogger debug)
             throws IOException {
         PDFTextStripper stripper = new PDFTextStripper();
         int total = doc.getNumberOfPages();
 
-        // Single SKU pattern used for both label and slip pages
         Pattern skuPattern = OrnamentSkuPatterns.ANY;
 
         List<Bundle> result = new ArrayList<>();
-        Integer lastLabelPage = null;
-        String lastLabelText = null;
         Bundle current = null;
-        boolean inSlip = false;
-        boolean prevContinued = false;
+        Integer lastLabelPage = null;
+        String lastLabelRaw = null;
+        boolean prevWasContinued = false;
 
         for (int i = 0; i < total; i++) {
             stripper.setStartPage(i + 1);
             stripper.setEndPage(i + 1);
-            String text = safe(stripper.getText(doc));
+
+            String raw = safe(stripper.getText(doc));
+            String text = norm(raw);
             debug.logPage(docId, i, text);
-            String trimmed = text.trim();
 
-            boolean isSlip = text.contains(KW_PACKING_SLIP);
-            boolean isBlank = trimmed.isEmpty();
-            boolean hasCont = text.contains(KW_CONTINUED);
-            boolean hasNotCont = text.contains(KW_NOT_CONTINUED);
+            boolean curHasCont = hasContinuedFlag(text);
+            boolean curHasNotCont = hasNotContinuedFlag(text);
+            boolean curHasAnyFlag = curHasCont || curHasNotCont;
 
-            if (isSlip) {
-                if (current == null && lastLabelPage != null) {
+            boolean treatAsSlip = prevWasContinued || curHasAnyFlag;
+
+            if (!treatAsSlip) {
+                if (current != null) {
+                    finalizeBundle(result, current, debug);
+                    current = null;
+                }
+                lastLabelPage = i;
+                lastLabelRaw = raw;
+                prevWasContinued = false;
+                continue;
+            }
+
+            if (current == null) {
+                if (lastLabelPage != null) {
                     current = new Bundle(docId);
                     current.labelPageIndex = lastLabelPage;
-                    inSlip = true;
-                    prevContinued = false;
-                    if (lastLabelText != null) {
-                        current.skus.addAll(extractSkus(lastLabelText, skuPattern, debug));
-                        debug.logSkuSet("Label page " + (lastLabelPage + 1), current.skus);
-                    }
+                    current.orderId = firstMatch(ORDER_PATTERN, lastLabelRaw, current.orderId);
+                    current.skus.addAll(extractSkus(lastLabelRaw, skuPattern, debug));
+                    debug.logSkuSet("Label page " + (lastLabelPage + 1), current.skus);
+                } else {
+                    prevWasContinued = curHasCont;
+                    continue;
                 }
-                if (current != null) {
-                    current.slipPageIndices.add(i);
-                    current.orderId = firstMatch(ORDER_PATTERN, text, current.orderId);
-                    current.skus.addAll(extractSkus(text, skuPattern, debug));
-                    debug.logSkuSet("Slip page " + (i + 1), current.skus);
-                    prevContinued = hasCont;
-                    if (hasNotCont) {
-                        debug.logBundleCompleted(current.orderId, current.skus);
-                        result.add(current);
-                        current = null;
-                        inSlip = false;
-                        prevContinued = false;
-                    }
-                }
-                continue;
             }
 
-            if (inSlip && prevContinued && isBlank) {
-                if (current != null) current.slipPageIndices.add(i);
-                prevContinued = false;
-                continue;
-            }
+            current.slipPageIndices.add(i);
+            current.orderId = firstMatch(ORDER_PATTERN, raw, current.orderId);
+            current.skus.addAll(extractSkus(raw, skuPattern, debug));
+            debug.logSkuSet("Slip page " + (i + 1), current.skus);
 
-            if (current != null) {
-                debug.logBundleCompleted(current.orderId, current.skus);
-                result.add(current);
+            if (curHasNotCont) {
+                finalizeBundle(result, current, debug);
                 current = null;
-                inSlip = false;
-                prevContinued = false;
+                prevWasContinued = false;
+            } else {
+                prevWasContinued = curHasCont;
             }
-            lastLabelPage = i;
-            lastLabelText = text;
         }
 
-        if (current != null) result.add(current);
-
-        List<Bundle> filtered = new ArrayList<>();
-        for (Bundle b : result) {
-            if (b.labelPageIndex != null && !b.slipPageIndices.isEmpty()) filtered.add(b);
+        if (current != null && !current.slipPageIndices.isEmpty()) {
+            finalizeBundle(result, current, debug);
         }
-        return filtered;
+
+        return result;
     }
 
     private static void mergeBundles(List<List<Path>> singlePagesPerDoc, List<BundleRef> bundles, Path outFile) throws IOException {
@@ -200,6 +205,21 @@ public final class OrnamentSkuTool {
             for (Integer pi : b.slipPageIndices) mu.addSource(files.get(pi).toFile());
         }
         mu.mergeDocuments(MemoryUsageSetting.setupMainMemoryOnly());
+    }
+
+    private static String norm(String text) {
+        if (text == null) return "";
+        return text.replace('\u00A0', ' ')
+                .replaceAll("\\s+", " ")
+                .trim();
+    }
+
+    private static boolean hasContinuedFlag(String text) {
+        return RE_CONT.matcher(text).find();
+    }
+
+    private static boolean hasNotContinuedFlag(String text) {
+        return RE_NOT_CONT.matcher(text).find();
     }
 
     private static Set<String> extractSkus(String text, Pattern skuPattern, OrnamentDebugLogger debug) {
@@ -221,7 +241,16 @@ public final class OrnamentSkuTool {
     }
 
     private static String safe(String text) { return text == null ? "" : text; }
+
     private static String sanitize(String name) { return name.replaceAll("[^a-zA-Z0-9._-]", "_"); }
+
+    private static void finalizeBundle(List<Bundle> result, Bundle bundle, OrnamentDebugLogger debug) {
+        if (bundle == null) return;
+        if (bundle.labelPageIndex != null && !bundle.slipPageIndices.isEmpty()) {
+            debug.logBundleCompleted(bundle.orderId, bundle.skus);
+            result.add(bundle);
+        }
+    }
 
     private static void cleanDir(Path dir) throws IOException {
         if (!Files.exists(dir)) return;
