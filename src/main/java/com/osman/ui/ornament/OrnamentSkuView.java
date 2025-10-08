@@ -209,17 +209,14 @@ public class OrnamentSkuView extends JFrame {
                         appendLog("Wrote: " + skuOut.getFileName() + " (" + list.size() + " bundles)");
                     }
 
-                    if (!mixBundles.isEmpty()) {
-                        Path mixOut = outDir.resolve("MIXED SKU.pdf");
-                        mergeBundles(singlePagesPerDoc, mixBundles, mixOut);
-                        appendLog("Wrote: MIXED SKU.pdf (" + mixBundles.size() + " bundles)");
-                    }
-
-
-                    if (!lowQtyBundles.isEmpty()) {
-                        Path lowQtyOut = outDir.resolve("MIXED QTY.pdf");
-                        mergeBundles(singlePagesPerDoc, lowQtyBundles, lowQtyOut);
-                        appendLog("Wrote: MIXED QTY.pdf (" + lowQtyBundles.size() + " bundles from low-volume SKUs)");
+                    List<BundleRef> mixedOutput = new ArrayList<>(mixBundles.size() + lowQtyBundles.size());
+                    mixedOutput.addAll(mixBundles);
+                    mixedOutput.addAll(lowQtyBundles);
+                    if (!mixedOutput.isEmpty()) {
+                        Path mixedOut = outDir.resolve("MIXED.pdf");
+                        mergeBundles(singlePagesPerDoc, mixedOutput, mixedOut);
+                        appendLog("Wrote: MIXED.pdf (" + mixedOutput.size()
+                                + " bundles from mixed or low-quantity SKUs)");
                     }
 
 

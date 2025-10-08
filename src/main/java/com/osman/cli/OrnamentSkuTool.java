@@ -73,7 +73,7 @@ public final class OrnamentSkuTool {
             }
 
             if (!mixBundles.isEmpty()) {
-                Path mixOut = outDir.resolve("MIX.pdf");
+                Path mixOut = outDir.resolve("MIXED.pdf");
                 mergeBundles(singlePagesPerDoc, mixBundles, mixOut);
             }
         } finally {
@@ -212,7 +212,7 @@ public final class OrnamentSkuTool {
             debug.logToken(raw, tok);
             if (tok != null && !tok.isBlank()) out.add(tok);
         }
-        return out;
+        return OrnamentSkuNormalizer.canonicalizeTokens(out);
     }
 
     private static String firstMatch(Pattern pattern, String text, String fallback) {
