@@ -14,6 +14,9 @@ target/
 *.ipr
 # Test data ignore
 /src/main/java/com/osman/Test Files/
+/src/test/resources/ordertestfiles/**
+!/src/test/resources/ordertestfiles/
+!/src/test/resources/ordertestfiles/sample-amazon-orders.txt
 ### Eclipse ###
 .apt_generated
 .classpath
