@@ -1,10 +1,9 @@
 package com.osman.ui.ornament;
 
+import com.osman.cli.OrnamentBundleMerger;
 import com.osman.cli.OrnamentDebugLogger;
 import com.osman.cli.OrnamentSkuNormalizer;
 import com.osman.cli.OrnamentSkuPatterns;
-import org.apache.pdfbox.io.MemoryUsageSetting;
-import org.apache.pdfbox.multipdf.PDFMergerUtility;
 import org.apache.pdfbox.multipdf.Splitter;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.text.PDFTextStripper;
@@ -202,7 +201,7 @@ public class OrnamentSkuView extends JFrame {
                         String sku = e.getKey();
                         List<BundleRef> list = e.getValue();
                         Path skuOut = outDir.resolve(sanitize(sku) + ".pdf");
-                        mergeBundles(singlePagesPerDoc, list, skuOut);
+                        OrnamentBundleMerger.merge(singlePagesPerDoc, list, skuOut);
                         appendLog("Wrote: " + skuOut.getFileName() + " (" + list.size() + " bundles)");
                     }
 
@@ -211,7 +210,7 @@ public class OrnamentSkuView extends JFrame {
                     mixedOutput.addAll(lowQtyBundles);
                     if (!mixedOutput.isEmpty()) {
                         Path mixedOut = outDir.resolve("MIXED.pdf");
-                        mergeBundles(singlePagesPerDoc, mixedOutput, mixedOut);
+                        OrnamentBundleMerger.merge(singlePagesPerDoc, mixedOutput, mixedOut);
                         appendLog("Wrote: MIXED.pdf (" + mixedOutput.size()
                                 + " bundles from mixed or low-quantity SKUs)");
                     }
@@ -364,22 +363,6 @@ public class OrnamentSkuView extends JFrame {
         }
         return result;
     }
-
-    private static void mergeBundles(List<List<Path>> singlePagesPerDoc, List<BundleRef> bundles, Path outFile) throws IOException {
-        if (bundles.isEmpty()) return;
-        PDFMergerUtility mu = new PDFMergerUtility();
-        mu.setDestinationFileName(outFile.toString());
-        for (BundleRef ref : bundles) {
-            List<Path> files = singlePagesPerDoc.get(ref.docId);
-            Bundle b = ref.bundle;
-            mu.addSource(files.get(b.labelPageIndex).toFile());
-            for (Integer pi : b.slipPageIndices) {
-                mu.addSource(files.get(pi).toFile());
-            }
-        }
-        mu.mergeDocuments(MemoryUsageSetting.setupMainMemoryOnly());
-    }
-
     private static String normalizeForMarkers(String text) {
         if (text == null) return "";
         return text.replace('\u00A0', ' ')
@@ -510,13 +493,31 @@ public class OrnamentSkuView extends JFrame {
         }
     }
 
-    private static class BundleRef {
+    private static class BundleRef implements OrnamentBundleMerger.BundlePages {
         final int docId;
         final Bundle bundle;
 
         BundleRef(int docId, Bundle bundle) {
             this.docId = docId;
             this.bundle = bundle;
+        }
+
+        @Override
+        public int docId() {
+            return docId;
+        }
+
+        @Override
+        public int labelPageIndex() {
+            if (bundle.labelPageIndex == null) {
+                throw new IllegalStateException("Bundle missing label page index");
+            }
+            return bundle.labelPageIndex;
+        }
+
+        @Override
+        public List<Integer> slipPageIndices() {
+            return bundle.slipPageIndices;
         }
     }
 

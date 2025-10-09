@@ -1,7 +1,5 @@
 package com.osman.cli;
 
-import org.apache.pdfbox.io.MemoryUsageSetting;
-import org.apache.pdfbox.multipdf.PDFMergerUtility;
 import org.apache.pdfbox.multipdf.Splitter;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.text.PDFTextStripper;
@@ -76,12 +74,12 @@ public final class OrnamentSkuTool {
                 String sku = entry.getKey();
                 List<BundleRef> list = entry.getValue();
                 Path skuOut = outDir.resolve(sanitize(sku) + ".pdf");
-                mergeBundles(singlePagesPerDoc, list, skuOut);
+                OrnamentBundleMerger.merge(singlePagesPerDoc, list, skuOut);
             }
 
             if (!mixBundles.isEmpty()) {
                 Path mixOut = outDir.resolve("MIXED.pdf");
-                mergeBundles(singlePagesPerDoc, mixBundles, mixOut);
+                OrnamentBundleMerger.merge(singlePagesPerDoc, mixBundles, mixOut);
             }
         } finally {
             cleanDir(tmpRoot);
@@ -194,19 +192,6 @@ public final class OrnamentSkuTool {
         return result;
     }
 
-    private static void mergeBundles(List<List<Path>> singlePagesPerDoc, List<BundleRef> bundles, Path outFile) throws IOException {
-        if (bundles.isEmpty()) return;
-        PDFMergerUtility mu = new PDFMergerUtility();
-        mu.setDestinationFileName(outFile.toString());
-        for (BundleRef ref : bundles) {
-            List<Path> files = singlePagesPerDoc.get(ref.docId);
-            Bundle b = ref.bundle;
-            mu.addSource(files.get(b.labelPageIndex).toFile());
-            for (Integer pi : b.slipPageIndices) mu.addSource(files.get(pi).toFile());
-        }
-        mu.mergeDocuments(MemoryUsageSetting.setupMainMemoryOnly());
-    }
-
     private static String norm(String text) {
         if (text == null) return "";
         return text.replace('\u00A0', ' ')
@@ -269,5 +254,18 @@ public final class OrnamentSkuTool {
         Bundle(int docId) { this.docId = docId; }
     }
 
-    private record BundleRef(int docId, Bundle bundle) {}
+    private record BundleRef(int docId, Bundle bundle) implements OrnamentBundleMerger.BundlePages {
+        @Override
+        public int labelPageIndex() {
+            if (bundle.labelPageIndex == null) {
+                throw new IllegalStateException("Bundle missing label index");
+            }
+            return bundle.labelPageIndex;
+        }
+
+        @Override
+        public List<Integer> slipPageIndices() {
+            return bundle.slipPageIndices;
+        }
+    }
 }
