@@ -10,9 +10,13 @@ import java.util.Map;
 public final class ItemTypeGroup {
     private final String itemType;
     private final Map<String, CustomerGroup> customersBySanitizedName;
+    private final ItemTypeCategorizer.Category category;
 
-    ItemTypeGroup(String itemType, Map<String, CustomerGroup> customersBySanitizedName) {
+    ItemTypeGroup(String itemType,
+                  ItemTypeCategorizer.Category category,
+                  Map<String, CustomerGroup> customersBySanitizedName) {
         this.itemType = itemType;
+        this.category = category;
         this.customersBySanitizedName = Collections.unmodifiableMap(customersBySanitizedName);
     }
 
@@ -24,11 +28,15 @@ public final class ItemTypeGroup {
         return customersBySanitizedName;
     }
 
+    public ItemTypeCategorizer.Category category() {
+        return category;
+    }
+
     public boolean isEmpty() {
         return customersBySanitizedName.isEmpty();
     }
 
     public static ItemTypeGroup empty(String itemType) {
-        return new ItemTypeGroup(itemType, new LinkedHashMap<>());
+        return new ItemTypeGroup(itemType, ItemTypeCategorizer.Category.OTHER, new LinkedHashMap<>());
     }
 }

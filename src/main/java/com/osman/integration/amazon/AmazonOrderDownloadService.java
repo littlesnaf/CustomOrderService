@@ -12,18 +12,20 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Duration;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
+import java.util.AbstractMap;
+import java.util.Collection;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.logging.Logger;
 
 /**
  * Handles the filesystem layout and downloading of customer assets.
  */
-public class AmazonOrderDownloadService {
+public class  AmazonOrderDownloadService {
     private static final Logger LOGGER = AppLogger.get();
-    private static final DateTimeFormatter FOLDER_FORMATTER = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
     private static final Duration REQUEST_TIMEOUT = Duration.ofMinutes(2);
 
     private final HttpClient httpClient;
@@ -52,7 +54,13 @@ public class AmazonOrderDownloadService {
     public Path downloadBatch(OrderBatch batch, DownloadProgressListener listener) throws IOException {
         validateBatch(batch);
         Objects.requireNonNull(listener, "listener");
-        return downloadInternal(batch, batch.groups(), listener);
+
+        Map<String, ItemTypeGroup> personalizedGroups = filterPersonalized(batch.groups());
+        if (personalizedGroups.isEmpty()) {
+            throw new IllegalArgumentException("Batch does not contain personalized mug item types.");
+        }
+
+        return downloadInternal(batch, personalizedGroups, listener);
     }
 
     /**
@@ -63,37 +71,122 @@ public class AmazonOrderDownloadService {
         Objects.requireNonNull(itemType, "itemType");
         Objects.requireNonNull(listener, "listener");
 
-        ItemTypeGroup group = batch.groups().get(itemType);
-        if (group == null || group.isEmpty()) {
-            throw new IllegalArgumentException("Item type '%s' not found in batch.".formatted(itemType));
+        if (batch.groups().containsKey(itemType)) {
+            return downloadItemTypes(batch, java.util.List.of(itemType), listener);
         }
 
-        Map<String, ItemTypeGroup> subset = Map.of(itemType, group);
+        String matchingKey = batch.groups().entrySet().stream()
+            .filter(entry -> itemType.equals(entry.getValue().itemType()))
+            .map(Map.Entry::getKey)
+            .findFirst()
+            .orElseThrow(() -> new IllegalArgumentException("Item type '%s' not found in batch.".formatted(itemType)));
+
+        return downloadItemTypes(batch, java.util.List.of(matchingKey), listener);
+    }
+
+    /**
+     * Downloads only the specified item types within the provided batch.
+     */
+    public Path downloadItemTypes(OrderBatch batch,
+                                  Collection<String> itemTypes,
+                                  DownloadProgressListener listener) throws IOException {
+        validateBatch(batch);
+        Objects.requireNonNull(itemTypes, "itemTypes");
+        Objects.requireNonNull(listener, "listener");
+
+        if (itemTypes.isEmpty()) {
+            throw new IllegalArgumentException("No item types specified for download.");
+        }
+
+        Map<String, ItemTypeGroup> subset = new LinkedHashMap<>();
+        Set<String> missing = new LinkedHashSet<>();
+        Set<String> nonPersonalized = new LinkedHashSet<>();
+
+        for (String requested : itemTypes) {
+            if (requested == null || requested.isBlank()) {
+                continue;
+            }
+
+            Map.Entry<String, ItemTypeGroup> resolved = resolveGroup(batch, requested);
+            if (resolved == null || resolved.getValue() == null || resolved.getValue().isEmpty()) {
+                missing.add(requested);
+                continue;
+            }
+
+            ItemTypeGroup group = resolved.getValue();
+            if (group.category() != ItemTypeCategorizer.Category.MUG_CUSTOM) {
+                nonPersonalized.add(group.itemType());
+                continue;
+            }
+
+            subset.putIfAbsent(resolved.getKey(), group);
+        }
+
+        if (!missing.isEmpty()) {
+            throw new IllegalArgumentException("Item type(s) not found in batch: " + missing);
+        }
+
+        if (!nonPersonalized.isEmpty()) {
+            throw new IllegalArgumentException(
+                "Item type(s) not customizable mugs: " + nonPersonalized
+            );
+        }
+
+        if (subset.isEmpty()) {
+            throw new IllegalArgumentException("No personalized mug item types selected for download.");
+        }
+
         return downloadInternal(batch, subset, listener);
+    }
+
+    private Map.Entry<String, ItemTypeGroup> resolveGroup(OrderBatch batch, String requested) {
+        Map<String, ItemTypeGroup> groups = batch.groups();
+        ItemTypeGroup direct = groups.get(requested);
+        if (direct != null) {
+            return new AbstractMap.SimpleImmutableEntry<>(requested, direct);
+        }
+
+        for (Map.Entry<String, ItemTypeGroup> entry : groups.entrySet()) {
+            if (requested.equals(entry.getValue().itemType())) {
+                return entry;
+            }
+        }
+        return null;
+    }
+
+    private Map<String, ItemTypeGroup> filterPersonalized(Map<String, ItemTypeGroup> groups) {
+        Map<String, ItemTypeGroup> filtered = new LinkedHashMap<>();
+        groups.forEach((key, value) -> {
+            if (value.category() == ItemTypeCategorizer.Category.MUG_CUSTOM && !value.isEmpty()) {
+                filtered.put(key, value);
+            }
+        });
+        return filtered;
     }
 
     private Path downloadInternal(OrderBatch batch,
                                   Map<String, ItemTypeGroup> groups,
                                   DownloadProgressListener listener) throws IOException {
         Files.createDirectories(baseDirectory);
-        Path batchDirectory = baseDirectory.resolve("AmazonOrders-" + FOLDER_FORMATTER.format(LocalDateTime.now()));
-        Files.createDirectories(batchDirectory);
+        Path batchDirectory = baseDirectory;
 
         int totalItems = countItems(groups);
         listener.onStart(totalItems, batchDirectory);
 
         int processed = 0;
         for (Map.Entry<String, ItemTypeGroup> entry : groups.entrySet()) {
-            String itemType = entry.getKey();
             ItemTypeGroup itemTypeGroup = entry.getValue();
 
-            Path itemTypeFolder = batchDirectory.resolve(itemType);
-            Files.createDirectories(itemTypeFolder);
+            Path itemTypeRoot = ItemTypeCategorizer.resolveItemTypeFolder(batchDirectory, itemTypeGroup);
+            Files.createDirectories(itemTypeRoot);
+
+            Path imagesFolder = ItemTypeCategorizer.resolveImagesFolder(itemTypeRoot);
+            Files.createDirectories(imagesFolder);
 
             for (CustomerGroup customer : itemTypeGroup.customers().values()) {
                 for (CustomerOrder order : customer.orders().values()) {
-                    Path orderFolder = createOrderFolder(itemTypeFolder, customer, order);
-                    writeMetadata(orderFolder, customer, order, itemType);
+                    Path orderFolder = createOrderFolder(imagesFolder, customer, order);
+                    writeMetadata(orderFolder, customer, order, itemTypeGroup.itemType());
 
                     for (CustomerOrderItem item : order.items()) {
                         processed++;
@@ -167,10 +260,10 @@ public class AmazonOrderDownloadService {
         return target;
     }
 
-    private static Path createOrderFolder(Path itemTypeFolder, CustomerGroup customer, CustomerOrder order) throws IOException {
+    private static Path createOrderFolder(Path imagesFolder, CustomerGroup customer, CustomerOrder order) throws IOException {
         String orderIdSegment = order.orderId().replaceAll("[^A-Za-z0-9-]", "_");
         String folderName = "%s_%s".formatted(customer.sanitizedBuyerName(), orderIdSegment);
-        Path folder = itemTypeFolder.resolve(folderName);
+        Path folder = imagesFolder.resolve(folderName);
         Files.createDirectories(folder);
         return folder;
     }

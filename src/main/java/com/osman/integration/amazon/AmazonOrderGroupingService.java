@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * Groups parsed order records by item type, customer, and order id.
@@ -18,8 +19,10 @@ public class AmazonOrderGroupingService {
         Map<String, ItemTypeGroupBuilder> builders = new LinkedHashMap<>();
 
         for (AmazonOrderRecord record : records) {
-            String itemTypeKey = record.normalizedItemType();
-            ItemTypeGroupBuilder groupBuilder = builders.computeIfAbsent(itemTypeKey, ItemTypeGroupBuilder::new);
+            ItemTypeGroupBuilder groupBuilder = builders.computeIfAbsent(
+                groupKey(record),
+                key -> new ItemTypeGroupBuilder(record.normalizedItemType(), ItemTypeCategorizer.resolveCategory(record))
+            );
             groupBuilder.add(record);
         }
 
@@ -28,12 +31,19 @@ public class AmazonOrderGroupingService {
         return new OrderBatch(grouped);
     }
 
+    private String groupKey(AmazonOrderRecord record) {
+        ItemTypeCategorizer.Category category = ItemTypeCategorizer.resolveCategory(record);
+        return category.name() + "|" + record.normalizedItemType();
+    }
+
     private static final class ItemTypeGroupBuilder {
         private final String itemType;
+        private final ItemTypeCategorizer.Category category;
         private final Map<String, CustomerGroupBuilder> customers = new LinkedHashMap<>();
 
-        private ItemTypeGroupBuilder(String itemType) {
+        private ItemTypeGroupBuilder(String itemType, ItemTypeCategorizer.Category category) {
             this.itemType = itemType;
+            this.category = Objects.requireNonNull(category);
         }
 
         private void add(AmazonOrderRecord record) {
@@ -49,7 +59,7 @@ public class AmazonOrderGroupingService {
         private ItemTypeGroup build() {
             Map<String, CustomerGroup> finalized = new LinkedHashMap<>();
             customers.forEach((sanitized, builder) -> finalized.put(sanitized, builder.build()));
-            return new ItemTypeGroup(itemType, finalized);
+            return new ItemTypeGroup(itemType, category, finalized);
         }
     }
 

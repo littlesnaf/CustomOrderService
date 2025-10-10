@@ -39,7 +39,7 @@ public final class SvgPreprocessor {
         if (content.contains(BLANK_LOGO_URL)) {
             content = content.replace(BLANK_LOGO_URL, TRANSPARENT_PIXEL_DATA_URI);
         }
-
+        content = shrinkAllTextFontSizes(content, 0.98);
         Pattern imagePattern = Pattern.compile("<image\\b([^>]*?)(xlink:href|href)\\s*=\\s*(['\"])([^'\"]+)\\3([^>]*)>", Pattern.CASE_INSENSITIVE);
         Matcher matcher = imagePattern.matcher(content);
         List<File> tempFiles = new ArrayList<>();
@@ -238,6 +238,95 @@ public final class SvgPreprocessor {
         }
         return trimmed;
     }
+    private static String shrinkAllTextFontSizes(String svg, double scale) {
+        if (svg == null || svg.isEmpty()) return svg;
+        if (scale <= 0 || scale >= 1.0) scale = 0.98;
+
+        // 1) Doğrudan attribute: <text ... font-size="123.45px">
+        Pattern tagFs = Pattern.compile("(?is)<(text|tspan|tref)\\b([^>]*)>");
+        Matcher mTag = tagFs.matcher(svg);
+        StringBuffer outTag = new StringBuffer();
+        while (mTag.find()) {
+            String tagName = mTag.group(1);
+            String attrs   = mTag.group(2);
+
+            // font-size attribute küçült
+            Matcher fsAttr = Pattern.compile("(?i)\\bfont-size\\s*=\\s*\"\\s*([0-9.]+)\\s*([a-z%]*)\\s*\"").matcher(attrs);
+            String attrsAfter = attrs;
+            if (fsAttr.find()) {
+                double val = parseNum(fsAttr.group(1));
+                String unit = fsAttr.group(2) == null ? "" : fsAttr.group(2);
+                double newVal = Math.max(1.0, val * scale);
+                attrsAfter = fsAttr.replaceFirst("font-size=\"" +
+                        ((newVal == Math.rint(newVal)) ? String.valueOf((long)newVal) : String.valueOf(newVal)) +
+                        unit + "\"");
+            }
+
+            // inline style içinde font-size: ...
+            attrsAfter = replaceFontSizeInStyleAttribute(attrsAfter, scale);
+
+            mTag.appendReplacement(outTag, "<" + tagName + attrsAfter + ">");
+        }
+        mTag.appendTail(outTag);
+        String afterTagLevel = outTag.toString();
+
+        // 2) <style> blokları içindeki CSS font-size: ...
+        Pattern styleBlock = Pattern.compile("(?is)<style([^>]*)>(.*?)</style>");
+        Matcher mBlock = styleBlock.matcher(afterTagLevel);
+        StringBuffer outCss = new StringBuffer();
+        while (mBlock.find()) {
+            String attrs = mBlock.group(1);
+            String css   = mBlock.group(2);
+            String cssRepl = replaceFontSizeInCss(css, scale);
+            mBlock.appendReplacement(outCss, "<style" + attrs + ">" +
+                    Matcher.quoteReplacement(cssRepl) + "</style>");
+        }
+        mBlock.appendTail(outCss);
+
+        return outCss.toString();
+    }
+
+    private static String replaceFontSizeInStyleAttribute(String attrs, double scale) {
+        Pattern styleAttr = Pattern.compile("(?is)\\bstyle\\s*=\\s*\"([^\"]*)\"");
+        Matcher sm = styleAttr.matcher(attrs);
+        StringBuffer sb = new StringBuffer();
+        boolean changed = false;
+        while (sm.find()) {
+            String styleVal = sm.group(1);
+            String newStyle = replaceFontSizeDeclarations(styleVal, scale);
+            if (!newStyle.equals(styleVal)) changed = true;
+            sm.appendReplacement(sb, "style=\"" + Matcher.quoteReplacement(newStyle) + "\"");
+        }
+        sm.appendTail(sb);
+        return changed ? sb.toString() : attrs;
+    }
+
+    private static String replaceFontSizeInCss(String css, double scale) {
+        return replaceFontSizeDeclarations(css, scale);
+    }
+
+    private static String replaceFontSizeDeclarations(String cssOrStyle, double scale) {
+        // font-size: <number><unit>;
+        Pattern decl = Pattern.compile("(?i)(font-size\\s*:\\s*)([0-9.]+)\\s*([a-z%]*)");
+        Matcher dm = decl.matcher(cssOrStyle);
+        StringBuffer out = new StringBuffer();
+        while (dm.find()) {
+            double val = parseNum(dm.group(2));
+            String unit = dm.group(3) == null ? "" : dm.group(3);
+            double newVal = Math.max(1.0, val * scale);
+            String repl = dm.group(1) +
+                    ((newVal == Math.rint(newVal)) ? String.valueOf((long)newVal) : String.valueOf(newVal)) +
+                    unit;
+            dm.appendReplacement(out, repl);
+        }
+        dm.appendTail(out);
+        return out.toString();
+    }
+
+    private static double parseNum(String s) {
+        try { return Double.parseDouble(s); } catch (Exception e) { return 0; }
+    }
+
 
     public record ProcessedSvg(String content, List<File> tempFiles) {
     }

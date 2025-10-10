@@ -12,6 +12,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class AmazonOrderGroupingServiceTest {
@@ -30,9 +31,10 @@ class AmazonOrderGroupingServiceTest {
         List<AmazonOrderRecord> records = parseSample();
         OrderBatch batch = groupingService.group(records);
 
-        assertEquals(2, batch.groups().size(), "Groups: " + batch.groups().keySet());
+        assertEquals(1, batch.groups().size(), "Groups: " + batch.groups().keySet());
         ItemTypeGroup elevenW = batch.group("11W");
         assertNotNull(elevenW);
+        assertEquals(ItemTypeCategorizer.Category.MUG_CUSTOM, elevenW.category());
         assertEquals(2, elevenW.customers().size());
 
         CustomerGroup john = elevenW.customers().get("John_Doe");
@@ -49,13 +51,7 @@ class AmazonOrderGroupingServiceTest {
         CustomerOrder alexOrder = alex.orders().values().iterator().next();
         assertEquals(3, alexOrder.items().size());
 
-        ItemTypeGroup vacay = batch.group("VACAYBEACH");
-        assertNotNull(vacay);
-        assertEquals(1, vacay.customers().size());
-
-        Map.Entry<String, CustomerGroup> entry = vacay.customers().entrySet().iterator().next();
-        assertEquals("John_Doe1", entry.getKey());
-        assertEquals(1, entry.getValue().orders().size());
+        assertNull(batch.group("TMBLR"), "Non-mug item types should be filtered out");
     }
 
     @Test

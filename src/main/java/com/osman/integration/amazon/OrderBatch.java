@@ -36,7 +36,15 @@ public final class OrderBatch {
     }
 
     public ItemTypeGroup group(String itemType) {
-        return groups.get(itemType);
+        if (itemType == null) {
+            return null;
+        }
+        for (ItemTypeGroup group : groups.values()) {
+            if (itemType.equals(group.itemType())) {
+                return group;
+            }
+        }
+        return null;
     }
 
     public static OrderBatch empty() {

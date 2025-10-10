@@ -5,7 +5,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * 23Utility methods for normalizing ornament SKU tokens and preparing text for regex scanning.
+ * Utility methods for normalizing ornament SKU tokens and preparing text for regex scanning.
  */
 public final class OrnamentSkuNormalizer {
 
