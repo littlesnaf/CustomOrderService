@@ -38,6 +38,7 @@ import java.util.concurrent.ThreadFactory;
 public class MainUIView {
 
     private static final String OUTPUT_FOLDER_NAME = "Ready Designs";
+    private static final int READY_FOLDER_ORDER_LIMIT = 25;
     private final ConfigService configService = ConfigService.getInstance();
     private final OrderDiscoveryService orderDiscoveryService = new OrderDiscoveryService();
 
@@ -255,13 +256,11 @@ public class MainUIView {
             for (File customerFolder : customerFolders) {
                 if (cancelRequested) return;
                 File outputDirectory = new File(customerFolder, OUTPUT_FOLDER_NAME);
-                if (!outputDirectory.exists()) outputDirectory.mkdirs();
                 handleFolder(customerFolder, outputDirectory, customerFolder.getName());
             }
         } else {
             log("-> No subfolders found. Processing the folder itself as a single job: " + base.getName());
             File outputDirectory = new File(base, OUTPUT_FOLDER_NAME);
-            if (!outputDirectory.exists()) outputDirectory.mkdirs();
             handleFolder(base, outputDirectory, base.getName());
         }
     }
@@ -295,6 +294,8 @@ public class MainUIView {
             }
 
             List<File> leafOrders = orderDiscoveryService.findOrderLeafFolders(scanRoot, 6);
+            ReadyFolderAllocator readyAllocator = new ReadyFolderAllocator(customerFolder, customerNameForFile, READY_FOLDER_ORDER_LIMIT);
+            AtomicInteger orderSequence = new AtomicInteger();
             if (!leafOrders.isEmpty()) {
                 if (leafOrders.size() > 1) log("  -> Multiple orders detected (" + leafOrders.size() + " folders).");
                 else log("  -> Single order folder detected.");
@@ -306,7 +307,7 @@ public class MainUIView {
                     t.setDaemon(true);
                     return t;
                 };
-                ExecutorService pool = Executors.newFixedThreadPool(2, tf);
+                ExecutorService pool = Executors.newFixedThreadPool(4, tf);
                 List<Future<?>> futures = new ArrayList<>();
 
                 for (File subFolder : leafOrders) {
@@ -318,10 +319,13 @@ public class MainUIView {
                         continue;
                     }
 
+                    final int orderIndex = orderSequence.getAndIncrement();
+                    final File readyFolder = readyAllocator.folderForOrder(orderIndex);
+
                     futures.add(pool.submit(() -> {
                         try {
                             List<String> results = MugRenderer.processOrderFolderMulti(
-                                    subFolder, outputDirectory, customerNameForFile, null);
+                                    subFolder, readyFolder, customerNameForFile, null);
                             for (String path : results) {
                                 log("    -> OK: " + subFolder.getName() + " -> " + new File(path).getName());
                             }
@@ -347,8 +351,9 @@ public class MainUIView {
             } else {
                 log("  -> No leaf order folder found. Trying the folder itself as MULTI order…");
                 try {
+                    File readyFolder = readyAllocator.folderForOrder(orderSequence.getAndIncrement());
                     List<String> results =
-                            MugRenderer.processOrderFolderMulti(customerFolder, outputDirectory, customerNameForFile, null);
+                            MugRenderer.processOrderFolderMulti(customerFolder, readyFolder, customerNameForFile, null);
                     for (String path : results) {
                         log("  -> OK: " + new File(path).getName());
                     }
@@ -449,6 +454,9 @@ public class MainUIView {
             File scanRoot = extractRoot;
             List<File> leafOrders = orderDiscoveryService.findOrderLeafFolders(scanRoot, 6);
 
+            ReadyFolderAllocator readyAllocator = new ReadyFolderAllocator(extractRoot, customerName, READY_FOLDER_ORDER_LIMIT);
+            AtomicInteger orderSequence = new AtomicInteger();
+
             if (!leafOrders.isEmpty()) {
                 log("  -> " + leafOrders.size() + " order folder(s) found inside the zip.");
                 int ok = 0, fail = 0;
@@ -459,7 +467,8 @@ public class MainUIView {
                         continue;
                     }
                     try {
-                        List<String> results = MugRenderer.processOrderFolderMulti(subFolder, outputDirectory, customerName, null);
+                        File readyFolder = readyAllocator.folderForOrder(orderSequence.getAndIncrement());
+                        List<String> results = MugRenderer.processOrderFolderMulti(subFolder, readyFolder, customerName, null);
                         for (String path : results) {
                             log("    -> OK: " + subFolder.getName() + " -> " + new File(path).getName());
                             ok++;
@@ -476,7 +485,8 @@ public class MainUIView {
             } else {
                 log("  -> No leaf folder found; trying zip root as MULTI order…");
                 try {
-                    List<String> results = MugRenderer.processOrderFolderMulti(scanRoot, outputDirectory, customerName, null);
+                    File readyFolder = readyAllocator.folderForOrder(orderSequence.getAndIncrement());
+                    List<String> results = MugRenderer.processOrderFolderMulti(scanRoot, readyFolder, customerName, null);
                     for (String path : results) {
                         log("  -> OK: " + new File(path).getName());
                     }
@@ -531,6 +541,42 @@ public class MainUIView {
         String head = path.substring(0, Math.max(0, maxChars / 2 - 2));
         String tail = path.substring(path.length() - Math.max(0, maxChars / 2 - 2));
         return head + "…/" + tail;
+    }
+
+    private static final class ReadyFolderAllocator {
+        private final File baseDirectory;
+        private final String folderToken;
+        private final int bucketSize;
+
+        ReadyFolderAllocator(File baseDirectory, String baseName, int bucketSize) {
+            this.baseDirectory = baseDirectory;
+            this.folderToken = sanitizeBaseName(baseName);
+            this.bucketSize = Math.max(1, bucketSize);
+        }
+
+        File folderForOrder(int orderIndex) {
+            int bucket = Math.max(1, (orderIndex / bucketSize) + 1);
+            String folderName = "Ready-" + folderToken + "_P" + bucket;
+            File folder = new File(baseDirectory, folderName);
+            if (!folder.exists() && !folder.mkdirs()) {
+                throw new IllegalStateException("Unable to create ready folder: " + folder.getAbsolutePath());
+            }
+            return folder;
+        }
+
+        private static String sanitizeBaseName(String raw) {
+            String value = (raw == null) ? "" : raw.trim();
+            if (value.isEmpty()) {
+                value = "ORDERS";
+            }
+            value = value.replaceAll("[^A-Za-z0-9]+", "-");
+            value = value.replaceAll("-{2,}", "-");
+            value = value.replaceAll("^-|-$", "");
+            if (value.isEmpty()) {
+                value = "ORDERS";
+            }
+            return value.toUpperCase(Locale.ROOT);
+        }
     }
 
     /** Entry point. */

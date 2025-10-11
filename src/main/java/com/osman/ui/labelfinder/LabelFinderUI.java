@@ -410,25 +410,35 @@ public class LabelFinderUI extends JFrame {
             return;
         }
         LinkedHashSet<File> pdfs = new LinkedHashSet<>();
+        LinkedHashSet<File> scanDirectories = new LinkedHashSet<>();
         for (File root : baseFolders) {
             if (root == null || !root.isDirectory()) {
                 continue;
             }
-            try (Stream<Path> stream = Files.walk(root.toPath())) {
-                stream.filter(Files::isRegularFile).filter(p -> p.getFileName().toString().toLowerCase(java.util.Locale.ROOT).endsWith(".pdf")).forEach(p -> pdfs.add(p.toFile().getAbsoluteFile()));
-            }
-            catch (IOException e) {
-                statusLabel.setText("Error reading PDFs: " + e.getMessage());
-                return;
+            scanDirectories.add(root);
+            File parent = root.getParentFile();
+            if (parent != null && parent.isDirectory()) {
+                scanDirectories.add(parent);
             }
         }
-        Pattern packingSlipName = Pattern.compile("(?i)^Amazon\\.pdf$");
+        for (File dir : scanDirectories) {
+            File[] files = dir.listFiles((file, name) -> name.toLowerCase(Locale.ROOT).endsWith(".pdf"));
+            if (files == null) {
+                continue;
+            }
+            for (File pdf : files) {
+                pdfs.add(pdf.getAbsoluteFile());
+            }
+        }
+        Pattern packingSlipName = Pattern.compile("(?i)^Amazon(?:\\s*\\(\\d+\\))?\\.pdf$");
         Pattern packingSlipFolder = Pattern.compile("(?i)^(?:\\d{2}\\s*[PRWB]|mix).*");
         for (File pdf : pdfs) {
             String name = pdf.getName();
             File parent = pdf.getParentFile();
             String parentName = parent != null ? parent.getName() : "";
-            boolean looksLikePackingSlip = packingSlipName.matcher(name).matches() || (name.equalsIgnoreCase("Amazon.pdf") && packingSlipFolder.matcher(parentName).matches());
+            String lowerName = name.toLowerCase(Locale.ROOT);
+            boolean looksLikePackingSlip = packingSlipName.matcher(name).matches()
+                || lowerName.startsWith("amazon");
             if (looksLikePackingSlip) {
                 try {
                     Map<String, List<Integer>> m = PackSlipExtractor.indexOrderToPages(pdf);
@@ -1656,12 +1666,33 @@ public class LabelFinderUI extends JFrame {
                 Path path = entry.path();
                 String fileName = path.getFileName().toString();
                 boolean isXn = XN_READY_NAME.matcher(fileName).matches();
-                boolean inReadyDir = path.toString().toLowerCase(Locale.ROOT).contains("ready design");
+                boolean inReadyDir = isReadyDesignPath(path);
                 if (isXn || inReadyDir) {
                     out.add(path);
                 }
             }
             return out;
         }
+    }
+
+    private static boolean isReadyDesignPath(Path path) {
+        if (path == null) {
+            return false;
+        }
+        Path current = path;
+        while (current != null) {
+            Path fileName = current.getFileName();
+            if (fileName != null) {
+                String lower = fileName.toString().toLowerCase(Locale.ROOT);
+                if (lower.contains("ready design")) {
+                    return true;
+                }
+                if (lower.startsWith("ready-") && lower.contains("_p")) {
+                    return true;
+                }
+            }
+            current = current.getParent();
+        }
+        return false;
     }
 }

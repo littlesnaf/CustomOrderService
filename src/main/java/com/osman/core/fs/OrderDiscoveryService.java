@@ -32,7 +32,7 @@ public final class OrderDiscoveryService {
         String name = dir.getName();
         if (name.equalsIgnoreCase("images") ||
                 name.equalsIgnoreCase("img") ||
-                name.equalsIgnoreCase(OUTPUT_FOLDER_NAME)) {
+                isReadyOutputFolderName(name)) {
             return false;
         }
         return containsExtRecursively(dir, ".svg", 3) && containsExtRecursively(dir, ".json", 3);
@@ -49,7 +49,7 @@ public final class OrderDiscoveryService {
         String dn = dir.getName();
         boolean isContainer = dn.equalsIgnoreCase("images") ||
                 dn.equalsIgnoreCase("img") ||
-                dn.equalsIgnoreCase(OUTPUT_FOLDER_NAME);
+                isReadyOutputFolderName(dn);
 
         File[] subs = dir.listFiles(File::isDirectory);
         if (subs == null) {
@@ -60,6 +60,9 @@ public final class OrderDiscoveryService {
         for (File sub : subs) {
             String n = sub.getName();
             if (n.startsWith(".") || n.equalsIgnoreCase("__MACOSX")) {
+                continue;
+            }
+            if (isReadyOutputFolderName(n)) {
                 continue;
             }
             potentialChildren.add(sub);
@@ -98,5 +101,17 @@ public final class OrderDiscoveryService {
         } catch (IOException e) {
             return false;
         }
+    }
+
+    private static boolean isReadyOutputFolderName(String name) {
+        if (name == null) {
+            return false;
+        }
+        String normalized = name.trim();
+        if (normalized.equalsIgnoreCase(OUTPUT_FOLDER_NAME)) {
+            return true;
+        }
+        String lower = normalized.toLowerCase(Locale.ROOT);
+        return lower.startsWith("ready-") && lower.contains("_p");
     }
 }

@@ -125,7 +125,8 @@ public final class MugRenderer {
 
         Set<String> declaredImageNames = determineDeclaredImageNames(payload);
 
-        ProcessedSvg processedSvg = SvgPreprocessor.preprocess(svgFile, orderInfo, declaredImageNames, outputDirectory);
+        File tempWorkingDir = Files.createTempDirectory(outputDirectory.toPath(), ".render-").toFile();
+        ProcessedSvg processedSvg = null;
 
         BufferedImage finalCanvas = new BufferedImage(template.finalWidth, template.finalHeight, BufferedImage.TYPE_INT_RGB);
         Graphics2D g2d = finalCanvas.createGraphics();
@@ -137,6 +138,7 @@ public final class MugRenderer {
         boolean drawRight = !"FRONT_ONLY".equals(payload.designSide());
 
         try {
+            processedSvg = SvgPreprocessor.preprocess(svgFile, orderInfo, declaredImageNames, tempWorkingDir);
             BufferedImage masterImage = renderSvgToImage(processedSvg.content(),
                     svgFile.getParentFile(),
                     template.renderSize,
@@ -145,10 +147,13 @@ public final class MugRenderer {
             drawCropsToCanvas(g2d, masterImage, drawLeft, drawRight, template);
             drawMirroredInfoText(g2d, orderInfo, null, template, payload.totalQuantity());
         } finally {
-            processedSvg.tempFiles().forEach(MugRenderer::deleteIfExists);
+            g2d.dispose();
+            if (processedSvg != null) {
+                processedSvg.tempFiles().forEach(MugRenderer::deleteIfExists);
+            }
+            deleteDirectoryQuietly(tempWorkingDir);
         }
 
-        g2d.dispose();
         ImageIO.write(finalCanvas, "png", finalOutputFile);
         return finalOutputFile.getAbsolutePath();
     }
@@ -570,6 +575,21 @@ public final class MugRenderer {
         }
         try {
             Files.deleteIfExists(f.toPath());
+        } catch (IOException ignored) {
+        }
+    }
+
+    private static void deleteDirectoryQuietly(File dir) {
+        if (dir == null || !dir.exists()) {
+            return;
+        }
+        try (Stream<Path> walk = Files.walk(dir.toPath())) {
+            walk.sorted((a, b) -> b.compareTo(a)).forEach(path -> {
+                try {
+                    Files.deleteIfExists(path);
+                } catch (IOException ignored) {
+                }
+            });
         } catch (IOException ignored) {
         }
     }

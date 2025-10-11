@@ -19,7 +19,7 @@ import java.util.regex.Pattern;
 public class PdfLinker {
     private static final Pattern ORDER_ID_PATTERN = Pattern.compile("\\b\\d{3}-\\d{7}-\\d{7}\\b");
     private static final Pattern PACKING_SLIP_PATTERN =
-            Pattern.compile("^(?:\\d{2}[PRWB]|mix)(\\s*\\(\\d+\\))?\\.pdf$", Pattern.CASE_INSENSITIVE);
+            Pattern.compile("(?i)(?:^(?:\\d{2}[PRWB]|mix)(\\s*\\(\\d+\\))?\\.pdf$)|(?:^amazon.*\\.pdf$)");
     private static final Pattern PACKING_SLIP_FOLDER_PATTERN =
             Pattern.compile("^(?:\\d{2}\\s*[PRWB]|mix).*", Pattern.CASE_INSENSITIVE);
 
@@ -28,11 +28,13 @@ public class PdfLinker {
         if (pdfFile == null) return false;
         String name = pdfFile.getName();
         if (PACKING_SLIP_PATTERN.matcher(name).matches()) return true;
-        if (name.equalsIgnoreCase("Amazon.pdf")) {
+        String lower = name.toLowerCase();
+        if (lower.startsWith("amazon")) {
             File parent = pdfFile.getParentFile();
             if (parent != null && PACKING_SLIP_FOLDER_PATTERN.matcher(parent.getName()).matches()) {
                 return true;
             }
+            return true;
         }
         return false;
     }
