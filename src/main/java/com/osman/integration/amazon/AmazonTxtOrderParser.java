@@ -16,6 +16,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.Objects;
 import java.util.Set;
 import java.util.logging.Logger;
@@ -329,6 +331,11 @@ public class AmazonTxtOrderParser {
             }
         }
 
+        String explicit = extractExplicitMugCode(segments);
+        if (explicit != null) {
+            return explicit;
+        }
+
         String bestCandidate = findBestSegment(segments);
         if (bestCandidate != null) {
             return bestCandidate;
@@ -376,6 +383,30 @@ public class AmazonTxtOrderParser {
         return best;
     }
 
+    private static String extractExplicitMugCode(List<String> segments) {
+        if (segments == null || segments.isEmpty()) {
+            return null;
+        }
+        Pattern pattern = Pattern.compile("(?i)(11|15)[A-Z]{0,3}");
+        for (int i = segments.size() - 1; i >= 0; i--) {
+            String segment = segments.get(i);
+            if (segment == null || segment.isBlank()) {
+                continue;
+            }
+            String cleaned = segment.replaceAll("[^A-Za-z0-9]", "");
+            if (cleaned.isBlank()) {
+                continue;
+            }
+            Matcher matcher = pattern.matcher(cleaned);
+            if (matcher.find()) {
+                String match = matcher.group();
+                String normalized = match.replace("OZ", "").toUpperCase(Locale.ROOT);
+                return normalized;
+            }
+        }
+        return null;
+    }
+
     private static int scoreSegment(String segment) {
         int score = 0;
 
@@ -399,7 +430,13 @@ public class AmazonTxtOrderParser {
             return false;
         }
         String normalized = sku.trim().toUpperCase(Locale.ROOT);
-        return normalized.startsWith("SKU004");
+        if (normalized.startsWith("SKU004")) {
+            return true;
+        }
+        if (normalized.contains("PHOTOMUG")) {
+            return true;
+        }
+        return false;
     }
     private static Boolean resolveBuyerRequestedCancellationFlag(List<String> columns, Map<String, Integer> headerIndex) {
         Integer index = headerIndex.get(HEADER_IS_BUYER_REQUESTED_CANCELLATION);

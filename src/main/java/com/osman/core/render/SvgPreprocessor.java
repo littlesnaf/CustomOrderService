@@ -36,6 +36,7 @@ public final class SvgPreprocessor {
                                           File tempDir) throws IOException {
         String content = Files.readString(svgFile.toPath());
         content = content.replace("FONT_PLACEHOLDER", orderInfo.getFontName());
+        content = normalizeVidalokaFamily(content);
         if (content.contains(BLANK_LOGO_URL)) {
             content = content.replace(BLANK_LOGO_URL, TRANSPARENT_PIXEL_DATA_URI);
         }
@@ -147,6 +148,16 @@ public final class SvgPreprocessor {
         svg = patchInlineStyleFontFamilies(svg);
         svg = patchStyleBlockFontFamilies(svg);
         return svg;
+    }
+
+    private static String normalizeVidalokaFamily(String svg) {
+        if (svg == null || svg.isEmpty()) {
+            return svg;
+        }
+        String updated = svg;
+        updated = updated.replaceAll("(?i)font-family\\s*=\\s*\"\\s*Vidaloka\\s*\"", "font-family=\"Vidaloka-Regular\"");
+        updated = updated.replaceAll("(?i)(font-family\\s*:\\s*)Vidaloka(?!-Regular)", "$1Vidaloka-Regular");
+        return updated;
     }
 
     private static String patchFontFamilyAttributes(String svg) {

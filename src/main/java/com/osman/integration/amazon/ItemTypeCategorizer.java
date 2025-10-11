@@ -62,10 +62,35 @@ public final class ItemTypeCategorizer {
     }
 
     public static Path resolveItemTypeFolder(Path batchRoot, String itemType) {
-        return batchRoot.resolve(itemType);
+        MugPath mugPath = parseMugPath(itemType);
+        if (mugPath == null) {
+            return batchRoot.resolve(itemType);
+        }
+        return batchRoot.resolve(MUGS_FOLDER_NAME)
+                .resolve(mugPath.ounce())
+                .resolve(mugPath.code());
     }
 
     public static Path resolveImagesFolder(Path itemTypeFolder) {
         return itemTypeFolder.resolve(IMAGES_FOLDER_NAME);
     }
+
+    private static MugPath parseMugPath(String itemType) {
+        if (itemType == null) {
+            return null;
+        }
+        String normalized = itemType.trim().toUpperCase(Locale.ROOT);
+        if (normalized.isEmpty()) {
+            return null;
+        }
+        java.util.regex.Matcher matcher = MUG_PATTERN.matcher(normalized);
+        if (matcher.matches()) {
+            String ounce = matcher.group(1);
+            String code = normalized;
+            return new MugPath(ounce, code);
+        }
+        return null;
+    }
+
+    private record MugPath(String ounce, String code) {}
 }

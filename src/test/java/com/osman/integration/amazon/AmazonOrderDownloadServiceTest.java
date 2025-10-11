@@ -59,17 +59,21 @@ class AmazonOrderDownloadServiceTest {
         assertTrue(outputRoot.startsWith(tempDir));
         assertTrue(Files.isDirectory(outputRoot));
 
-        Path itemTypeRoot = outputRoot.resolve("11W");
-        Path imagesRoot = itemTypeRoot.resolve(ItemTypeCategorizer.IMAGES_FOLDER_NAME);
-        assertTrue(Files.isDirectory(itemTypeRoot));
-        assertTrue(Files.isDirectory(imagesRoot));
+        Path itemTypeRoot11 = outputRoot.resolve(ItemTypeCategorizer.MUGS_FOLDER_NAME).resolve("11").resolve("11W");
+        Path imagesRoot11 = itemTypeRoot11.resolve(ItemTypeCategorizer.IMAGES_FOLDER_NAME);
+        Path itemTypeRoot15 = outputRoot.resolve(ItemTypeCategorizer.MUGS_FOLDER_NAME).resolve("15").resolve("15R");
+        Path imagesRoot15 = itemTypeRoot15.resolve(ItemTypeCategorizer.IMAGES_FOLDER_NAME);
+        assertTrue(Files.isDirectory(itemTypeRoot11));
+        assertTrue(Files.isDirectory(imagesRoot11));
+        assertTrue(Files.isDirectory(itemTypeRoot15));
+        assertTrue(Files.isDirectory(imagesRoot15));
 
-        Path johnFolder = imagesRoot.resolve("John_Doe_111-0687106-4490606");
+        Path johnFolder = imagesRoot11.resolve("John_Doe_111-0687106-4490606");
         assertTrue(Files.isDirectory(johnFolder));
         assertTrue(Files.exists(johnFolder.resolve("140273890772121.zip")));
         assertTrue(Files.exists(johnFolder.resolve("order-info.txt")));
 
-        Path janeFolder = imagesRoot.resolve("Jane_Smith_222-2222222-2222222");
+        Path janeFolder = imagesRoot15.resolve("Jane_Smith_222-2222222-2222222");
         assertTrue(Files.isDirectory(janeFolder));
         assertTrue(Files.exists(janeFolder.resolve("240278395364561.zip")));
         assertTrue(Files.exists(janeFolder.resolve("order-info.txt")));
@@ -85,7 +89,7 @@ class AmazonOrderDownloadServiceTest {
         Path outputRoot = service.downloadItemTypes(batch, List.of("11W"), new AmazonOrderDownloadService.DownloadProgressListener() {
         });
 
-        Path itemTypeRoot = outputRoot.resolve("11W");
+        Path itemTypeRoot = outputRoot.resolve(ItemTypeCategorizer.MUGS_FOLDER_NAME).resolve("11").resolve("11W");
         Path imagesRoot = itemTypeRoot.resolve(ItemTypeCategorizer.IMAGES_FOLDER_NAME);
 
         assertTrue(Files.isDirectory(itemTypeRoot));

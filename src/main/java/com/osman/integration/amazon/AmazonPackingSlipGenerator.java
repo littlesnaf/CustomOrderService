@@ -53,7 +53,7 @@ public class AmazonPackingSlipGenerator {
         for (Map.Entry<String, Map<String, SlipData>> entry : slipsByItemType.entrySet()) {
             String itemType = entry.getKey();
             Map<String, SlipData> slips = entry.getValue();
-            Path itemTypeRoot = runRoot.resolve(itemType);
+        Path itemTypeRoot = ItemTypeCategorizer.resolveItemTypeFolder(runRoot, itemType);
             Files.createDirectories(itemTypeRoot);
 
             // Combined slip for the item type

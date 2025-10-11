@@ -410,24 +410,17 @@ public class LabelFinderUI extends JFrame {
             return;
         }
         LinkedHashSet<File> pdfs = new LinkedHashSet<>();
-        LinkedHashSet<File> scanDirectories = new LinkedHashSet<>();
         for (File root : baseFolders) {
             if (root == null || !root.isDirectory()) {
                 continue;
             }
-            scanDirectories.add(root);
-            File parent = root.getParentFile();
-            if (parent != null && parent.isDirectory()) {
-                scanDirectories.add(parent);
-            }
-        }
-        for (File dir : scanDirectories) {
-            File[] files = dir.listFiles((file, name) -> name.toLowerCase(Locale.ROOT).endsWith(".pdf"));
-            if (files == null) {
-                continue;
-            }
-            for (File pdf : files) {
-                pdfs.add(pdf.getAbsoluteFile());
+            try (Stream<Path> stream = Files.walk(root.toPath())) {
+                stream.filter(Files::isRegularFile)
+                        .filter(p -> p.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".pdf"))
+                        .forEach(p -> pdfs.add(p.toFile().getAbsoluteFile()));
+            } catch (IOException e) {
+                statusLabel.setText("Error reading PDFs: " + e.getMessage());
+                return;
             }
         }
         Pattern packingSlipName = Pattern.compile("(?i)^Amazon(?:\\s*\\(\\d+\\))?\\.pdf$");
