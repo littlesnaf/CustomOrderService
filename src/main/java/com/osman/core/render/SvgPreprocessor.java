@@ -39,9 +39,10 @@ public final class SvgPreprocessor {
         if (content.contains(BLANK_LOGO_URL)) {
             content = content.replace(BLANK_LOGO_URL, TRANSPARENT_PIXEL_DATA_URI);
         }
-        content = shrinkAllTextFontSizes(content, 0.98);
+
         Pattern imagePattern = Pattern.compile("<image\\b([^>]*?)(xlink:href|href)\\s*=\\s*(['\"])([^'\"]+)\\3([^>]*)>", Pattern.CASE_INSENSITIVE);
         Matcher matcher = imagePattern.matcher(content);
+
         List<File> tempFiles = new ArrayList<>();
         StringBuffer sb = new StringBuffer();
         Set<String> normalizedDeclaredImages = normalizeDeclaredImageNames(declaredImageNames);
@@ -240,9 +241,9 @@ public final class SvgPreprocessor {
     }
     private static String shrinkAllTextFontSizes(String svg, double scale) {
         if (svg == null || svg.isEmpty()) return svg;
-        if (scale <= 0 || scale >= 1.0) scale = 0.98;
+        if (scale <= 0 || scale >= 1.0) scale = 1;
 
-        // 1) Doğrudan attribute: <text ... font-size="123.45px">
+
         Pattern tagFs = Pattern.compile("(?is)<(text|tspan|tref)\\b([^>]*)>");
         Matcher mTag = tagFs.matcher(svg);
         StringBuffer outTag = new StringBuffer();
@@ -250,7 +251,7 @@ public final class SvgPreprocessor {
             String tagName = mTag.group(1);
             String attrs   = mTag.group(2);
 
-            // font-size attribute küçült
+
             Matcher fsAttr = Pattern.compile("(?i)\\bfont-size\\s*=\\s*\"\\s*([0-9.]+)\\s*([a-z%]*)\\s*\"").matcher(attrs);
             String attrsAfter = attrs;
             if (fsAttr.find()) {
@@ -262,7 +263,7 @@ public final class SvgPreprocessor {
                         unit + "\"");
             }
 
-            // inline style içinde font-size: ...
+
             attrsAfter = replaceFontSizeInStyleAttribute(attrsAfter, scale);
 
             mTag.appendReplacement(outTag, "<" + tagName + attrsAfter + ">");
@@ -270,7 +271,6 @@ public final class SvgPreprocessor {
         mTag.appendTail(outTag);
         String afterTagLevel = outTag.toString();
 
-        // 2) <style> blokları içindeki CSS font-size: ...
         Pattern styleBlock = Pattern.compile("(?is)<style([^>]*)>(.*?)</style>");
         Matcher mBlock = styleBlock.matcher(afterTagLevel);
         StringBuffer outCss = new StringBuffer();

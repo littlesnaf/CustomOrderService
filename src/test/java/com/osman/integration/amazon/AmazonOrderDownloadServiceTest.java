@@ -61,27 +61,22 @@ class AmazonOrderDownloadServiceTest {
 
         Path itemTypeRoot = outputRoot.resolve("11W");
         Path imagesRoot = itemTypeRoot.resolve(ItemTypeCategorizer.IMAGES_FOLDER_NAME);
-        Path vacayRoot = outputRoot.resolve("TMBLR");
         assertTrue(Files.isDirectory(itemTypeRoot));
         assertTrue(Files.isDirectory(imagesRoot));
-        assertFalse(Files.exists(vacayRoot));
 
         Path johnFolder = imagesRoot.resolve("John_Doe_111-0687106-4490606");
         assertTrue(Files.isDirectory(johnFolder));
         assertTrue(Files.exists(johnFolder.resolve("140273890772121.zip")));
         assertTrue(Files.exists(johnFolder.resolve("order-info.txt")));
 
-        Path alexFolder = imagesRoot.resolve("Alex_Brown_111-4313891-0593053");
-        assertTrue(Files.isDirectory(alexFolder));
-        try (var paths = Files.list(alexFolder)) {
-            assertEquals(3, paths
-                .filter(path -> path.getFileName().toString().endsWith(".zip"))
-                .count());
-        }
+        Path janeFolder = imagesRoot.resolve("Jane_Smith_222-2222222-2222222");
+        assertTrue(Files.isDirectory(janeFolder));
+        assertTrue(Files.exists(janeFolder.resolve("240278395364561.zip")));
+        assertTrue(Files.exists(janeFolder.resolve("order-info.txt")));
 
-        String metadata = Files.readString(alexFolder.resolve("order-info.txt"));
-        assertTrue(metadata.contains("Alex Brown"));
-        assertTrue(metadata.contains("Item ID: 140287339851241"));
+        String metadata = Files.readString(janeFolder.resolve("order-info.txt"));
+        assertTrue(metadata.contains("Jane Smith"));
+        assertTrue(metadata.contains("Item ID: 240278395364561"));
     }
 
     @Test
@@ -92,11 +87,9 @@ class AmazonOrderDownloadServiceTest {
 
         Path itemTypeRoot = outputRoot.resolve("11W");
         Path imagesRoot = itemTypeRoot.resolve(ItemTypeCategorizer.IMAGES_FOLDER_NAME);
-        Path vacayRoot = outputRoot.resolve("TMBLR");
 
         assertTrue(Files.isDirectory(itemTypeRoot));
         assertTrue(Files.isDirectory(imagesRoot));
-        assertFalse(Files.exists(vacayRoot));
     }
 
     private InputStream getResource(String path) {

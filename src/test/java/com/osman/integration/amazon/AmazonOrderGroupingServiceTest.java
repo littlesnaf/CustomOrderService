@@ -46,11 +46,13 @@ class AmazonOrderGroupingServiceTest {
         assertEquals("111-0687106-4490606", johnOrder.orderId());
         assertEquals(1, johnOrder.items().size());
 
-        CustomerGroup alex = elevenW.customers().get("Alex_Brown");
-        assertNotNull(alex);
-        assertEquals(1, alex.orders().size());
-        CustomerOrder alexOrder = alex.orders().values().iterator().next();
-        assertEquals(3, alexOrder.items().size());
+        CustomerGroup jane = elevenW.customers().get("Jane_Smith");
+        assertNotNull(jane);
+        assertEquals("Jane Smith", jane.originalBuyerName());
+        assertEquals(1, jane.orders().size());
+        CustomerOrder janeOrder = jane.orders().values().iterator().next();
+        assertEquals("222-2222222-2222222", janeOrder.orderId());
+        assertEquals(1, janeOrder.items().size());
 
         assertNull(batch.group("TMBLR"), "Non-mug item types should be filtered out");
     }

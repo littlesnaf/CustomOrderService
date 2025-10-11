@@ -49,7 +49,7 @@ public class AmazonTxtOrderParser {
     private static final String HEADER_SHIP_SERVICE_LEVEL = "ship-service-level";
     private static final String HEADER_SHIP_SERVICE_NAME = "ship-service-name";
     private static final String HEADER_VERGE_OF_LATE_SHIPMENT = "verge-of-lateshipment";
-
+    private static final String HEADER_IS_BUYER_REQUESTED_CANCELLATION = "is-buyer-requested-cancellation";
     private volatile boolean includeLateShipmentRows = false;
     private volatile int lastSkippedLateShipmentCount;
     private volatile List<String> lastLateShipmentOrderIds = List.of();
@@ -94,16 +94,14 @@ public class AmazonTxtOrderParser {
                 }
 
                 List<String> columns = splitLine(line);
-                Boolean lateShipment = resolveLateShipmentFlag(columns, headerIndex);
-                boolean isLateShipment = Boolean.TRUE.equals(lateShipment);
-                if (isLateShipment) {
-                    lateShipmentOrderIds.add(columns.get(headerIndex.get(HEADER_ORDER_ID)).trim());
-                }
-                if (!includeLateShipmentRows && isLateShipment) {
-                    LOGGER.fine("Skipping row %d (late shipment) due to filter.".formatted(rowIndex));
-                    skippedLateShipment++;
+
+                Boolean buyerCancel = resolveBuyerRequestedCancellationFlag(columns, headerIndex);
+                if (Boolean.TRUE.equals(buyerCancel)) {
+                    LOGGER.fine("Skipping row %d (buyer requested cancellation).".formatted(rowIndex));
                     continue;
                 }
+
+
                 try {
                     AmazonOrderRecord record = toRecord(columns, headerIndex);
                     Category category = ItemTypeCategorizer.resolveCategory(record);
@@ -111,6 +109,18 @@ public class AmazonTxtOrderParser {
                         LOGGER.fine("Skipping non-mug item type for order " + record.orderId() + ": " + record.rawItemType());
                         continue;
                     }
+
+                    Boolean lateShipment = resolveLateShipmentFlag(columns, headerIndex);
+                    boolean isLateShipment = Boolean.TRUE.equals(lateShipment);
+                    if (isLateShipment) {
+                        lateShipmentOrderIds.add(record.orderId());
+                    }
+                    if (!includeLateShipmentRows && isLateShipment) {
+                        LOGGER.fine("Skipping row %d (late shipment) due to filter.".formatted(rowIndex));
+                        skippedLateShipment++;
+                        continue;
+                    }
+
                     records.add(record);
                 } catch (IllegalArgumentException ex) {
                     LOGGER.warning("Skipping row %d: %s".formatted(rowIndex, ex.getMessage()));
@@ -207,7 +217,7 @@ public class AmazonTxtOrderParser {
         if (value == null || value.isBlank()) {
             return null;
         }
-        return value.trim().equalsIgnoreCase("true");
+        return !value.trim().equalsIgnoreCase("true");
     }
 
     private static String getOptionalValue(List<String> columns, Map<String, Integer> headerIndex, String key) {
@@ -390,5 +400,16 @@ public class AmazonTxtOrderParser {
         }
         String normalized = sku.trim().toUpperCase(Locale.ROOT);
         return normalized.startsWith("SKU004");
+    }
+    private static Boolean resolveBuyerRequestedCancellationFlag(List<String> columns, Map<String, Integer> headerIndex) {
+        Integer index = headerIndex.get(HEADER_IS_BUYER_REQUESTED_CANCELLATION);
+        if (index == null || index < 0 || index >= columns.size()) {
+            return null;
+        }
+        String value = columns.get(index);
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        return value.trim().equalsIgnoreCase("true");
     }
 }

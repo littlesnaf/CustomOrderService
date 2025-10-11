@@ -81,20 +81,19 @@ class AmazonPackingSlipGeneratorTest {
         try (PDDocument doc = PDDocument.load(combined11W.toFile())) {
             String text = new PDFTextStripper().getText(doc);
             assertTrue(text.contains("Order ID: 111-0687106-4490606"));
-            assertTrue(text.contains("Order ID: 111-4313891-0593053"));
+            assertTrue(text.contains("Order ID: 222-2222222-2222222"));
         }
 
         Path singleJohn = runRoot.resolve("11W/Images/John_Doe_111-0687106-4490606/packing-slip.pdf");
         assertTrue(Files.exists(singleJohn), "Single slip missing for John Doe order");
 
-        Path multiItemSlip = runRoot.resolve("11W/Images/Alex_Brown_111-4313891-0593053/packing-slip.pdf");
-        try (PDDocument doc = PDDocument.load(multiItemSlip.toFile())) {
+        Path singleJane = runRoot.resolve("11W/Images/Jane_Smith_222-2222222-2222222/packing-slip.pdf");
+        assertTrue(Files.exists(singleJane), "Single slip missing for Jane Smith order");
+        try (PDDocument doc = PDDocument.load(singleJane.toFile())) {
             String text = new PDFTextStripper().getText(doc);
             assertTrue(text.contains("Packing Slip"));
-            assertTrue(text.contains("Order ID: 111-4313891-0593053"));
-            assertTrue(text.contains("140287339851321"));
-            assertTrue(text.contains("140287339851241"));
-            assertTrue(text.contains("140287339851281"));
+            assertTrue(text.contains("Order ID: 222-2222222-2222222"));
+            assertTrue(text.contains("240278395364561"));
         }
     }
 

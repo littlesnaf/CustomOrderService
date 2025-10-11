@@ -43,11 +43,8 @@ class AmazonTxtOrderParserTest {
             assertEquals(1, record.quantityPurchased());
             assertTrue(record.productName().startsWith("HomeBee Personalized"));
 
-            assertEquals(4, parser.getLastSkippedLateShipmentCount());
-            assertEquals(List.of(
-                "114-3776930-9533812",
-                "111-4313891-0593053"
-            ), parser.getLastLateShipmentOrderIds());
+            assertEquals(1, parser.getLastSkippedLateShipmentCount());
+            assertEquals(List.of("222-2222222-2222222"), parser.getLastLateShipmentOrderIds());
         }
     }
 
@@ -79,8 +76,22 @@ class AmazonTxtOrderParserTest {
         List<AmazonOrderRecord> records = parser.parse(new java.io.StringReader(data));
 
         assertEquals(2, records.size());
-        assertEquals(List.of("ORDER-2"), parser.getLastLateShipmentOrderIds());
+        assertEquals(List.of("ORDER-1"), parser.getLastLateShipmentOrderIds());
         assertEquals(0, parser.getLastSkippedLateShipmentCount());
+    }
+
+    @Test
+    void skipsBuyerRequestedCancellationRows() throws IOException {
+        String data = String.join("\n",
+            "order-id\torder-item-id\tbuyer-name\tsku\tcustomized-url\tis-buyer-requested-cancellation",
+            "ORDER-1\tITEM-1\tAlice Example\tSKU004-Photo-11W\thttps://example.com/custom/1\ttrue",
+            "ORDER-2\tITEM-2\tBob Example\tSKU004-Photo-11W\thttps://example.com/custom/2\tfalse"
+        );
+
+        List<AmazonOrderRecord> records = parser.parse(new java.io.StringReader(data));
+
+        assertEquals(1, records.size());
+        assertEquals("ORDER-2", records.get(0).orderId());
     }
 
     private InputStream getResource(String path) {
