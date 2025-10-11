@@ -17,7 +17,12 @@ import java.nio.file.Path;
 import java.util.*;
 import java.util.List;
 import java.util.stream.Stream;
-
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.ThreadFactory;
 /**
  * Main desktop UI for batch processing orders (folders & zip files).
  * <p>
@@ -59,7 +64,7 @@ public class MainUIView {
         frame.add(tabbedPane, BorderLayout.CENTER);
 
         JPanel bulkPanel = new JPanel(new BorderLayout(8, 8));
-        tabbedPane.addTab("Bulk Processing", bulkPanel);
+        tabbedPane.addTab("Create Designs", bulkPanel);
 
         // Top: font rows
         JPanel topPanel = new JPanel(new GridLayout(0, 1, 8, 4));
@@ -103,7 +108,7 @@ public class MainUIView {
         bulkPanel.add(bottomPanel, BorderLayout.SOUTH);
 
         AmazonImportPanel amazonImportPanel = new AmazonImportPanel();
-        tabbedPane.addTab("Amazon Import", amazonImportPanel);
+        tabbedPane.addTab("Download SVGs", amazonImportPanel);
 
         OrnamentSkuPanel ornamentSkuPanel = new OrnamentSkuPanel();
         tabbedPane.addTab("Ornament Tool", ornamentSkuPanel);
@@ -293,31 +298,51 @@ public class MainUIView {
             if (!leafOrders.isEmpty()) {
                 if (leafOrders.size() > 1) log("  -> Multiple orders detected (" + leafOrders.size() + " folders).");
                 else log("  -> Single order folder detected.");
+                AtomicInteger okCounter = new AtomicInteger();
+                AtomicInteger failCounter = new AtomicInteger();
 
-                int ok = 0, fail = 0;
+                ThreadFactory tf = r -> {
+                    Thread t = new Thread(r, "RenderPool-Worker");
+                    t.setDaemon(true);
+                    return t;
+                };
+                ExecutorService pool = Executors.newFixedThreadPool(2, tf);
+                List<Future<?>> futures = new ArrayList<>();
+
                 for (File subFolder : leafOrders) {
-                    if (cancelRequested) return;
+                    if (cancelRequested) { break; }
 
                     String n = subFolder.getName();
                     if (n.equalsIgnoreCase(OUTPUT_FOLDER_NAME) || n.equalsIgnoreCase("images") || n.equalsIgnoreCase("img")) {
                         log("    -> Container folder skipped: " + n);
                         continue;
                     }
-                    try {
-                        List<String> results =
-                                MugRenderer.processOrderFolderMulti(subFolder, outputDirectory, customerNameForFile, null);
 
-                        for (String path : results) {
-                            log("    -> OK: " + subFolder.getName() + " -> " + new File(path).getName());
-                            ok++;
+                    futures.add(pool.submit(() -> {
+                        try {
+                            List<String> results = MugRenderer.processOrderFolderMulti(
+                                    subFolder, outputDirectory, customerNameForFile, null);
+                            for (String path : results) {
+                                log("    -> OK: " + subFolder.getName() + " -> " + new File(path).getName());
+                            }
+                            okCounter.incrementAndGet();
+                        } catch (Exception ex) {
+                            String errorMsg = "    -> ERROR processing " + subFolder.getName() + ": " + ex.getMessage();
+                            log(errorMsg);
+                            failedItems.add(customerFolder.getName() + "/" + subFolder.getName()
+                                    + " - Reason: " + ex.getMessage());
+                            failCounter.incrementAndGet();
                         }
-                    } catch (Exception ex) {
-                        String errorMsg = "    -> ERROR processing " + subFolder.getName() + ": " + ex.getMessage();
-                        log(errorMsg);
-                        failedItems.add(customerFolder.getName() + "/" + subFolder.getName() + " - Reason: " + ex.getMessage());
-                        fail++;
-                    }
+                    }));
                 }
+
+                for (Future<?> f : futures) {
+                    try { f.get(); } catch (Exception ignored) {}
+                }
+                pool.shutdown();
+
+                int ok = okCounter.get();
+                int fail = failCounter.get();
                 log("  -> Summary: " + ok + " succeeded, " + fail + " failed.");
             } else {
                 log("  -> No leaf order folder found. Trying the folder itself as MULTI order…");

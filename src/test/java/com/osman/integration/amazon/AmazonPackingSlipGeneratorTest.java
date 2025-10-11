@@ -33,6 +33,7 @@ class AmazonPackingSlipGeneratorTest {
 
     @Test
     void generatesPackingSlipsPerOrder() throws Exception {
+        parser.setIncludeLateShipmentRows(true);
         List<AmazonOrderRecord> records;
         try (InputStream stream = getResource("ordertestfiles/sample-amazon-orders.txt")) {
             assertNotNull(stream, "Sample resource is missing");

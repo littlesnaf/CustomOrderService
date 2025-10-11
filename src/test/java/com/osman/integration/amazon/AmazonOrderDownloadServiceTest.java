@@ -26,6 +26,7 @@ class AmazonOrderDownloadServiceTest {
     void setUp() throws IOException {
         tempDir = Files.createTempDirectory("amazon-download-test");
         AmazonTxtOrderParser parser = new AmazonTxtOrderParser();
+        parser.setIncludeLateShipmentRows(true);
         List<AmazonOrderRecord> records;
         try (InputStream stream = getResource("ordertestfiles/sample-amazon-orders.txt")) {
             assertNotNull(stream, "Sample resource missing");

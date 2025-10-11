@@ -15,6 +15,7 @@ import com.osman.integration.amazon.OrderImportSession;
 import com.osman.logging.AppLogger;
 
 import javax.swing.JButton;
+import javax.swing.JCheckBox;
 import javax.swing.JFileChooser;
 import javax.swing.JLabel;
 import javax.swing.JOptionPane;
@@ -26,11 +27,14 @@ import javax.swing.JTextArea;
 import javax.swing.JTree;
 import javax.swing.SwingUtilities;
 import javax.swing.SwingWorker;
+import javax.swing.Timer;
+import javax.swing.border.EmptyBorder;
 import javax.swing.tree.DefaultMutableTreeNode;
 import javax.swing.tree.DefaultTreeModel;
 import javax.swing.tree.TreePath;
 import javax.swing.tree.TreeSelectionModel;
 import java.awt.BorderLayout;
+import java.awt.Color;
 import java.awt.Component;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
@@ -69,6 +73,7 @@ public class AmazonImportPanel extends JPanel {
     private final JButton downloadAllButton = new JButton("Download All");
     private final JButton downloadSelectedButton = new JButton("Download Selected Item Types");
     private final JButton generatePackingSlipsButton = new JButton("Generate Packing Slips");
+    private final JCheckBox includeLateToggle = new JCheckBox("Include late shipments");
     private final JProgressBar progressBar = new JProgressBar(0, 100);
     private final JTextArea logArea = new JTextArea();
     private final DefaultTreeModel treeModel = new DefaultTreeModel(new DefaultMutableTreeNode("No data"));
@@ -76,6 +81,10 @@ public class AmazonImportPanel extends JPanel {
 
     private volatile boolean busy = false;
     private Path lastDownloadRoot;
+    private final JPanel bannerPanel = new JPanel(new BorderLayout());
+    private final JLabel bannerLabel = new JLabel("Idle");
+    private Timer bannerResetTimer;
+    private boolean includeLateShipments = false;
 
     public AmazonImportPanel() {
         setLayout(new BorderLayout(8, 8));
@@ -94,6 +103,8 @@ public class AmazonImportPanel extends JPanel {
         actionsRow.add(downloadAllButton);
         actionsRow.add(downloadSelectedButton);
         actionsRow.add(generatePackingSlipsButton);
+        includeLateToggle.setToolTipText("When selected, include verge-of-lateShipment orders.");
+        actionsRow.add(includeLateToggle);
         actionsRow.add(statusLabel);
         topPanel.add(actionsRow, BorderLayout.SOUTH);
 
@@ -113,7 +124,13 @@ public class AmazonImportPanel extends JPanel {
 
         JSplitPane splitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT, treeScroll, logScroll);
         splitPane.setResizeWeight(0.65);
-        add(splitPane, BorderLayout.CENTER);
+
+        configureBanner();
+
+        JPanel centerWrapper = new JPanel(new BorderLayout(8, 8));
+        centerWrapper.add(bannerPanel, BorderLayout.NORTH);
+        centerWrapper.add(splitPane, BorderLayout.CENTER);
+        add(centerWrapper, BorderLayout.CENTER);
 
         progressBar.setStringPainted(true);
         progressBar.setValue(0);
@@ -151,6 +168,17 @@ public class AmazonImportPanel extends JPanel {
                 this::generatePackingSlips,
                 () -> showMessage("Load a TXT file before generating packing slips.")
             ));
+
+        includeLateToggle.addItemListener(e -> {
+            includeLateShipments = includeLateToggle.isSelected();
+            parser.setIncludeLateShipmentRows(includeLateShipments);
+            if (includeLateShipments) {
+                showBanner("Including verge-of-lateShipment orders.", BannerStyle.INFO, 4000);
+            } else {
+                showBanner("Filtering to verge-of-lateShipment = false only.", BannerStyle.INFO, 4000);
+            }
+        });
+        includeLateToggle.setSelected(includeLateShipments);
     }
 
     private void chooseFileAndParse() {
@@ -168,20 +196,26 @@ public class AmazonImportPanel extends JPanel {
 
     private void parseFile(Path file) {
         if (busy) return;
+        final boolean includeLate = includeLateShipments;
+        parser.setIncludeLateShipmentRows(includeLate);
         busy = true;
         setUiEnabled(false);
         appendLog("Parsing " + file.getFileName());
+        showBanner("Parsing " + file.getFileName(), BannerStyle.INFO, 3000);
+        progressBar.setIndeterminate(true);
+        progressBar.setString("Parsing TXT…");
 
         new SwingWorker<OrderBatch, String>() {
             @Override
             protected OrderBatch doInBackground() throws Exception {
+                publish(includeLate ? "Including verge-of-lateShipment orders." : "Filtering to verge-of-lateShipment = false only.");
                 publish("Reading file…");
                 List<AmazonOrderRecord> records = parser.parse(file);
-                int skippedNonLateShipment = parser.getLastSkippedNonLateShipmentCount();
+                int skippedLateShipment = parser.getLastSkippedLateShipmentCount();
                 List<String> lateShipmentOrders = parser.getLastLateShipmentOrderIds();
                 publish("Parsed %d rows.".formatted(records.size()));
-                if (skippedNonLateShipment > 0) {
-                    publish("Skipped %d rows without verge-of-lateShipment flag.".formatted(skippedNonLateShipment));
+                if (!parser.isIncludeLateShipmentRows() && skippedLateShipment > 0) {
+                    publish("Skipped %d rows marked verge-of-lateShipment.".formatted(skippedLateShipment));
                 }
                 if (!lateShipmentOrders.isEmpty()) {
                     publish("Late-shipment orders: " + String.join(", ", lateShipmentOrders));
@@ -215,17 +249,26 @@ public class AmazonImportPanel extends JPanel {
                     downloadAllButton.setEnabled(!batch.isEmpty());
                     downloadSelectedButton.setEnabled(!batch.isEmpty());
                     generatePackingSlipsButton.setEnabled(!batch.isEmpty());
+                    if (batch.isEmpty()) {
+                        showBanner("TXT import produced no mug orders.", BannerStyle.WARNING, 5000);
+                    } else {
+                        showBanner("TXT import complete – " + batch.groups().size() + " item types ready.", BannerStyle.SUCCESS, 5000);
+                    }
                 } catch (InterruptedException ex) {
                     Thread.currentThread().interrupt();
                     appendLog("Parsing interrupted.");
+                    showBanner("TXT parsing interrupted", BannerStyle.WARNING, 4000);
                 } catch (ExecutionException ex) {
                     appendLog("Failed to parse: " + ex.getCause().getMessage());
                     LOGGER.warning("Parsing failed: " + ex.getCause());
                     resetTree();
+                    showBanner("TXT parsing failed: " + ex.getCause().getMessage(), BannerStyle.ERROR, 6000);
                 } finally {
                     busy = false;
                     setUiEnabled(true);
+                    progressBar.setIndeterminate(false);
                     progressBar.setValue(0);
+                    progressBar.setString("");
                 }
             }
         }.execute();
@@ -246,6 +289,10 @@ public class AmazonImportPanel extends JPanel {
         appendLog(logMessage);
 
         DownloadWorker worker = new DownloadWorker(batch, itemTypes);
+        showBanner("Starting download…", BannerStyle.INFO, 3000);
+        progressBar.setIndeterminate(false);
+        progressBar.setValue(0);
+        progressBar.setString("Preparing download…");
         worker.execute();
     }
 
@@ -269,23 +316,33 @@ public class AmazonImportPanel extends JPanel {
         Path outputDir = chooser.getSelectedFile().toPath();
         busy = true;
         setUiEnabled(false);
-        progressBar.setIndeterminate(true);
-        progressBar.setString("Generating packing slips…");
+        progressBar.setIndeterminate(false);
+        updateProgressBar(0, 1, "Preparing packing slips…");
+        showBanner("Preparing packing slip generation…", BannerStyle.INFO, 3000);
 
-        new SwingWorker<List<Path>, String>() {
+        new SwingWorker<List<Path>, Integer>() {
             @Override
             protected List<Path> doInBackground() throws Exception {
-                publish("Generating packing slips into " + outputDir);
                 List<Path> generated = packingSlipGenerator.generatePackingSlips(batch, outputDir);
+                int total = generated.size();
+                int index = 0;
                 for (Path slip : generated) {
-                    publish("Created slip: " + slip.getFileName());
+                    index++;
+                    publish((index << 16) | Math.min(total, 0xFFFF));
+                    appendLog("Created slip: " + slip.getFileName());
                 }
                 return generated;
             }
 
             @Override
-            protected void process(List<String> chunks) {
-                chunks.forEach(AmazonImportPanel.this::appendLog);
+            protected void process(List<Integer> chunks) {
+                if (chunks.isEmpty()) {
+                    return;
+                }
+                int packed = chunks.get(chunks.size() - 1);
+                int total = packed & 0xFFFF;
+                int index = packed >>> 16;
+                updateProgressBar(index, Math.max(total, 1), "Generating packing slips…");
             }
 
             @Override
@@ -294,12 +351,15 @@ public class AmazonImportPanel extends JPanel {
                     List<Path> generated = get();
                     appendLog("Packing slips generated: " + generated.size());
                     statusLabel.setText("Packing slips at " + outputDir);
+                    showBanner("Packing slips generated: " + generated.size(), BannerStyle.SUCCESS, 5000);
                 } catch (InterruptedException ex) {
                     Thread.currentThread().interrupt();
                     appendLog("Packing slip generation interrupted.");
+                    showBanner("Packing slip generation interrupted", BannerStyle.WARNING, 4000);
                 } catch (ExecutionException ex) {
                     appendLog("Failed to generate packing slips: " + ex.getCause().getMessage());
                     LOGGER.warning("Packing slip generation failed: " + ex.getCause());
+                    showBanner("Packing slip generation failed: " + ex.getCause().getMessage(), BannerStyle.ERROR, 6000);
                 } finally {
                     busy = false;
                     setUiEnabled(true);
@@ -398,17 +458,77 @@ public class AmazonImportPanel extends JPanel {
         downloadAllButton.setEnabled(enabled && hasData);
         downloadSelectedButton.setEnabled(enabled && hasData);
         generatePackingSlipsButton.setEnabled(enabled && hasData);
+        includeLateToggle.setEnabled(enabled);
         progressBar.setEnabled(enabled);
     }
 
     private void appendLog(String message) {
         if (message == null || message.isBlank()) return;
-        logArea.append(message + System.lineSeparator());
-        logArea.setCaretPosition(logArea.getDocument().getLength());
+        SwingUtilities.invokeLater(() -> {
+            logArea.append(message + System.lineSeparator());
+            logArea.setCaretPosition(logArea.getDocument().getLength());
+        });
     }
 
     private void showMessage(String message) {
         JOptionPane.showMessageDialog(getParentWindow(), message, "Amazon TXT Import", JOptionPane.INFORMATION_MESSAGE);
+    }
+
+    private void configureBanner() {
+        bannerPanel.setBorder(new EmptyBorder(4, 8, 4, 8));
+        bannerLabel.setOpaque(false);
+        bannerLabel.setFont(bannerLabel.getFont().deriveFont(bannerLabel.getFont().getStyle(), 13f));
+        bannerPanel.add(bannerLabel, BorderLayout.WEST);
+        showBanner("Idle", BannerStyle.INFO, 0);
+    }
+
+    private void showBanner(String message, BannerStyle style, int timeoutMs) {
+        if (message == null || message.isBlank()) {
+            return;
+        }
+        Color background;
+        Color foreground;
+        switch (style) {
+            case SUCCESS -> {
+                background = new Color(0xE8F6EA);
+                foreground = new Color(0x1D6B37);
+            }
+            case WARNING -> {
+                background = new Color(0xFFF5E6);
+                foreground = new Color(0x8B6100);
+            }
+            case ERROR -> {
+                background = new Color(0xFCEBEB);
+                foreground = new Color(0x9F2F2F);
+            }
+            default -> {
+                background = new Color(0xE6F3FF);
+                foreground = new Color(0x0B3D91);
+            }
+        }
+        bannerPanel.setBackground(background);
+        bannerLabel.setForeground(foreground);
+        bannerLabel.setText(message);
+        if (bannerResetTimer != null && bannerResetTimer.isRunning()) {
+            bannerResetTimer.stop();
+        }
+        if (timeoutMs > 0) {
+            bannerResetTimer = new Timer(timeoutMs, e -> showBanner("Idle", BannerStyle.INFO, 0));
+            bannerResetTimer.setRepeats(false);
+            bannerResetTimer.start();
+        }
+    }
+
+    private void updateProgressBar(int processed, int total, String detail) {
+        int safeTotal = Math.max(total, 1);
+        int safeProcessed = Math.max(0, processed);
+        progressBar.setMaximum(safeTotal);
+        progressBar.setValue(Math.min(safeProcessed, safeTotal));
+        String prefix = "";
+        if (safeProcessed > 0 || safeTotal > 1) {
+            prefix = safeProcessed + "/" + safeTotal + " ";
+        }
+        progressBar.setString(prefix + detail);
     }
 
     private Component getParentWindow() {
@@ -439,7 +559,7 @@ public class AmazonImportPanel extends JPanel {
 
         @Override
         protected Path doInBackground() throws Exception {
-            logArea.append("Starting download…" + System.lineSeparator());
+            appendLog("Starting download…");
             if (itemTypes.isPresent() && !itemTypes.get().isEmpty()) {
                 return downloadService.downloadItemTypes(batch, itemTypes.get(), this);
             }
@@ -449,10 +569,9 @@ public class AmazonImportPanel extends JPanel {
         @Override
         protected void process(List<DownloadStatus> chunks) {
             for (DownloadStatus status : chunks) {
-                progressBar.setMaximum(Math.max(1, status.total()));
-                progressBar.setValue(Math.min(status.total(), status.processed()));
-                progressBar.setString(status.description());
                 appendLog(status.description());
+                updateProgressBar(status.processed(), status.total(), status.description());
+                showBanner(status.description(), BannerStyle.INFO, 3500);
             }
         }
 
@@ -462,12 +581,15 @@ public class AmazonImportPanel extends JPanel {
                 Path result = get();
                 appendLog("Download complete at " + result);
                 statusLabel.setText("Finished. Output: " + result);
+                showBanner("Download finished. Output at " + result, BannerStyle.SUCCESS, 5000);
             } catch (InterruptedException ex) {
                 Thread.currentThread().interrupt();
                 appendLog("Download interrupted.");
+                showBanner("Download interrupted", BannerStyle.WARNING, 4000);
             } catch (ExecutionException ex) {
                 appendLog("Download failed: " + ex.getCause().getMessage());
                 LOGGER.warning("Download failed: " + ex.getCause());
+                showBanner("Download failed: " + ex.getCause().getMessage(), BannerStyle.ERROR, 6000);
             } finally {
                 progressBar.setValue(0);
                 progressBar.setString("");
@@ -536,10 +658,21 @@ public class AmazonImportPanel extends JPanel {
                         .append(String.join(", ", failedItemsWithoutOrder));
                 }
                 publish(new DownloadStatus(processedCount, totalCount, summary.toString()));
+                showBanner(summary.toString(), BannerStyle.WARNING, 6000);
+            } else {
+                updateProgressBar(totalCount, totalCount, "Download complete");
+                showBanner("Download finished – all items processed successfully.", BannerStyle.SUCCESS, 5000);
             }
         }
     }
 
     private record DownloadStatus(int processed, int total, String description) {
+    }
+
+    private enum BannerStyle {
+        INFO,
+        SUCCESS,
+        WARNING,
+        ERROR
     }
 }

@@ -12,10 +12,12 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
 
@@ -48,7 +50,8 @@ public class AmazonTxtOrderParser {
     private static final String HEADER_SHIP_SERVICE_NAME = "ship-service-name";
     private static final String HEADER_VERGE_OF_LATE_SHIPMENT = "verge-of-lateshipment";
 
-    private volatile int lastSkippedNonLateShipmentCount;
+    private volatile boolean includeLateShipmentRows = false;
+    private volatile int lastSkippedLateShipmentCount;
     private volatile List<String> lastLateShipmentOrderIds = List.of();
 
     /**
@@ -79,10 +82,10 @@ public class AmazonTxtOrderParser {
             validateRequiredHeaders(headerIndex.keySet());
 
             List<AmazonOrderRecord> records = new ArrayList<>();
-            List<String> lateShipmentOrderIds = new ArrayList<>();
+            Set<String> lateShipmentOrderIds = new LinkedHashSet<>();
             String line;
             int rowIndex = 1;
-            int skippedNonLateShipment = 0;
+            int skippedLateShipment = 0;
 
             while ((line = buffered.readLine()) != null) {
                 rowIndex++;
@@ -92,9 +95,13 @@ public class AmazonTxtOrderParser {
 
                 List<String> columns = splitLine(line);
                 Boolean lateShipment = resolveLateShipmentFlag(columns, headerIndex);
-                if (!Boolean.TRUE.equals(lateShipment)) {
-                    LOGGER.fine("Skipping row %d because verge-of-lateShipment is not true.".formatted(rowIndex));
-                    skippedNonLateShipment++;
+                boolean isLateShipment = Boolean.TRUE.equals(lateShipment);
+                if (isLateShipment) {
+                    lateShipmentOrderIds.add(columns.get(headerIndex.get(HEADER_ORDER_ID)).trim());
+                }
+                if (!includeLateShipmentRows && isLateShipment) {
+                    LOGGER.fine("Skipping row %d (late shipment) due to filter.".formatted(rowIndex));
+                    skippedLateShipment++;
                     continue;
                 }
                 try {
@@ -105,13 +112,12 @@ public class AmazonTxtOrderParser {
                         continue;
                     }
                     records.add(record);
-                    lateShipmentOrderIds.add(record.orderId());
                 } catch (IllegalArgumentException ex) {
                     LOGGER.warning("Skipping row %d: %s".formatted(rowIndex, ex.getMessage()));
                 }
             }
 
-            lastSkippedNonLateShipmentCount = skippedNonLateShipment;
+            lastSkippedLateShipmentCount = skippedLateShipment;
             lastLateShipmentOrderIds = List.copyOf(lateShipmentOrderIds);
             return records;
         }
@@ -226,12 +232,20 @@ public class AmazonTxtOrderParser {
         }
     }
 
-    public int getLastSkippedNonLateShipmentCount() {
-        return lastSkippedNonLateShipmentCount;
+    public int getLastSkippedLateShipmentCount() {
+        return lastSkippedLateShipmentCount;
     }
 
     public List<String> getLastLateShipmentOrderIds() {
         return lastLateShipmentOrderIds;
+    }
+
+    public void setIncludeLateShipmentRows(boolean include) {
+        this.includeLateShipmentRows = include;
+    }
+
+    public boolean isIncludeLateShipmentRows() {
+        return includeLateShipmentRows;
     }
 
     private static void validateRequiredHeaders(Iterable<String> headers) {

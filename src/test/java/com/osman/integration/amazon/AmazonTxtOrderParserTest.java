@@ -25,26 +25,29 @@ class AmazonTxtOrderParserTest {
         try (InputStream stream = getResource("ordertestfiles/sample-amazon-orders.txt")) {
             assertNotNull(stream, "Sample resource is missing");
             List<AmazonOrderRecord> records = parser.parse(new InputStreamReader(stream, StandardCharsets.UTF_8));
-            assertEquals(4, records.size());
+            assertEquals(1, records.size());
 
             Map<String, Long> grouped = records.stream()
                 .collect(Collectors.groupingBy(AmazonOrderRecord::normalizedItemType, Collectors.counting()));
 
             assertEquals(1, grouped.size(), "Types: " + grouped.keySet());
-            assertEquals(4L, grouped.get("11W"));
+            assertEquals(1L, grouped.get("11W"));
 
-            AmazonOrderRecord customRecord = records.stream()
-                .filter(record -> record.rawItemType().startsWith("SKU004"))
-                .findFirst()
-                .orElseThrow();
-            assertTrue(customRecord.customizable());
-            assertEquals("2025-09-24T12:02:50+00:00", customRecord.purchaseDate());
-            assertEquals("John Doe", customRecord.recipientName());
-            assertEquals("DAWSONVILLE", customRecord.shipCity());
-            assertEquals("GA", customRecord.shipState());
-            assertEquals("US", customRecord.shipCountry());
-            assertEquals(1, customRecord.quantityPurchased());
-            assertTrue(customRecord.productName().startsWith("HomeBee Personalized"));
+            AmazonOrderRecord record = records.get(0);
+            assertTrue(record.customizable());
+            assertEquals("2025-09-24T12:02:50+00:00", record.purchaseDate());
+            assertEquals("John Doe", record.recipientName());
+            assertEquals("DAWSONVILLE", record.shipCity());
+            assertEquals("GA", record.shipState());
+            assertEquals("US", record.shipCountry());
+            assertEquals(1, record.quantityPurchased());
+            assertTrue(record.productName().startsWith("HomeBee Personalized"));
+
+            assertEquals(4, parser.getLastSkippedLateShipmentCount());
+            assertEquals(List.of(
+                "114-3776930-9533812",
+                "111-4313891-0593053"
+            ), parser.getLastLateShipmentOrderIds());
         }
     }
 
@@ -72,12 +75,12 @@ class AmazonTxtOrderParserTest {
             "ORDER-2\tITEM-2\tBob Example\tSKU004-Photo-11W\thttps://example.com/custom/2\ttrue"
         );
 
+        parser.setIncludeLateShipmentRows(true);
         List<AmazonOrderRecord> records = parser.parse(new java.io.StringReader(data));
 
-        assertEquals(1, records.size());
-        assertEquals("ORDER-2", records.get(0).orderId());
-        assertEquals(1, parser.getLastSkippedNonLateShipmentCount());
+        assertEquals(2, records.size());
         assertEquals(List.of("ORDER-2"), parser.getLastLateShipmentOrderIds());
+        assertEquals(0, parser.getLastSkippedLateShipmentCount());
     }
 
     private InputStream getResource(String path) {

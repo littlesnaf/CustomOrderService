@@ -23,6 +23,7 @@ class AmazonOrderGroupingServiceTest {
     @BeforeEach
     void setUp() {
         parser = new AmazonTxtOrderParser();
+        parser.setIncludeLateShipmentRows(true);
         groupingService = new AmazonOrderGroupingService();
     }
 
