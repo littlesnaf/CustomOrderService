@@ -12,17 +12,9 @@ import javax.swing.*;
 import javax.swing.filechooser.FileNameExtensionFilter;
 import java.awt.*;
 import java.io.File;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.*;
 import java.util.List;
-import java.util.stream.Stream;
-import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.ThreadFactory;
 /**
  * Main desktop UI for batch processing orders (folders & zip files).
  * <p>
@@ -118,6 +110,17 @@ public class MainUIView {
         frame.setVisible(true);
 
         loadInitialFonts();
+    }
+
+    private File resolveScanRoot(File customerFolder) {
+        File scanRoot = new File(customerFolder, "images");
+        if (!scanRoot.isDirectory()) {
+            scanRoot = new File(customerFolder, "img");
+            if (!scanRoot.isDirectory()) {
+                scanRoot = customerFolder;
+            }
+        }
+        return scanRoot;
     }
 
     /** Opens a directory chooser to select the font folder. */
@@ -285,152 +288,48 @@ public class MainUIView {
                 return;
             }
 
-            extractZipArchives(customerFolder);
-
-            File scanRoot = new File(customerFolder, "images");
-            if (!scanRoot.isDirectory()) {
-                scanRoot = new File(customerFolder, "img");
-                if (!scanRoot.isDirectory()) scanRoot = customerFolder;
+            ZipArchiveExtractor extractor = new ZipArchiveExtractor(
+                this::log,
+                failedItems,
+                () -> cancelRequested,
+                OUTPUT_FOLDER_NAME
+            );
+            boolean continueProcessing = extractor.extract(customerFolder);
+            if (!continueProcessing) {
+                return;
             }
+
+            File scanRoot = resolveScanRoot(customerFolder);
 
             List<File> leafOrders = orderDiscoveryService.findOrderLeafFolders(scanRoot, 6);
             ReadyFolderAllocator readyAllocator = new ReadyFolderAllocator(customerFolder, customerNameForFile, READY_FOLDER_ORDER_LIMIT);
             AtomicInteger orderSequence = new AtomicInteger();
+            LeafOrderProcessor leafProcessor = new LeafOrderProcessor(() -> cancelRequested, this::log, failedItems, OUTPUT_FOLDER_NAME);
+
             if (!leafOrders.isEmpty()) {
-                if (leafOrders.size() > 1) log("  -> Multiple orders detected (" + leafOrders.size() + " folders).");
-                else log("  -> Single order folder detected.");
-                AtomicInteger okCounter = new AtomicInteger();
-                AtomicInteger failCounter = new AtomicInteger();
-
-                ThreadFactory tf = r -> {
-                    Thread t = new Thread(r, "RenderPool-Worker");
-                    t.setDaemon(true);
-                    return t;
-                };
-                ExecutorService pool = Executors.newFixedThreadPool(4, tf);
-                List<Future<?>> futures = new ArrayList<>();
-
-                for (File subFolder : leafOrders) {
-                    if (cancelRequested) { break; }
-
-                    String n = subFolder.getName();
-                    if (n.equalsIgnoreCase(OUTPUT_FOLDER_NAME) || n.equalsIgnoreCase("images") || n.equalsIgnoreCase("img")) {
-                        log("    -> Container folder skipped: " + n);
-                        continue;
-                    }
-
-                    final int orderIndex = orderSequence.getAndIncrement();
-                    final File readyFolder = readyAllocator.folderForOrder(orderIndex);
-
-                    futures.add(pool.submit(() -> {
-                        try {
-                            List<String> results = MugRenderer.processOrderFolderMulti(
-                                    subFolder, readyFolder, customerNameForFile, null);
-                            for (String path : results) {
-                                log("    -> OK: " + subFolder.getName() + " -> " + new File(path).getName());
-                            }
-                            okCounter.incrementAndGet();
-                        } catch (Exception ex) {
-                            String errorMsg = "    -> ERROR processing " + subFolder.getName() + ": " + ex.getMessage();
-                            log(errorMsg);
-                            failedItems.add(customerFolder.getName() + "/" + subFolder.getName()
-                                    + " - Reason: " + ex.getMessage());
-                            failCounter.incrementAndGet();
-                        }
-                    }));
-                }
-
-                for (Future<?> f : futures) {
-                    try { f.get(); } catch (Exception ignored) {}
-                }
-                pool.shutdown();
-
-                int ok = okCounter.get();
-                int fail = failCounter.get();
-                log("  -> Summary: " + ok + " succeeded, " + fail + " failed.");
+                LeafOrderProcessor.ProcessingSummary summary = leafProcessor.processLeaves(
+                    leafOrders,
+                    index -> readyAllocator.folderForOrder(index),
+                    orderSequence,
+                    customerNameForFile,
+                    customerFolder
+                );
+                log("  -> Summary: " + summary.succeeded() + " succeeded, " + summary.failed() + " failed.");
             } else {
                 log("  -> No leaf order folder found. Trying the folder itself as MULTI order…");
-                try {
-                    File readyFolder = readyAllocator.folderForOrder(orderSequence.getAndIncrement());
-                    List<String> results =
-                            MugRenderer.processOrderFolderMulti(customerFolder, readyFolder, customerNameForFile, null);
-                    for (String path : results) {
-                        log("  -> OK: " + new File(path).getName());
-                    }
-                } catch (Exception ex) {
-                    String errorMsg = "  -> CRITICAL (" + customerFolder.getName() + "): " + ex.getMessage();
-                    log(errorMsg);
-                    failedItems.add(customerFolder.getName() + " - Reason: " + ex.getMessage());
-                }
+                leafProcessor.processAsMulti(
+                    customerFolder,
+                    index -> readyAllocator.folderForOrder(index),
+                    orderSequence,
+                    customerNameForFile,
+                    customerFolder
+                );
             }
         } catch (Exception ex) {
             String errorMsg = "  -> CRITICAL (" + customerFolder.getName() + "): " + ex.getMessage();
             log(errorMsg);
             failedItems.add(customerFolder.getName() + " - Reason: " + ex.getMessage());
         }
-    }
-
-    /** Scans and extracts zip files under a given folder (depth ≤ 6). */
-    private void extractZipArchives(File rootFolder) {
-        List<File> zipFiles = new ArrayList<>();
-        try (Stream<Path> stream = Files.walk(rootFolder.toPath(), 6)) {
-            stream.filter(Files::isRegularFile)
-                    .filter(p -> p.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".zip"))
-                    .forEach(p -> zipFiles.add(p.toFile()));
-        } catch (Exception e) {
-            log("  -> Error scanning for zip files: " + e.getMessage());
-            return;
-        }
-        if (zipFiles.isEmpty()) return;
-
-        log("  -> Found " + zipFiles.size() + " zip file(s) inside folder. Extracting...");
-        for (File zip : zipFiles) {
-            if (cancelRequested) return;
-
-            File parent = zip.getParentFile();
-            if (parent != null && parent.getName().equalsIgnoreCase(OUTPUT_FOLDER_NAME)) continue; // skip output folder
-
-            String baseName = zip.getName().replaceAll("(?i)\\.zip$", "");
-            File extractDir = new File(parent, baseName);
-
-            if (!extractDir.exists() && !extractDir.mkdirs()) {
-                log("  -> ERROR creating folder for zip: " + extractDir.getAbsolutePath());
-                continue;
-            }
-
-            log("  -> Extracting zip: " + zip.getName());
-            try {
-                ZipExtractor.unzip(zip, extractDir, zipLoggingListener(zip));
-                if (zip.delete()) {
-                    log("    -> Extracted and deleted: " + zip.getName());
-                } else {
-                    log("    -> WARNING: Extracted but could not delete zip: " + zip.getName());
-                }
-            } catch (ZipExtractionCancelledException cancelled) {
-                log("    -> Extraction cancelled for zip: " + zip.getName());
-                return;
-            } catch (Exception ex) {
-                String errorMsg = "  -> ERROR extracting " + zip.getName() + ": " + ex.getMessage();
-                log(errorMsg);
-                failedItems.add(zip.getName() + " - Reason: " + ex.getMessage());
-            }
-        }
-    }
-
-    private ZipExtractor.Listener zipLoggingListener(File zipFile) {
-        return new ZipExtractor.Listener() {
-            @Override
-            public void onFileExtracted(File file) {
-                if (cancelRequested) {
-                    throw new ZipExtractionCancelledException();
-                }
-            }
-
-            @Override
-            public void onEntrySkipped(String name, String reason) {
-                log("    -> SKIPPED entry '" + name + "' (" + zipFile.getName() + "): " + reason);
-            }
-        };
     }
 
     /** Processes a standalone .zip file as if it were an orders container. */
@@ -440,6 +339,9 @@ public class MainUIView {
         boolean processedOk = false;
         File extractRoot = null;
 
+        ZipArchiveExtractor extractor = new ZipArchiveExtractor(this::log, failedItems, () -> cancelRequested, OUTPUT_FOLDER_NAME);
+        LeafOrderProcessor leafProcessor = new LeafOrderProcessor(() -> cancelRequested, this::log, failedItems, OUTPUT_FOLDER_NAME);
+
         try {
             String baseName = zipFile.getName().replaceAll("(?i)\\.zip$", "");
             extractRoot = new File(zipFile.getParentFile(), baseName);
@@ -448,7 +350,7 @@ public class MainUIView {
             }
             log("  -> Extracting to: " + extractRoot.getAbsolutePath());
 
-            ZipExtractor.unzip(zipFile, extractRoot, zipLoggingListener(zipFile));
+            ZipExtractor.unzip(zipFile, extractRoot, extractor.listenerFor(zipFile));
             String customerName = baseName;
 
             File scanRoot = extractRoot;
@@ -459,45 +361,26 @@ public class MainUIView {
 
             if (!leafOrders.isEmpty()) {
                 log("  -> " + leafOrders.size() + " order folder(s) found inside the zip.");
-                int ok = 0, fail = 0;
-                for (File subFolder : leafOrders) {
-                    String n = subFolder.getName();
-                    if (n.equalsIgnoreCase(OUTPUT_FOLDER_NAME) || n.equalsIgnoreCase("images") || n.equalsIgnoreCase("img")) {
-                        log("    -> Container folder skipped: " + n);
-                        continue;
-                    }
-                    try {
-                        File readyFolder = readyAllocator.folderForOrder(orderSequence.getAndIncrement());
-                        List<String> results = MugRenderer.processOrderFolderMulti(subFolder, readyFolder, customerName, null);
-                        for (String path : results) {
-                            log("    -> OK: " + subFolder.getName() + " -> " + new File(path).getName());
-                            ok++;
-                        }
-                    } catch (Exception ex) {
-                        String errorMsg = "    -> ERROR while processing " + subFolder.getName() + ": " + ex.getMessage();
-                        log(errorMsg);
-                        failedItems.add(zipFile.getName() + "/" + subFolder.getName() + " - Reason: " + ex.getMessage());
-                        fail++;
-                    }
-                }
-                log("  -> Summary: " + ok + " succeeded, " + fail + " failed.");
+                LeafOrderProcessor.ProcessingSummary summary = leafProcessor.processLeaves(
+                    leafOrders,
+                    index -> readyAllocator.folderForOrder(index),
+                    orderSequence,
+                    customerName,
+                    extractRoot
+                );
+                log("  -> Summary: " + summary.succeeded() + " succeeded, " + summary.failed() + " failed.");
                 processedOk = true;
             } else {
                 log("  -> No leaf folder found; trying zip root as MULTI order…");
-                try {
-                    File readyFolder = readyAllocator.folderForOrder(orderSequence.getAndIncrement());
-                    List<String> results = MugRenderer.processOrderFolderMulti(scanRoot, readyFolder, customerName, null);
-                    for (String path : results) {
-                        log("  -> OK: " + new File(path).getName());
-                    }
-                    processedOk = true;
-                } catch (Exception ex) {
-                    String errorMsg = "  -> CRITICAL (fallback): " + ex.getMessage();
-                    log(errorMsg);
-                    failedItems.add(zipFile.getName() + " - Reason: " + ex.getMessage());
-                }
+                processedOk = leafProcessor.processAsMulti(
+                    scanRoot,
+                    index -> readyAllocator.folderForOrder(index),
+                    orderSequence,
+                    customerName,
+                    extractRoot
+                );
             }
-        } catch (ZipExtractionCancelledException cancelled) {
+        } catch (ZipArchiveExtractor.ZipExtractionCancelledException cancelled) {
             log("  -> Extraction cancelled: " + zipFile.getName());
             return;
         } catch (Exception ex) {
@@ -511,12 +394,6 @@ public class MainUIView {
             } else {
                 log("  -> Zip not deleted (processing failed): " + zipFile.getName());
             }
-        }
-    }
-
-    private static final class ZipExtractionCancelledException extends RuntimeException {
-        ZipExtractionCancelledException() {
-            super("Zip extraction cancelled");
         }
     }
 

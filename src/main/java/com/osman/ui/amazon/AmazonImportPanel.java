@@ -73,7 +73,7 @@ public class AmazonImportPanel extends JPanel {
     private final JButton downloadAllButton = new JButton("Download All");
     private final JButton downloadSelectedButton = new JButton("Download Selected Item Types");
     private final JButton generatePackingSlipsButton = new JButton("Generate Packing Slips");
-    private final JCheckBox includeLateToggle = new JCheckBox("Include late shipments");
+    private final JCheckBox includeLateToggle = new JCheckBox("Next Day Orders");
     private final JProgressBar progressBar = new JProgressBar(0, 100);
     private final JTextArea logArea = new JTextArea();
     private final DefaultTreeModel treeModel = new DefaultTreeModel(new DefaultMutableTreeNode("No data"));
@@ -103,7 +103,7 @@ public class AmazonImportPanel extends JPanel {
         actionsRow.add(downloadAllButton);
         actionsRow.add(downloadSelectedButton);
         actionsRow.add(generatePackingSlipsButton);
-        includeLateToggle.setToolTipText("When selected, include verge-of-lateShipment orders.");
+        includeLateToggle.setToolTipText("When selected, include Next-Day orders.");
         actionsRow.add(includeLateToggle);
         actionsRow.add(statusLabel);
         topPanel.add(actionsRow, BorderLayout.SOUTH);
@@ -173,7 +173,7 @@ public class AmazonImportPanel extends JPanel {
             includeLateShipments = includeLateToggle.isSelected();
             parser.setIncludeLateShipmentRows(includeLateShipments);
             if (includeLateShipments) {
-                showBanner("Including verge-of-lateShipment orders.", BannerStyle.INFO, 4000);
+                showBanner("Including Next-Day orders.", BannerStyle.INFO, 4000);
             } else {
                 showBanner("Filtering to verge-of-lateShipment = false only.", BannerStyle.INFO, 4000);
             }
@@ -208,17 +208,17 @@ public class AmazonImportPanel extends JPanel {
         new SwingWorker<OrderBatch, String>() {
             @Override
             protected OrderBatch doInBackground() throws Exception {
-                publish(includeLate ? "Including verge-of-lateShipment orders." : "Filtering to verge-of-lateShipment = false only.");
+                publish(includeLate ? "Including Next-Day orders." : "Filtering to verge-of-lateShipment = false only.");
                 publish("Reading file…");
                 List<AmazonOrderRecord> records = parser.parse(file);
                 int skippedLateShipment = parser.getLastSkippedLateShipmentCount();
                 List<String> lateShipmentOrders = parser.getLastLateShipmentOrderIds();
                 publish("Parsed %d rows.".formatted(records.size()));
                 if (!parser.isIncludeLateShipmentRows() && skippedLateShipment > 0) {
-                    publish("Skipped %d rows marked verge-of-lateShipment.".formatted(skippedLateShipment));
+                    publish("Skipped %d rows marked Next-Day Orders.".formatted(skippedLateShipment));
                 }
                 if (!lateShipmentOrders.isEmpty()) {
-                    publish("Late-shipment orders: " + String.join(", ", lateShipmentOrders));
+                    publish("Next-Day Orders: " + String.join(", ", lateShipmentOrders));
                 }
 
                 OrderBatch batch = groupingService.group(records);
