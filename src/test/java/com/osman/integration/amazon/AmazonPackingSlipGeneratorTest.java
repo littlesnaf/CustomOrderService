@@ -22,6 +22,7 @@ import com.osman.integration.amazon.CustomerOrder;
 import com.osman.integration.amazon.ItemTypeCategorizer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -49,7 +50,7 @@ class AmazonPackingSlipGeneratorTest {
             if (group.category() != ItemTypeCategorizer.Category.MUG_CUSTOM) {
                 continue;
             }
-            Path itemTypeRoot = runRoot.resolve(group.itemType());
+            Path itemTypeRoot = ItemTypeCategorizer.resolveItemTypeFolder(runRoot, group.itemType());
             Path imagesRoot = ItemTypeCategorizer.resolveImagesFolder(itemTypeRoot);
             for (CustomerGroup customer : group.customers().values()) {
                 for (CustomerOrder order : customer.orders().values()) {
@@ -76,24 +77,29 @@ class AmazonPackingSlipGeneratorTest {
         int expectedTotal = expectedSingles + uniqueItemTypes.size();
         assertEquals(expectedTotal, slips.size());
 
-        Path combined11W = runRoot.resolve("Mugs/11/11W/11W-packing-slips.pdf");
+        assertFalse(Files.exists(runRoot.resolve(ItemTypeCategorizer.MUGS_FOLDER_NAME)),
+            "Legacy Mugs folder should not be created");
+
+        Path combined11W = runRoot.resolve("11").resolve("11W").resolve("11W-packing-slips.pdf");
         assertTrue(Files.exists(combined11W), "Combined packing slip for 11W missing");
         try (PDDocument doc = PDDocument.load(combined11W.toFile())) {
             String text = new PDFTextStripper().getText(doc);
             assertTrue(text.contains("Order ID: 111-0687106-4490606"));
         }
 
-        Path combined15R = runRoot.resolve("Mugs/15/15R/15R-packing-slips.pdf");
+        Path combined15R = runRoot.resolve("15").resolve("15R").resolve("15R-packing-slips.pdf");
         assertTrue(Files.exists(combined15R), "Combined packing slip for 15R missing");
         try (PDDocument doc = PDDocument.load(combined15R.toFile())) {
             String text = new PDFTextStripper().getText(doc);
             assertTrue(text.contains("Order ID: 222-2222222-2222222"));
         }
 
-        Path singleJohn = runRoot.resolve("Mugs/11/11W/Images/John_Doe_111-0687106-4490606/packing-slip.pdf");
+        Path singleJohn = runRoot.resolve("11").resolve("11W")
+            .resolve("Images").resolve("John_Doe_111-0687106-4490606").resolve("packing-slip.pdf");
         assertTrue(Files.exists(singleJohn), "Single slip missing for John Doe order");
 
-        Path singleJane = runRoot.resolve("Mugs/15/15R/Images/Jane_Smith_222-2222222-2222222/packing-slip.pdf");
+        Path singleJane = runRoot.resolve("15").resolve("15R")
+            .resolve("Images").resolve("Jane_Smith_222-2222222-2222222").resolve("packing-slip.pdf");
         assertTrue(Files.exists(singleJane), "Single slip missing for Jane Smith order");
         try (PDDocument doc = PDDocument.load(singleJane.toFile())) {
             String text = new PDFTextStripper().getText(doc);

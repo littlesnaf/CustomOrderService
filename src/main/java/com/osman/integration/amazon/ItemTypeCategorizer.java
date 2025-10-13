@@ -66,8 +66,7 @@ public final class ItemTypeCategorizer {
         if (mugPath == null) {
             return batchRoot.resolve(itemType);
         }
-        return batchRoot.resolve(MUGS_FOLDER_NAME)
-                .resolve(mugPath.ounce())
+        return batchRoot.resolve(mugPath.ounce())
                 .resolve(mugPath.code());
     }
 
