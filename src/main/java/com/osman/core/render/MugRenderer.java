@@ -1,9 +1,5 @@
 package com.osman.core.render;
 
-import com.google.zxing.BarcodeFormat;
-import com.google.zxing.client.j2se.MatrixToImageWriter;
-import com.google.zxing.common.BitMatrix;
-import com.google.zxing.oned.Code128Writer;
 import com.osman.core.json.JsonOrderLoader;
 import com.osman.core.json.OrderPayload;
 import com.osman.core.model.OrderInfo;
@@ -17,11 +13,8 @@ import org.apache.batik.transcoder.image.ImageTranscoder;
 
 import javax.imageio.ImageIO;
 import java.awt.Color;
-import java.awt.Font;
-import java.awt.FontMetrics;
 import java.awt.Graphics2D;
 import java.awt.RenderingHints;
-import java.awt.geom.AffineTransform;
 import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.IOException;
@@ -145,7 +138,7 @@ public final class MugRenderer {
                     template.renderSize);
 
             drawCropsToCanvas(g2d, masterImage, drawLeft, drawRight, template);
-            drawMirroredInfoText(g2d, orderInfo, null, template, payload.totalQuantity());
+            MugInfoOverlayRenderer.drawInfoAndBarcode(g2d, orderInfo, null, template, payload.totalQuantity());
         } finally {
             g2d.dispose();
             if (processedSvg != null) {
@@ -185,139 +178,6 @@ public final class MugRenderer {
             }
         } catch (IOException e) {
             LOGGER.log(Level.SEVERE, "Failed to crop or draw mug artwork", e);
-        }
-    }
-
-    private static void drawMirroredInfoText(Graphics2D g2d,
-                                             OrderInfo orderInfo,
-                                             String sideLabel,
-                                             MugTemplate template,
-                                             int totalOrderQuantity) {
-        Font infoFont = new Font("Arial", Font.BOLD, 48);
-        Font orderIdFont = infoFont.deriveFont(infoFont.getSize2D() * 1.3f);
-        g2d.setColor(Color.BLACK);
-
-        int infoBoxY = template.finalHeight - (template.finalHeight >= 1500 ? 160 : 190);
-        int infoBoxX = 158;
-        int infoBoxWidth = 2330;
-        int infoBoxHeight = 146;
-
-        FontMetrics fm = g2d.getFontMetrics(infoFont);
-        int lineHeight = fm.getHeight();
-        int baselineCenter = infoBoxY + (infoBoxHeight - (2 * lineHeight)) / 2 + fm.getAscent() - 30;
-        int ascent = fm.getAscent();
-        int descent = fm.getDescent();
-        int correction = (ascent - descent) / 2;
-        int alignmentOffset = -8;
-
-        int yLine1 = baselineCenter - correction + alignmentOffset;
-        int yLine2 = yLine1 + lineHeight - 25;
-        int yLine2OrderId = yLine2 + 20;
-        int yRightLine1 = yLine1;
-        int yRightLine2 = yLine2 + 20;
-
-        String qtyPart = "Order Q-ty: " + totalOrderQuantity;
-        String sidePart = (sideLabel == null || sideLabel.isBlank()) ? "" : " " + sideLabel;
-        drawMirroredString(g2d, qtyPart + sidePart, infoBoxX, yLine1, infoFont, false);
-        drawMirroredString(g2d, orderInfo.getOrderId(), infoBoxX, yLine2OrderId, orderIdFont, false);
-
-        int rightEdge = infoBoxX + infoBoxWidth;
-        String orderItemId = orderInfo.getOrderItemId() == null ? "" : orderInfo.getOrderItemId();
-        String itemIdLast4 = orderItemId.length() <= 4 ? orderItemId : orderItemId.substring(orderItemId.length() - 4);
-        drawMirroredString(g2d,
-                "ID: " + itemIdLast4 + "  ID Qty: " + orderInfo.getQuantity(),
-                rightEdge,
-                yRightLine1,
-                infoFont,
-                true);
-        drawMirroredString(g2d, orderInfo.getLabel(), rightEdge, yRightLine2, infoFont, true);
-
-        String barcodePayload = buildBarcodePayload(orderInfo);
-        BufferedImage barcode = generateBarcodeWithText(barcodePayload, 1000, 120);
-        int barcodeX = infoBoxX + (infoBoxWidth - barcode.getWidth()) / 2;
-        int barcodeCenterY = infoBoxY + infoBoxHeight / 2;
-        int barcodeY = barcodeCenterY - barcode.getHeight() / 2;
-        g2d.drawImage(barcode, barcodeX, barcodeY, null);
-    }
-
-    private static void drawMirroredString(Graphics2D g2d, String text, int x, int y, Font font, boolean alignRight) {
-        AffineTransform original = g2d.getTransform();
-        g2d.setFont(font);
-        FontMetrics fm = g2d.getFontMetrics();
-        int textWidth = fm.stringWidth(text);
-        int drawX = alignRight ? (x - textWidth) : x;
-        int baselineY = y;
-        g2d.translate(drawX, baselineY);
-        g2d.scale(1, -1);
-        g2d.drawString(text, 0, 0);
-        g2d.setTransform(original);
-    }
-
-    private static String buildBarcodePayload(OrderInfo orderInfo) {
-        if (orderInfo == null) {
-            return "";
-        }
-        String orderId = orderInfo.getOrderId();
-        if (orderId == null) {
-            orderId = "";
-        }
-        String suffix = reduceOrderItemId(orderInfo.getOrderItemId());
-        if (suffix == null || suffix.isBlank()) {
-            return orderId;
-        }
-        return orderId + "^" + suffix;
-    }
-
-    private static String reduceOrderItemId(String orderItemId) {
-        if (orderItemId == null) {
-            return null;
-        }
-        String trimmed = orderItemId.trim();
-        if (trimmed.isEmpty()) {
-            return null;
-        }
-        if (trimmed.length() <= 6) {
-            return trimmed;
-        }
-        return trimmed.substring(trimmed.length() - 6);
-    }
-
-    private static BufferedImage generateBarcodeWithText(String text, int width, int height) {
-        try {
-            Code128Writer writer = new Code128Writer();
-            BitMatrix matrix = writer.encode(text, BarcodeFormat.CODE_128, width, height);
-            BufferedImage code = MatrixToImageWriter.toBufferedImage(matrix);
-
-            Font textFont = new Font("Arial", Font.PLAIN, 20);
-            BufferedImage temp = new BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB);
-            Graphics2D gTmp = temp.createGraphics();
-            gTmp.setFont(textFont);
-            FontMetrics fm = gTmp.getFontMetrics();
-            int textHeight = fm.getHeight();
-            gTmp.dispose();
-
-            int combinedH = height + textHeight;
-            BufferedImage out = new BufferedImage(width, combinedH, BufferedImage.TYPE_INT_RGB);
-            Graphics2D g = out.createGraphics();
-            g.setColor(Color.WHITE);
-            g.fillRect(0, 0, width, combinedH);
-            g.setColor(Color.BLACK);
-            g.setFont(textFont);
-
-            g.drawImage(code, 0, 0, null);
-            int textWidth = fm.stringWidth(text);
-            g.drawString(text, (width - textWidth) / 2, height + fm.getAscent() - 3);
-            g.dispose();
-            return out;
-        } catch (Exception e) {
-            BufferedImage err = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
-            Graphics2D g = err.createGraphics();
-            g.setColor(Color.WHITE);
-            g.fillRect(0, 0, width, height);
-            g.setColor(Color.RED);
-            g.drawString("BC-ERR", 10, 20);
-            g.dispose();
-            return err;
         }
     }
 
