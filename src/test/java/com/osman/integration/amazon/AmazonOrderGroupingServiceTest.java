@@ -32,7 +32,7 @@ class AmazonOrderGroupingServiceTest {
         List<AmazonOrderRecord> records = parseSample();
         OrderBatch batch = groupingService.group(records);
 
-        assertEquals(2, batch.groups().size(), "Groups: " + batch.groups().keySet());
+        assertEquals(3, batch.groups().size(), "Groups: " + batch.groups().keySet());
 
         ItemTypeGroup elevenW = batch.group("11W");
         assertNotNull(elevenW);
@@ -46,6 +46,17 @@ class AmazonOrderGroupingServiceTest {
         CustomerOrder johnOrder = john.orders().values().iterator().next();
         assertEquals("111-0687106-4490606", johnOrder.orderId());
         assertEquals(1, johnOrder.items().size());
+
+        ItemTypeGroup elevenR = batch.group("11R");
+        assertNotNull(elevenR);
+        assertEquals(ItemTypeCategorizer.Category.MUG_CUSTOM, elevenR.category());
+        assertEquals(1, elevenR.customers().size());
+
+        CustomerGroup johnRed = elevenR.customers().get("John_Doe");
+        assertNotNull(johnRed);
+        CustomerOrder johnRedOrder = johnRed.orders().values().iterator().next();
+        assertEquals("111-0687106-4490606", johnRedOrder.orderId());
+        assertEquals(1, johnRedOrder.items().size());
 
         ItemTypeGroup fifteenR = batch.group("15R");
         assertNotNull(fifteenR);

@@ -3,6 +3,9 @@ package com.osman.integration.amazon;
 import com.osman.logging.AppLogger;
 
 import com.osman.integration.amazon.AmazonOrderRecord;
+import com.osman.integration.amazon.ShippingLayoutPlanner;
+import com.osman.integration.amazon.ShippingLayoutPlanner.MixMetadata;
+import com.osman.integration.amazon.ShippingLayoutPlanner.ShippingSpeed;
 
 import java.io.IOException;
 import java.net.URI;
@@ -176,7 +179,7 @@ public class  AmazonOrderDownloadService {
         int totalItems = countItems(groups);
         listener.onStart(totalItems, batchDirectory);
 
-        MixMetadata mixMetadata = computeMixMetadata(groups);
+        MixMetadata mixMetadata = ShippingLayoutPlanner.computeMixMetadata(groups);
         Set<String> mixOrderIds = mixMetadata.mixOrderIds();
         Map<String, String> mixOrderOunces = mixMetadata.mixOrderOunces();
         Map<ShippingSpeed, Map<String, Path>> rootsBySpeed = new EnumMap<>(ShippingSpeed.class);
@@ -187,7 +190,7 @@ public class  AmazonOrderDownloadService {
 
             for (CustomerGroup customer : itemTypeGroup.customers().values()) {
                 for (CustomerOrder order : customer.orders().values()) {
-                    ShippingSpeed speed = resolveShippingSpeed(order);
+                    ShippingSpeed speed = ShippingLayoutPlanner.resolveShippingSpeed(order);
                     boolean isMixOrder = mixOrderIds.contains(order.orderId());
                     String mixOunce = mixOrderOunces.get(order.orderId());
 
@@ -278,25 +281,6 @@ public class  AmazonOrderDownloadService {
         return target;
     }
 
-    private static ShippingSpeed resolveShippingSpeed(CustomerOrder order) {
-        if (order == null || order.items().isEmpty()) {
-            return ShippingSpeed.STANDARD;
-        }
-        return order.items().stream()
-            .map(CustomerOrderItem::sourceRecord)
-            .map(AmazonOrderDownloadService::resolveShippingSpeed)
-            .filter(Objects::nonNull)
-            .findFirst()
-            .orElse(ShippingSpeed.STANDARD);
-    }
-
-    private static ShippingSpeed resolveShippingSpeed(AmazonOrderRecord record) {
-        if (record == null) {
-            return ShippingSpeed.STANDARD;
-        }
-        return ShippingSpeed.from(record.shipServiceLevel());
-    }
-
     private static Path createOrderFolder(Path imagesFolder, CustomerGroup customer, CustomerOrder order) throws IOException {
         String orderIdSegment = order.orderId().replaceAll("[^A-Za-z0-9-]", "_");
         String recipientName = order.items().stream()
@@ -375,43 +359,6 @@ public class  AmazonOrderDownloadService {
         return cache.computeIfAbsent(cacheKey, key -> createTypeRoot(batchDirectory, speed, itemTypeGroup));
     }
 
-    private static MixMetadata computeMixMetadata(Map<String, ItemTypeGroup> groups) {
-        Map<String, Set<String>> orderItemTypes = new LinkedHashMap<>();
-        Map<String, Set<String>> orderOunces = new LinkedHashMap<>();
-
-        for (ItemTypeGroup group : groups.values()) {
-            String itemType = group.itemType();
-            String ounce = extractOunce(itemType);
-            for (CustomerGroup customer : group.customers().values()) {
-                for (CustomerOrder order : customer.orders().values()) {
-                    orderItemTypes.computeIfAbsent(order.orderId(), id -> new LinkedHashSet<>()).add(itemType);
-                    if (ounce != null && !ounce.isBlank()) {
-                        orderOunces.computeIfAbsent(order.orderId(), id -> new LinkedHashSet<>()).add(ounce);
-                    }
-                }
-            }
-        }
-
-        Set<String> mixOrderIds = new LinkedHashSet<>();
-        Map<String, String> mixOrderOunces = new LinkedHashMap<>();
-
-        for (Map.Entry<String, Set<String>> entry : orderItemTypes.entrySet()) {
-            String orderId = entry.getKey();
-            Set<String> itemTypes = entry.getValue();
-            if (itemTypes.size() > 1) {
-                mixOrderIds.add(orderId);
-                Set<String> ounces = orderOunces.getOrDefault(orderId, Set.of());
-                if (ounces.size() == 1) {
-                    mixOrderOunces.put(orderId, ounces.iterator().next());
-                } else {
-                    mixOrderOunces.put(orderId, "mix");
-                }
-            }
-        }
-
-        return new MixMetadata(mixOrderIds, mixOrderOunces);
-    }
-
     private static Path createTypeRoot(Path batchDirectory,
                                        ShippingSpeed speed,
                                        ItemTypeGroup itemTypeGroup) {
@@ -437,53 +384,5 @@ public class  AmazonOrderDownloadService {
             throw new RuntimeException("Unable to create directory " + path, e);
         }
         return path;
-    }
-
-    private static String extractOunce(String itemType) {
-        if (itemType == null) {
-            return null;
-        }
-        String trimmed = itemType.trim();
-        if (trimmed.length() < 2) {
-            return null;
-        }
-        StringBuilder digits = new StringBuilder();
-        for (int i = 0; i < trimmed.length(); i++) {
-            char ch = trimmed.charAt(i);
-            if (Character.isDigit(ch)) {
-                digits.append(ch);
-                if (digits.length() == 2) {
-                    break;
-                }
-            } else if (digits.length() > 0) {
-                break;
-            }
-        }
-        return digits.length() == 2 ? digits.toString() : null;
-    }
-
-    private record MixMetadata(Set<String> mixOrderIds, Map<String, String> mixOrderOunces) {
-    }
-
-    private enum ShippingSpeed {
-        STANDARD("standard"),
-        EXPEDITED("expedited");
-
-        private final String folderName;
-
-        ShippingSpeed(String folderName) {
-            this.folderName = folderName;
-        }
-
-        String folderName() {
-            return folderName;
-        }
-
-        static ShippingSpeed from(String level) {
-            if (level != null && level.trim().equalsIgnoreCase("Standard")) {
-                return STANDARD;
-            }
-            return EXPEDITED;
-        }
     }
 }

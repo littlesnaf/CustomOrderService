@@ -5,6 +5,14 @@ import com.osman.core.fs.OrderDiscoveryService;
 import com.osman.core.fs.ZipExtractor;
 import com.osman.core.render.FontRegistry;
 import com.osman.core.render.MugRenderer;
+import com.osman.integration.amazon.CustomerGroup;
+import com.osman.integration.amazon.CustomerOrder;
+import com.osman.integration.amazon.CustomerOrderItem;
+import com.osman.integration.amazon.ItemTypeCategorizer;
+import com.osman.integration.amazon.ItemTypeGroup;
+import com.osman.integration.amazon.ShippingLayoutPlanner;
+import com.osman.integration.amazon.ShippingLayoutPlanner.MixMetadata;
+import com.osman.integration.amazon.ShippingLayoutPlanner.ShippingSpeed;
 import com.osman.ui.amazon.AmazonImportPanel;
 import com.osman.ui.ornament.OrnamentSkuPanel;
 
@@ -299,6 +307,21 @@ public class MainUIView {
                 return;
             }
 
+            if (isContainerFolder(customerFolder)) {
+                File[] subfolders = customerFolder.listFiles(File::isDirectory);
+                if (subfolders == null || subfolders.length == 0) {
+                    log("  -> No subfolders to process under container: " + customerFolder.getName());
+                    return;
+                }
+                for (File subfolder : subfolders) {
+                    if (subfolder.getName().equalsIgnoreCase(OUTPUT_FOLDER_NAME)) {
+                        continue;
+                    }
+                    handleFolder(subfolder, new File(subfolder, OUTPUT_FOLDER_NAME), subfolder.getName());
+                }
+                return;
+            }
+
             File scanRoot = resolveScanRoot(customerFolder);
 
             List<File> leafOrders = orderDiscoveryService.findOrderLeafFolders(scanRoot, 6);
@@ -404,6 +427,22 @@ public class MainUIView {
         } catch (Exception e) {
             return false;
         }
+    }
+
+    private boolean isContainerFolder(File folder) {
+        if (folder == null || !folder.isDirectory()) {
+            return false;
+        }
+        String name = folder.getName();
+        if (name == null || name.isBlank()) {
+            return false;
+        }
+        String lower = name.toLowerCase(Locale.ROOT);
+        if (lower.equals("standard") || lower.equals("expedited")) {
+            return true;
+        }
+        boolean digitsOnly = name.chars().allMatch(Character::isDigit);
+        return digitsOnly;
     }
 
     /** Appends a line to the UI log area. */

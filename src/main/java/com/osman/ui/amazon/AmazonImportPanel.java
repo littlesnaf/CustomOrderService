@@ -8,6 +8,9 @@ import com.osman.integration.amazon.AmazonTxtOrderParser;
 import com.osman.integration.amazon.CustomerGroup;
 import com.osman.integration.amazon.CustomerOrder;
 import com.osman.integration.amazon.CustomerOrderItem;
+import com.osman.integration.amazon.ShippingLayoutPlanner;
+import com.osman.integration.amazon.ShippingLayoutPlanner.MixMetadata;
+import com.osman.integration.amazon.ShippingLayoutPlanner.ShippingSpeed;
 import com.osman.integration.amazon.ItemTypeCategorizer;
 import com.osman.integration.amazon.ItemTypeGroup;
 import com.osman.integration.amazon.OrderBatch;
@@ -44,6 +47,8 @@ import java.nio.file.Path;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.EnumMap;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -391,10 +396,94 @@ public class AmazonImportPanel extends JPanel {
     }
 
     private void updateTree(OrderBatch batch) {
-        DefaultMutableTreeNode root = new DefaultMutableTreeNode("Amazon Orders");
-        DefaultMutableTreeNode mugsNode = new DefaultMutableTreeNode(ItemTypeCategorizer.MUGS_FOLDER_NAME);
-
         Map<String, ItemTypeGroup> groups = batch.groups();
+        if (groups.isEmpty()) {
+            resetTree();
+            return;
+        }
+
+        MixMetadata mixMetadata = ShippingLayoutPlanner.computeMixMetadata(groups);
+        Map<ShippingSpeed, SpeedBucket> buckets = buildBuckets(groups, mixMetadata);
+
+        DefaultMutableTreeNode root = new DefaultMutableTreeNode(ItemTypeCategorizer.MUGS_FOLDER_NAME);
+        int totalTypes = 0;
+
+        for (ShippingSpeed speed : ShippingSpeed.values()) {
+            SpeedBucket speedBucket = buckets.get(speed);
+            if (speedBucket == null || speedBucket.isEmpty()) {
+                continue;
+            }
+
+            DefaultMutableTreeNode speedNode = new DefaultMutableTreeNode(speed.displayName());
+
+            for (Map.Entry<String, OunceBucket> ounceEntry : speedBucket.ounces.entrySet()) {
+                String ounceKey = ounceEntry.getKey();
+                OunceBucket ounceBucket = ounceEntry.getValue();
+
+                DefaultMutableTreeNode ounceNode = new DefaultMutableTreeNode(ounceKey);
+
+                if (!ounceBucket.mixCustomers.isEmpty()) {
+                    DefaultMutableTreeNode mixNode = new DefaultMutableTreeNode("mix");
+                    for (CustomerAggregate customerAgg : ounceBucket.mixCustomers.values()) {
+                        mixNode.add(createCustomerNode(customerAgg.customer, customerAgg.orders));
+                    }
+                    ounceNode.add(mixNode);
+                }
+
+                for (ItemTypeAggregate aggregate : ounceBucket.itemTypes.values()) {
+                    DefaultMutableTreeNode itemNode = new DefaultMutableTreeNode(
+                        new ItemTypeNodeData(aggregate.groupKey, aggregate.itemType, aggregate.orderCount)
+                    );
+                    for (CustomerAggregate customerAgg : aggregate.customers.values()) {
+                        itemNode.add(createCustomerNode(customerAgg.customer, customerAgg.orders));
+                    }
+                    ounceNode.add(itemNode);
+                }
+
+                speedNode.add(ounceNode);
+            }
+
+            int typeCount = speedBucket.typeCount();
+            int mixCount = speedBucket.mixOrderCount();
+            totalTypes += typeCount;
+
+            String speedLabel = speed.displayName();
+            if (typeCount > 0 || mixCount > 0) {
+                speedLabel = "%s (%d types%s)".formatted(
+                    speed.displayName(),
+                    typeCount,
+                    mixCount > 0 ? ", mix" : ""
+                );
+            }
+            speedNode.setUserObject(speedLabel);
+            root.add(speedNode);
+        }
+
+        if (root.getChildCount() == 0) {
+            resetTree();
+            return;
+        }
+
+        root.setUserObject("%s (%d types)".formatted(
+            ItemTypeCategorizer.MUGS_FOLDER_NAME,
+            totalTypes
+        ));
+
+        treeModel.setRoot(root);
+        expandTree();
+    }
+
+    private void resetTree() {
+        treeModel.setRoot(new DefaultMutableTreeNode("No data"));
+        orderTree.setRootVisible(true);
+    }
+
+    private Map<ShippingSpeed, SpeedBucket> buildBuckets(Map<String, ItemTypeGroup> groups,
+                                                         MixMetadata mixMetadata) {
+        Map<ShippingSpeed, SpeedBucket> buckets = new EnumMap<>(ShippingSpeed.class);
+        Set<String> mixOrderIds = mixMetadata.mixOrderIds();
+        Map<String, String> mixOrderOunces = mixMetadata.mixOrderOunces();
+
         for (Map.Entry<String, ItemTypeGroup> entry : groups.entrySet()) {
             String groupKey = entry.getKey();
             ItemTypeGroup group = entry.getValue();
@@ -402,50 +491,53 @@ public class AmazonImportPanel extends JPanel {
                 continue;
             }
 
-            int totalOrders = group.customers().values().stream()
-                .mapToInt(customer -> customer.orders().size())
-                .sum();
-
-            DefaultMutableTreeNode itemNode = new DefaultMutableTreeNode(
-                new ItemTypeNodeData(groupKey, group.itemType(), totalOrders)
-            );
+            String defaultOunce = Optional.ofNullable(ShippingLayoutPlanner.extractOunce(group.itemType()))
+                .orElse(group.itemType());
 
             for (CustomerGroup customer : group.customers().values()) {
-                DefaultMutableTreeNode customerNode = new DefaultMutableTreeNode(
-                    "%s (%d orders)".formatted(customer.originalBuyerName(), customer.orders().size())
-                );
                 for (CustomerOrder order : customer.orders().values()) {
-                    DefaultMutableTreeNode orderNode = new DefaultMutableTreeNode("Order " + order.orderId());
-                    for (CustomerOrderItem item : order.items()) {
-                        orderNode.add(new DefaultMutableTreeNode("Item " + item.orderItemId()));
+                    ShippingSpeed speed = ShippingLayoutPlanner.resolveShippingSpeed(order);
+                    SpeedBucket speedBucket = buckets.computeIfAbsent(speed, key -> new SpeedBucket());
+
+                    boolean mixOrder = mixOrderIds.contains(order.orderId());
+                    String ounceKey = Optional.ofNullable(ShippingLayoutPlanner.extractOunce(group.itemType()))
+                        .orElse(defaultOunce);
+                    String mixOunce = mixOrderOunces.get(order.orderId());
+                    String targetOunce = mixOrder
+                        ? (mixOunce == null || mixOunce.isBlank() ? ounceKey : mixOunce)
+                        : ounceKey;
+
+                    OunceBucket ounceBucket = speedBucket.ounces.computeIfAbsent(targetOunce, key -> new OunceBucket());
+                    if (mixOrder) {
+                        ounceBucket.addMixOrder(customer, order);
+                    } else {
+                        ounceBucket.addItemTypeOrder(groupKey, group.itemType(), customer, order);
                     }
-                    customerNode.add(orderNode);
                 }
-                itemNode.add(customerNode);
             }
-
-            mugsNode.add(itemNode);
         }
 
-        if (mugsNode.getChildCount() == 0) {
-            resetTree();
-            return;
+        return buckets;
+    }
+
+    private DefaultMutableTreeNode createCustomerNode(CustomerGroup customer, List<CustomerOrder> orders) {
+        DefaultMutableTreeNode customerNode = new DefaultMutableTreeNode(
+            "%s (%d orders)".formatted(customer.originalBuyerName(), orders.size())
+        );
+        for (CustomerOrder order : orders) {
+            DefaultMutableTreeNode orderNode = new DefaultMutableTreeNode("Order " + order.orderId());
+            for (CustomerOrderItem item : order.items()) {
+                orderNode.add(new DefaultMutableTreeNode("Item " + item.orderItemId()));
+            }
+            customerNode.add(orderNode);
         }
+        return customerNode;
+    }
 
-        mugsNode.setUserObject("%s (%d types)".formatted(
-            ItemTypeCategorizer.MUGS_FOLDER_NAME,
-            mugsNode.getChildCount()
-        ));
-
-        treeModel.setRoot(mugsNode);
+    private void expandTree() {
         for (int i = 0; i < orderTree.getRowCount(); i++) {
             orderTree.expandRow(i);
         }
-        orderTree.setRootVisible(true);
-    }
-
-    private void resetTree() {
-        treeModel.setRoot(new DefaultMutableTreeNode("No data"));
         orderTree.setRootVisible(true);
     }
 
@@ -531,6 +623,90 @@ public class AmazonImportPanel extends JPanel {
 
     private Component getParentWindow() {
         return SwingUtilities.getWindowAncestor(this);
+    }
+
+    private static final class SpeedBucket {
+        private final Map<String, OunceBucket> ounces = new LinkedHashMap<>();
+
+        boolean isEmpty() {
+            return ounces.values().stream().allMatch(OunceBucket::isEmpty);
+        }
+
+        int typeCount() {
+            return ounces.values().stream()
+                .mapToInt(bucket -> bucket.itemTypes.size())
+                .sum();
+        }
+
+        int mixOrderCount() {
+            return ounces.values().stream()
+                .mapToInt(OunceBucket::mixOrderCount)
+                .sum();
+        }
+    }
+
+    private static final class OunceBucket {
+        private final Map<String, ItemTypeAggregate> itemTypes = new LinkedHashMap<>();
+        private final Map<String, CustomerAggregate> mixCustomers = new LinkedHashMap<>();
+        private final Set<String> seenMixOrders = new LinkedHashSet<>();
+
+        void addMixOrder(CustomerGroup customer, CustomerOrder order) {
+            if (!seenMixOrders.add(order.orderId())) {
+                return;
+            }
+            CustomerAggregate aggregate = mixCustomers.computeIfAbsent(
+                customer.originalBuyerName(),
+                key -> new CustomerAggregate(customer)
+            );
+            aggregate.orders.add(order);
+        }
+
+        void addItemTypeOrder(String groupKey,
+                              String itemType,
+                              CustomerGroup customer,
+                              CustomerOrder order) {
+            ItemTypeAggregate aggregate = itemTypes.computeIfAbsent(
+                itemType,
+                key -> new ItemTypeAggregate(groupKey, itemType)
+            );
+            aggregate.orderCount++;
+            CustomerAggregate customerAggregate = aggregate.customers.computeIfAbsent(
+                customer.originalBuyerName(),
+                key -> new CustomerAggregate(customer)
+            );
+            customerAggregate.orders.add(order);
+        }
+
+        boolean isEmpty() {
+            return itemTypes.isEmpty() && mixCustomers.isEmpty();
+        }
+
+        int mixOrderCount() {
+            return mixCustomers.values().stream()
+                .mapToInt(aggregate -> aggregate.orders.size())
+                .sum();
+        }
+    }
+
+    private static final class ItemTypeAggregate {
+        private final String groupKey;
+        private final String itemType;
+        private int orderCount;
+        private final Map<String, CustomerAggregate> customers = new LinkedHashMap<>();
+
+        private ItemTypeAggregate(String groupKey, String itemType) {
+            this.groupKey = groupKey;
+            this.itemType = itemType;
+        }
+    }
+
+    private static final class CustomerAggregate {
+        private final CustomerGroup customer;
+        private final List<CustomerOrder> orders = new ArrayList<>();
+
+        private CustomerAggregate(CustomerGroup customer) {
+            this.customer = customer;
+        }
     }
 
     private record ItemTypeNodeData(String groupKey, String itemType, int orderCount) {
