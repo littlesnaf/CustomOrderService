@@ -176,25 +176,29 @@ public class  AmazonOrderDownloadService {
         int totalItems = countItems(groups);
         listener.onStart(totalItems, batchDirectory);
 
+        MixMetadata mixMetadata = computeMixMetadata(groups);
+        Set<String> mixOrderIds = mixMetadata.mixOrderIds();
+        Map<String, String> mixOrderOunces = mixMetadata.mixOrderOunces();
+        Map<ShippingSpeed, Map<String, Path>> rootsBySpeed = new EnumMap<>(ShippingSpeed.class);
+
         int processed = 0;
         for (Map.Entry<String, ItemTypeGroup> entry : groups.entrySet()) {
             ItemTypeGroup itemTypeGroup = entry.getValue();
 
-            Map<ShippingSpeed, Path> itemTypeRootsBySpeed = new EnumMap<>(ShippingSpeed.class);
-
             for (CustomerGroup customer : itemTypeGroup.customers().values()) {
                 for (CustomerOrder order : customer.orders().values()) {
                     ShippingSpeed speed = resolveShippingSpeed(order);
-                    Path itemTypeRoot = itemTypeRootsBySpeed.computeIfAbsent(speed, category -> {
-                        Path categoryRoot = batchDirectory.resolve(category.folderName());
-                        Path typeRoot = ItemTypeCategorizer.resolveItemTypeFolder(categoryRoot, itemTypeGroup);
-                        try {
-                            Files.createDirectories(typeRoot);
-                        } catch (IOException e) {
-                            throw new RuntimeException("Unable to create item type directory " + typeRoot, e);
-                        }
-                        return typeRoot;
-                    });
+                    boolean isMixOrder = mixOrderIds.contains(order.orderId());
+                    String mixOunce = mixOrderOunces.get(order.orderId());
+
+                    Path itemTypeRoot = resolveItemTypeRoot(
+                        batchDirectory,
+                        speed,
+                        itemTypeGroup,
+                        isMixOrder,
+                        mixOunce,
+                        rootsBySpeed
+                    );
 
                     Path imagesFolder = ItemTypeCategorizer.resolveImagesFolder(itemTypeRoot);
                     Files.createDirectories(imagesFolder);
@@ -352,6 +356,113 @@ public class  AmazonOrderDownloadService {
 
         default void onComplete(int processedCount, int totalCount, Path targetRoot) {
         }
+    }
+
+    private Path resolveItemTypeRoot(Path batchDirectory,
+                                     ShippingSpeed speed,
+                                     ItemTypeGroup itemTypeGroup,
+                                     boolean isMixOrder,
+                                     String mixOunce,
+                                     Map<ShippingSpeed, Map<String, Path>> rootsBySpeed) {
+        Map<String, Path> cache = rootsBySpeed.computeIfAbsent(speed, s -> new LinkedHashMap<>());
+        if (isMixOrder) {
+            String ounceKey = (mixOunce == null || mixOunce.isBlank()) ? "mix" : mixOunce;
+            String cacheKey = "mix|" + ounceKey;
+            return cache.computeIfAbsent(cacheKey, key -> createMixRoot(batchDirectory, speed, ounceKey));
+        }
+
+        String cacheKey = "type|" + itemTypeGroup.itemType();
+        return cache.computeIfAbsent(cacheKey, key -> createTypeRoot(batchDirectory, speed, itemTypeGroup));
+    }
+
+    private static MixMetadata computeMixMetadata(Map<String, ItemTypeGroup> groups) {
+        Map<String, Set<String>> orderItemTypes = new LinkedHashMap<>();
+        Map<String, Set<String>> orderOunces = new LinkedHashMap<>();
+
+        for (ItemTypeGroup group : groups.values()) {
+            String itemType = group.itemType();
+            String ounce = extractOunce(itemType);
+            for (CustomerGroup customer : group.customers().values()) {
+                for (CustomerOrder order : customer.orders().values()) {
+                    orderItemTypes.computeIfAbsent(order.orderId(), id -> new LinkedHashSet<>()).add(itemType);
+                    if (ounce != null && !ounce.isBlank()) {
+                        orderOunces.computeIfAbsent(order.orderId(), id -> new LinkedHashSet<>()).add(ounce);
+                    }
+                }
+            }
+        }
+
+        Set<String> mixOrderIds = new LinkedHashSet<>();
+        Map<String, String> mixOrderOunces = new LinkedHashMap<>();
+
+        for (Map.Entry<String, Set<String>> entry : orderItemTypes.entrySet()) {
+            String orderId = entry.getKey();
+            Set<String> itemTypes = entry.getValue();
+            if (itemTypes.size() > 1) {
+                mixOrderIds.add(orderId);
+                Set<String> ounces = orderOunces.getOrDefault(orderId, Set.of());
+                if (ounces.size() == 1) {
+                    mixOrderOunces.put(orderId, ounces.iterator().next());
+                } else {
+                    mixOrderOunces.put(orderId, "mix");
+                }
+            }
+        }
+
+        return new MixMetadata(mixOrderIds, mixOrderOunces);
+    }
+
+    private static Path createTypeRoot(Path batchDirectory,
+                                       ShippingSpeed speed,
+                                       ItemTypeGroup itemTypeGroup) {
+        Path speedRoot = ensureDirectory(batchDirectory.resolve(speed.folderName()));
+        Path typeRoot = ItemTypeCategorizer.resolveItemTypeFolder(speedRoot, itemTypeGroup);
+        return ensureDirectory(typeRoot);
+    }
+
+    private static Path createMixRoot(Path batchDirectory,
+                                      ShippingSpeed speed,
+                                      String ounceKey) {
+        Path speedRoot = ensureDirectory(batchDirectory.resolve(speed.folderName()));
+        Path target = ("mix".equalsIgnoreCase(ounceKey) || ounceKey == null || ounceKey.isBlank())
+            ? speedRoot.resolve("mix")
+            : speedRoot.resolve(ounceKey).resolve("mix");
+        return ensureDirectory(target);
+    }
+
+    private static Path ensureDirectory(Path path) {
+        try {
+            Files.createDirectories(path);
+        } catch (IOException e) {
+            throw new RuntimeException("Unable to create directory " + path, e);
+        }
+        return path;
+    }
+
+    private static String extractOunce(String itemType) {
+        if (itemType == null) {
+            return null;
+        }
+        String trimmed = itemType.trim();
+        if (trimmed.length() < 2) {
+            return null;
+        }
+        StringBuilder digits = new StringBuilder();
+        for (int i = 0; i < trimmed.length(); i++) {
+            char ch = trimmed.charAt(i);
+            if (Character.isDigit(ch)) {
+                digits.append(ch);
+                if (digits.length() == 2) {
+                    break;
+                }
+            } else if (digits.length() > 0) {
+                break;
+            }
+        }
+        return digits.length() == 2 ? digits.toString() : null;
+    }
+
+    private record MixMetadata(Set<String> mixOrderIds, Map<String, String> mixOrderOunces) {
     }
 
     private enum ShippingSpeed {

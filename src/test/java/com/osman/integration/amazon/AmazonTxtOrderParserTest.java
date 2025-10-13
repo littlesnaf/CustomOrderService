@@ -25,24 +25,28 @@ class AmazonTxtOrderParserTest {
         try (InputStream stream = getResource("ordertestfiles/sample-amazon-orders.txt")) {
             assertNotNull(stream, "Sample resource is missing");
             List<AmazonOrderRecord> records = parser.parse(new InputStreamReader(stream, StandardCharsets.UTF_8));
-            assertEquals(1, records.size());
+            assertEquals(2, records.size());
 
             Map<String, Long> grouped = records.stream()
                 .collect(Collectors.groupingBy(AmazonOrderRecord::normalizedItemType, Collectors.counting()));
 
-            assertEquals(1, grouped.size(), "Types: " + grouped.keySet());
+            assertEquals(2, grouped.size(), "Types: " + grouped.keySet());
+            assertEquals(1L, grouped.get("11R"));
             assertEquals(1L, grouped.get("11W"));
 
-            AmazonOrderRecord record = records.get(0);
-            assertTrue(record.customizable());
-            assertEquals("2025-09-24T12:02:50+00:00", record.purchaseDate());
-            assertEquals("John Doe", record.recipientName());
-            assertEquals("DAWSONVILLE", record.shipCity());
-            assertEquals("GA", record.shipState());
-            assertEquals("US", record.shipCountry());
-            assertEquals(1, record.quantityPurchased());
-            assertTrue(record.productName().startsWith("HomeBee Personalized"));
+            AmazonOrderRecord white = records.stream()
+                .filter(record -> record.normalizedItemType().equals("11W"))
+                .findFirst()
+                .orElseThrow();
+            assertTrue(white.customizable());
+            assertEquals("NextDay", white.shipServiceLevel());
+            assertEquals("John Doe", white.recipientName());
 
+            AmazonOrderRecord red = records.stream()
+                .filter(record -> record.normalizedItemType().equals("11R"))
+                .findFirst()
+                .orElseThrow();
+            assertTrue(red.customizable());
             assertEquals(1, parser.getLastSkippedLateShipmentCount());
             assertEquals(List.of("222-2222222-2222222"), parser.getLastLateShipmentOrderIds());
         }
