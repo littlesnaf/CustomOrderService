@@ -60,9 +60,9 @@ AmazonOrderDownloadServiceTest {
         assertTrue(outputRoot.startsWith(tempDir));
         assertTrue(Files.isDirectory(outputRoot));
 
-        Path itemTypeRoot11 = outputRoot.resolve("11").resolve("11W");
+        Path itemTypeRoot11 = outputRoot.resolve("expedited").resolve("11").resolve("11W");
         Path imagesRoot11 = itemTypeRoot11.resolve(ItemTypeCategorizer.IMAGES_FOLDER_NAME);
-        Path itemTypeRoot15 = outputRoot.resolve("15").resolve("15R");
+        Path itemTypeRoot15 = outputRoot.resolve("standard").resolve("15").resolve("15R");
         Path imagesRoot15 = itemTypeRoot15.resolve(ItemTypeCategorizer.IMAGES_FOLDER_NAME);
         assertTrue(Files.isDirectory(itemTypeRoot11));
         assertTrue(Files.isDirectory(imagesRoot11));
@@ -93,7 +93,7 @@ AmazonOrderDownloadServiceTest {
         Path outputRoot = service.downloadItemTypes(batch, List.of("11W"), new AmazonOrderDownloadService.DownloadProgressListener() {
         });
 
-        Path itemTypeRoot = outputRoot.resolve("11").resolve("11W");
+        Path itemTypeRoot = outputRoot.resolve("expedited").resolve("11").resolve("11W");
         Path imagesRoot = itemTypeRoot.resolve(ItemTypeCategorizer.IMAGES_FOLDER_NAME);
 
         assertTrue(Files.isDirectory(itemTypeRoot));

@@ -16,6 +16,7 @@ import java.nio.file.Paths;
 import java.time.Duration;
 import java.util.AbstractMap;
 import java.util.Collection;
+import java.util.EnumMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
@@ -179,14 +180,25 @@ public class  AmazonOrderDownloadService {
         for (Map.Entry<String, ItemTypeGroup> entry : groups.entrySet()) {
             ItemTypeGroup itemTypeGroup = entry.getValue();
 
-            Path itemTypeRoot = ItemTypeCategorizer.resolveItemTypeFolder(batchDirectory, itemTypeGroup);
-            Files.createDirectories(itemTypeRoot);
-
-            Path imagesFolder = ItemTypeCategorizer.resolveImagesFolder(itemTypeRoot);
-            Files.createDirectories(imagesFolder);
+            Map<ShippingSpeed, Path> itemTypeRootsBySpeed = new EnumMap<>(ShippingSpeed.class);
 
             for (CustomerGroup customer : itemTypeGroup.customers().values()) {
                 for (CustomerOrder order : customer.orders().values()) {
+                    ShippingSpeed speed = resolveShippingSpeed(order);
+                    Path itemTypeRoot = itemTypeRootsBySpeed.computeIfAbsent(speed, category -> {
+                        Path categoryRoot = batchDirectory.resolve(category.folderName());
+                        Path typeRoot = ItemTypeCategorizer.resolveItemTypeFolder(categoryRoot, itemTypeGroup);
+                        try {
+                            Files.createDirectories(typeRoot);
+                        } catch (IOException e) {
+                            throw new RuntimeException("Unable to create item type directory " + typeRoot, e);
+                        }
+                        return typeRoot;
+                    });
+
+                    Path imagesFolder = ItemTypeCategorizer.resolveImagesFolder(itemTypeRoot);
+                    Files.createDirectories(imagesFolder);
+
                     Path orderFolder = createOrderFolder(imagesFolder, customer, order);
                     writeMetadata(orderFolder, customer, order, itemTypeGroup.itemType());
 
@@ -262,6 +274,25 @@ public class  AmazonOrderDownloadService {
         return target;
     }
 
+    private static ShippingSpeed resolveShippingSpeed(CustomerOrder order) {
+        if (order == null || order.items().isEmpty()) {
+            return ShippingSpeed.STANDARD;
+        }
+        return order.items().stream()
+            .map(CustomerOrderItem::sourceRecord)
+            .map(AmazonOrderDownloadService::resolveShippingSpeed)
+            .filter(Objects::nonNull)
+            .findFirst()
+            .orElse(ShippingSpeed.STANDARD);
+    }
+
+    private static ShippingSpeed resolveShippingSpeed(AmazonOrderRecord record) {
+        if (record == null) {
+            return ShippingSpeed.STANDARD;
+        }
+        return ShippingSpeed.from(record.shipServiceLevel());
+    }
+
     private static Path createOrderFolder(Path imagesFolder, CustomerGroup customer, CustomerOrder order) throws IOException {
         String orderIdSegment = order.orderId().replaceAll("[^A-Za-z0-9-]", "_");
         String recipientName = order.items().stream()
@@ -320,6 +351,28 @@ public class  AmazonOrderDownloadService {
         }
 
         default void onComplete(int processedCount, int totalCount, Path targetRoot) {
+        }
+    }
+
+    private enum ShippingSpeed {
+        STANDARD("standard"),
+        EXPEDITED("expedited");
+
+        private final String folderName;
+
+        ShippingSpeed(String folderName) {
+            this.folderName = folderName;
+        }
+
+        String folderName() {
+            return folderName;
+        }
+
+        static ShippingSpeed from(String level) {
+            if (level != null && level.trim().equalsIgnoreCase("Standard")) {
+                return STANDARD;
+            }
+            return EXPEDITED;
         }
     }
 }

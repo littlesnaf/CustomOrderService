@@ -145,6 +145,7 @@ public class AmazonTxtOrderParser {
         String rawSku = getValue(columns, headerIndex, HEADER_SKU);
         String downloadUrl = getValue(columns, headerIndex, HEADER_CUSTOM_URL);
         String productName = getOptionalValue(columns, headerIndex, HEADER_PRODUCT_NAME);
+        boolean giftbeesFormat = isGiftbeesOrder(productName, rawSku);
         int quantityPurchased = getIntValue(columns, headerIndex, HEADER_QUANTITY_PURCHASED);
         int quantityShipped = getIntValue(columns, headerIndex, HEADER_QUANTITY_SHIPPED);
         String recipientName = getOptionalValue(columns, headerIndex, HEADER_RECIPIENT_NAME);
@@ -163,7 +164,7 @@ public class AmazonTxtOrderParser {
             LOGGER.info("Row for orderItemId %s references product page URL; keeping value as-is.".formatted(orderItemId));
         }
 
-        String normalizedItemType = normalizeItemType(rawSku);
+        String normalizedItemType = normalizeItemType(rawSku, giftbeesFormat);
         boolean customizable = isCustomizable(rawSku);
 
         return new AmazonOrderRecord(
@@ -314,9 +315,18 @@ public class AmazonTxtOrderParser {
      * </ul>
      */
     public String normalizeItemType(String sku) {
+        return normalizeItemType(sku, false);
+    }
+
+    public String normalizeItemType(String sku, boolean giftbeesFormat) {
         if (sku == null || sku.isBlank()) {
             return "UNKNOWN";
         }
+
+        if (giftbeesFormat) {
+            return normalizeGiftbeesSku(sku);
+        }
+
 
         String normalizedSeparators = sku.trim().replace('_', '-');
         List<String> segments = Arrays.stream(normalizedSeparators.split("-"))
@@ -423,6 +433,45 @@ public class AmazonTxtOrderParser {
         }
 
         return score;
+    }
+
+    private static boolean isGiftbeesOrder(String productName, String rawSku) {
+        if (rawSku == null) {
+            return false;
+        }
+        String normalized = rawSku.trim().toUpperCase(Locale.ROOT);
+        return normalized.startsWith("SKU.");
+    }
+
+    private static String normalizeGiftbeesSku(String sku) {
+        String normalizedSeparators = sku.trim()
+            .replace('.', '-')
+            .replace('_', '-');
+
+        List<String> segments = Arrays.stream(normalizedSeparators.split("-"))
+            .map(value -> value == null ? "" : value.trim())
+            .filter(value -> !value.isEmpty())
+            .collect(Collectors.toCollection(ArrayList::new));
+
+        if (!segments.isEmpty()) {
+            String first = segments.get(0).toUpperCase(Locale.ROOT);
+            if (first.startsWith("SKU") && first.length() > 3) {
+                segments.remove(0);
+            }
+        }
+
+        String explicit = extractExplicitMugCode(segments);
+        if (explicit != null) {
+            return explicit;
+        }
+
+        String bestCandidate = findBestSegment(segments);
+        if (bestCandidate != null) {
+            return bestCandidate;
+        }
+
+        String fallback = sku.replaceAll("[^A-Za-z0-9]", "");
+        return fallback.isBlank() ? "UNKNOWN" : fallback.toUpperCase(Locale.ROOT);
     }
 
     private static boolean isCustomizable(String sku) {

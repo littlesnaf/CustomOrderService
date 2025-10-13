@@ -54,6 +54,22 @@ class AmazonTxtOrderParserTest {
     }
 
     @Test
+    void parsesGiftbeesFormatSku() throws IOException {
+        String data = String.join("\n",
+            "order-id\torder-item-id\tbuyer-name\tsku\tcustomized-url\tproduct-name\tquantity-purchased\tquantity-shipped",
+            "114-7254822-1733000\t142047923340841\tjohn Hawkins\tSKU.PhotoMug.11W\thttps://zme-caps.amazon.com/t/xxxx/Wk-6AkCKTSsgMiHvDu6n2n1rQU3l_rVpf5o1IenJqGg/23\tGiftbees Personalized Coffee Mug, Custom Picture Text or Logo Ceramic Mug\t1\t0"
+        );
+
+        List<AmazonOrderRecord> records = parser.parse(new java.io.StringReader(data));
+
+        assertEquals(1, records.size());
+        AmazonOrderRecord record = records.get(0);
+        assertEquals("11W", record.normalizedItemType());
+        assertTrue(record.customizable());
+        assertEquals("SKU.PhotoMug.11W", record.rawItemType());
+    }
+
+    @Test
     void normalizesTumblerSkuToProductCode() {
         assertEquals("TMBLR", parser.normalizeItemType("SKU001-TMBLR-Vacay.Beach"));
     }
