@@ -402,14 +402,12 @@ public class AmazonImportPanel extends JPanel {
                 continue;
             }
 
-            int totalItems = group.customers().values().stream()
-                .mapToInt(customer -> customer.orders().values().stream()
-                    .mapToInt(order -> order.items().size())
-                    .sum())
+            int totalOrders = group.customers().values().stream()
+                .mapToInt(customer -> customer.orders().size())
                 .sum();
 
             DefaultMutableTreeNode itemNode = new DefaultMutableTreeNode(
-                new ItemTypeNodeData(groupKey, group.itemType(), totalItems)
+                new ItemTypeNodeData(groupKey, group.itemType(), totalOrders)
             );
 
             for (CustomerGroup customer : group.customers().values()) {
@@ -535,10 +533,10 @@ public class AmazonImportPanel extends JPanel {
         return SwingUtilities.getWindowAncestor(this);
     }
 
-    private record ItemTypeNodeData(String groupKey, String itemType, int itemCount) {
+    private record ItemTypeNodeData(String groupKey, String itemType, int orderCount) {
         @Override
         public String toString() {
-            return "%s (%d items)".formatted(itemType, itemCount);
+            return "%s (%d orders)".formatted(itemType, orderCount);
         }
     }
 

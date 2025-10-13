@@ -2,6 +2,8 @@ package com.osman.integration.amazon;
 
 import com.osman.logging.AppLogger;
 
+import com.osman.integration.amazon.AmazonOrderRecord;
+
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -262,7 +264,18 @@ public class  AmazonOrderDownloadService {
 
     private static Path createOrderFolder(Path imagesFolder, CustomerGroup customer, CustomerOrder order) throws IOException {
         String orderIdSegment = order.orderId().replaceAll("[^A-Za-z0-9-]", "_");
-        String folderName = "%s_%s".formatted(customer.sanitizedBuyerName(), orderIdSegment);
+        String recipientName = order.items().stream()
+                .map(CustomerOrderItem::sourceRecord)
+                .filter(Objects::nonNull)
+                .map(AmazonOrderRecord::recipientName)
+                .filter(name -> name != null && !name.isBlank())
+                .findFirst()
+                .orElse(customer.originalBuyerName());
+        String sanitizedRecipient = NameSanitizer.sanitizeForFolder(recipientName);
+        if (sanitizedRecipient == null || sanitizedRecipient.isBlank()) {
+            sanitizedRecipient = customer.sanitizedBuyerName();
+        }
+        String folderName = "%s_%s".formatted(sanitizedRecipient, orderIdSegment);
         Path folder = imagesFolder.resolve(folderName);
         Files.createDirectories(folder);
         return folder;
