@@ -97,7 +97,7 @@ public class PdfLinker {
             orderIds.add(m.group());
         }
 
-        // Step 4: Map the found order IDs to the actual label pages.
+        // Step 4: Map the found order kIDs to the actual label pages.
         if (!orderIds.isEmpty()) {
             int labelPageCount = indexStartPage - 1;
             int ordersToMapCount = Math.min(orderIds.size(), labelPageCount);
