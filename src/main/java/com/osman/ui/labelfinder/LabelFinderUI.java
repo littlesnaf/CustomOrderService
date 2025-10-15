@@ -141,7 +141,8 @@ public class LabelFinderUI extends JFrame {
         controlsRow.add(bulkModeCheck);
 
         String initialStatus = "Scan barcode → prints automatically. Choose base folder first.";
-        topStatusLabel = new JLabel(initialStatus);
+        topStatusLabel = new JLabel("Scanned 0/0");
+        topStatusLabel.setFont(topStatusLabel.getFont().deriveFont(Font.BOLD, 18f));
         topStatusLabel.setForeground(Color.RED);
         JPanel statusRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 10));
         statusRow.setBorder(new EmptyBorder(6, 6, 6, 6));
@@ -571,6 +572,7 @@ public class LabelFinderUI extends JFrame {
                 expectationMissing = true;
             }
             else {
+                updateProgressBanner(scanUpdate.scanned, scanUpdate.expected);
                 if (scanUpdate.counted) {
                     rememberScanEvent(orderId, scanUpdate.itemIdentifier);
                 }
@@ -1077,6 +1079,7 @@ public class LabelFinderUI extends JFrame {
         scanProgress.clear();
         completedOrders.clear();
         scanHistory.clear();
+        updateProgressBanner(0, 0);
     }
     private void rebuildExpectations() {
         expectationIndex.clear();
@@ -1229,9 +1232,17 @@ public class LabelFinderUI extends JFrame {
             scanHistory.removeFirst();
         }
     }
+    private void updateProgressBanner(int scanned, int expected) {
+        if (scanned < 0) {
+            scanned = 0;
+        }
+        if (expected < 0) {
+            expected = 0;
+        }
+        topStatusLabel.setText("Scanned " + scanned + "/" + expected);
+    }
     private void setStatusMessage(String message) {
         String text = (message == null) ? "" : message;
-        topStatusLabel.setText(text);
         statusLabel.setText(text);
     }
     private static String combineOrderAndItem(String orderId, String itemIdentifier) {
