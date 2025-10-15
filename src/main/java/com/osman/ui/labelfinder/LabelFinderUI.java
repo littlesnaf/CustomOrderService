@@ -267,11 +267,45 @@ public class LabelFinderUI extends JFrame {
                 }
                 File abs = candidate.getAbsoluteFile();
                 if (abs.isDirectory()) {
-                    dedup.add(abs);
+                    expandCandidate(abs, dedup);
                 }
             }
         }
         return new ArrayList<>(dedup);
+    }
+
+    private void expandCandidate(File folder, Set<File> dedup) {
+        if (folder == null || !folder.isDirectory()) {
+            return;
+        }
+        if (!dedup.add(folder)) {
+            return;
+        }
+
+        if (isShippingContainer(folder)) {
+            File[] children = folder.listFiles(File::isDirectory);
+            if (children != null) {
+                for (File child : children) {
+                    expandCandidate(child, dedup);
+                }
+            }
+        }
+    }
+
+    private boolean isShippingContainer(File folder) {
+        if (folder == null || !folder.isDirectory()) {
+            return false;
+        }
+        String name = folder.getName();
+        if (name == null || name.isBlank()) {
+            return false;
+        }
+        String lower = name.toLowerCase(Locale.ROOT);
+        if (lower.equals("standard") || lower.equals("expedited")) {
+            return true;
+        }
+        boolean digitsOnly = name.chars().allMatch(Character::isDigit);
+        return digitsOnly;
     }
     private void loadBaseFolders(List<File> folders) {
         List<File> normalized = normaliseRoots(folders);

@@ -71,7 +71,7 @@ public class PdfLinker {
         for (int p = pageCount; p >= 1; p--) {
             String pageText = extractPageText(stripper, doc, p);
             // Use a broader search key to match "List of orders..."
-            if (pageText != null && pageText.toLowerCase().contains("list of orders")) {
+            if (pageText != null && pageText.toLowerCase().contains("successful label purchase")) {
                 indexStartPage = p;
                 break; // Found the first page of the index, stop searching
             }
