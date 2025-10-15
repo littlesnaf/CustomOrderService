@@ -25,11 +25,13 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -81,6 +83,7 @@ public class LabelFinderUI extends JFrame {
     private final JButton chooseBaseBtn;
     private final JCheckBox bulkModeCheck;
     private final JLabel statusLabel;
+    private final JLabel topStatusLabel;
     private final ImagePanel combinedPanel;
     private final DefaultListModel<LabelRef> labelRefsModel;
     private final JList<LabelRef> labelRefsList;
@@ -110,6 +113,9 @@ public class LabelFinderUI extends JFrame {
     private static final String PREF_DIVIDER_LOCATION = "dividerLocation";  // JSplitPane divider
     private final PreferencesStore prefs = PreferencesStore.global();
     private JSplitPane mainSplit;
+    private static final int MAX_SCAN_HISTORY = 100;
+    private final Deque<String> scanHistory = new ArrayDeque<>();
+    private final Map<String, CompletedOrderInfo> completedOrders = new LinkedHashMap<>();
 
     /**
      * Constructs the UI, wires listeners, and prepares the initial application state.
@@ -125,14 +131,25 @@ public class LabelFinderUI extends JFrame {
         printButton.setEnabled(false);
         chooseBaseBtn = new JButton("Choose File Path");
         bulkModeCheck = new JCheckBox("Bulk Order (no matching)");
-        JPanel top = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 10));
-        top.setBorder(new EmptyBorder(6, 6, 6, 6));
-        top.add(new JLabel("Order ID:"));
-        top.add(orderIdField);
-        top.add(findButton);
-        top.add(printButton);
-        top.add(chooseBaseBtn);
-        top.add(bulkModeCheck);
+        JPanel controlsRow = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 10));
+        controlsRow.setBorder(new EmptyBorder(6, 6, 6, 6));
+        controlsRow.add(new JLabel("Order ID:"));
+        controlsRow.add(orderIdField);
+        controlsRow.add(findButton);
+        controlsRow.add(printButton);
+        controlsRow.add(chooseBaseBtn);
+        controlsRow.add(bulkModeCheck);
+
+        String initialStatus = "Scan barcode → prints automatically. Choose base folder first.";
+        topStatusLabel = new JLabel(initialStatus);
+        topStatusLabel.setForeground(Color.RED);
+        JPanel statusRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 10));
+        statusRow.setBorder(new EmptyBorder(6, 6, 6, 6));
+        statusRow.add(topStatusLabel);
+
+        JPanel top = new JPanel(new BorderLayout());
+        top.add(statusRow, BorderLayout.WEST);
+        top.add(controlsRow, BorderLayout.CENTER);
         labelRefsModel = new DefaultListModel<>();
         labelRefsList = new JList<>(labelRefsModel);
         JScrollPane labelsScroll = new JScrollPane(labelRefsList);
@@ -165,11 +182,12 @@ public class LabelFinderUI extends JFrame {
             prefs.putString(PREF_DIVIDER_LOCATION, String.valueOf(mainSplit.getDividerLocation()));
         });
         mainSplit.setResizeWeight(0.45);
-        statusLabel = new JLabel("Scan barcode → prints automatically. Choose base folder first.");
+        statusLabel = new JLabel(initialStatus);
         setLayout(new BorderLayout());
         add(top, BorderLayout.NORTH);
         add(mainSplit, BorderLayout.CENTER);
         add(statusLabel, BorderLayout.SOUTH);
+        setStatusMessage(initialStatus);
         getRootPane().setTransferHandler(new BaseFolderTransferHandler());
         chooseBaseBtn.addActionListener(e -> chooseBaseFolder());
         findButton.addActionListener(e -> onFind());
@@ -310,7 +328,7 @@ public class LabelFinderUI extends JFrame {
     private void loadBaseFolders(List<File> folders) {
         List<File> normalized = normaliseRoots(folders);
         if (normalized.isEmpty()) {
-            statusLabel.setText("Please select folder(s) containing your orders.");
+            setStatusMessage("Please select folder(s) containing your orders.");
             return;
         }
         baseFolders.clear();
@@ -321,7 +339,7 @@ public class LabelFinderUI extends JFrame {
     }
     private void refreshBaseFolders() {
         if (!hasBaseFolders()) {
-            statusLabel.setText("Select a valid base folder.");
+            setStatusMessage("Select a valid base folder.");
             return;
         }
         baseDir = getPrimaryBaseFolder();
@@ -334,7 +352,7 @@ public class LabelFinderUI extends JFrame {
         clearProgressCaches();
         setUIEnabled(false);
         String scanningMessage = (baseFolders.size() == 1) ? "Scanning folder..." : "Scanning folders...";
-        statusLabel.setText(scanningMessage);
+        setStatusMessage(scanningMessage);
         SwingWorker<Void, Void> worker = new SwingWorker<>() {
             @Override
             protected Void doInBackground() throws Exception {
@@ -353,16 +371,16 @@ public class LabelFinderUI extends JFrame {
                 try {
                     get();
                     if (bulkModeCheck.isSelected()) {
-                        statusLabel.setText("BULK loaded: " + labelRefsModel.size() + " pages, " + photosModel.size() + " photos.");
+                        setStatusMessage("BULK loaded: " + labelRefsModel.size() + " pages, " + photosModel.size() + " photos.");
                     }
                     else {
                         int photoCount = (photoIndex == null) ? 0 : photoIndex.size();
-                        statusLabel.setText("Indexed " + labelGroups.size() + " labels, " + slipGroups.size() + " packing slips, " + photoCount + " photos.");
+                        setStatusMessage("Indexed " + labelGroups.size() + " labels, " + slipGroups.size() + " packing slips, " + photoCount + " photos.");
                     }
                 }
                 catch (Exception e) {
                     Throwable cause = e.getCause() != null ? e.getCause() : e;
-                    statusLabel.setText("Error: " + cause.getMessage());
+                    setStatusMessage("Error: " + cause.getMessage());
                     JOptionPane.showMessageDialog(LabelFinderUI.this, "Error while scanning:\n" + cause.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
                 }
                 finally {
@@ -391,7 +409,7 @@ public class LabelFinderUI extends JFrame {
         }
         List<File> chosen = normaliseRoots(Arrays.asList(selections));
         if (chosen.isEmpty()) {
-            statusLabel.setText("Please select folder(s) containing your orders.");
+            setStatusMessage("Please select folder(s) containing your orders.");
             return;
         }
         loadBaseFolders(chosen);
@@ -440,7 +458,7 @@ public class LabelFinderUI extends JFrame {
         labelGroups = new HashMap<>();
         slipGroups = new HashMap<>();
         if (!hasBaseFolders()) {
-            statusLabel.setText("Base folder invalid.");
+            setStatusMessage("Base folder invalid.");
             return;
         }
         LinkedHashSet<File> pdfs = new LinkedHashSet<>();
@@ -453,7 +471,7 @@ public class LabelFinderUI extends JFrame {
                         .filter(p -> p.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".pdf"))
                         .forEach(p -> pdfs.add(p.toFile().getAbsoluteFile()));
             } catch (IOException e) {
-                statusLabel.setText("Error reading PDFs: " + e.getMessage());
+                setStatusMessage("Error reading PDFs: " + e.getMessage());
                 return;
             }
         }
@@ -488,7 +506,7 @@ public class LabelFinderUI extends JFrame {
             }
         }
         int photoCount = (photoIndex == null) ? 0 : photoIndex.size();
-        statusLabel.setText("Indexed " + labelGroups.size() + " labels, " + slipGroups.size() + " packing slips, " + photoCount + " photos.");
+        setStatusMessage("Indexed " + labelGroups.size() + " labels, " + slipGroups.size() + " packing slips, " + photoCount + " photos.");
     }
     private void onFind() {
         if (bulkModeCheck.isSelected()) {
@@ -501,7 +519,7 @@ public class LabelFinderUI extends JFrame {
         ScanInput scanInput = parseScanInput(orderIdField.getText());
         String orderId = scanInput.orderId();
         if (orderId.isEmpty()) {
-            statusLabel.setText("Please enter an Order ID.");
+            setStatusMessage("Please enter an Order ID.");
             orderIdField.requestFocusInWindow();
             return;
         }
@@ -521,7 +539,7 @@ public class LabelFinderUI extends JFrame {
             currentLabelLocation = new LabelLocation(lg.file, lg.pages.get(0));
         }
         else {
-            statusLabel.setText("Shipping label not found for: " + orderId);
+            setStatusMessage("Shipping label not found for: " + orderId);
         }
         PageGroup sg = (slipGroups != null) ? slipGroups.get(orderId) : null;
         if (sg != null) {
@@ -530,7 +548,7 @@ public class LabelFinderUI extends JFrame {
             slipImg = stackMany(withBorder(slipPages, new Color(0,120,215), 8), 12, Color.WHITE);
         }
         else if (lg != null) {
-            statusLabel.setText("Packing slip not found for: " + orderId);
+            setStatusMessage("Packing slip not found for: " + orderId);
         }
         combinedPreview = stackImagesVertically(labelImg, slipImg, 12, Color.WHITE);
         if (combinedPreview != null) {
@@ -545,38 +563,47 @@ public class LabelFinderUI extends JFrame {
         refreshPhotosForOrderAsync(orderId);
         boolean hasPrintableContent = !labelPagesToPrint.isEmpty() || !slipPagesToPrint.isEmpty();
         ScanUpdate scanUpdate = null;
+        OrderScanState stateForOrder = null;
         boolean expectationMissing = false;
         if (hasPrintableContent) {
             scanUpdate = trackScanProgress(orderId, scanInput.itemKey(), scanInput.rawItemId());
             if (scanUpdate == null) {
                 expectationMissing = true;
             }
-            else if (!scanUpdate.counted) {
-                String message;
-                if (scanUpdate.duplicate) {
-                    message = composeDuplicateMessage(scanUpdate);
+            else {
+                if (scanUpdate.counted) {
+                    rememberScanEvent(orderId, scanUpdate.itemIdentifier);
                 }
-                else if (scanUpdate.unknownItem) {
-                    message = composeUnknownItemMessage(scanUpdate);
+                if (!scanUpdate.counted) {
+                    String message;
+                    if (scanUpdate.duplicate) {
+                        message = composeDuplicateMessage(scanUpdate);
+                    }
+                    else if (scanUpdate.unknownItem) {
+                        message = composeUnknownItemMessage(scanUpdate);
+                    }
+                    else if (scanUpdate.alreadyComplete) {
+                        message = composeAlreadyCompleteMessage(scanUpdate);
+                    }
+                    else {
+                        message = composeGenericHoldMessage(scanUpdate);
+                    }
+                    setStatusMessage(message);
+                    orderIdField.setText("");
+                    orderIdField.requestFocusInWindow();
+                    orderIdField.selectAll();
+                    return;
                 }
-                else if (scanUpdate.alreadyComplete) {
-                    message = composeAlreadyCompleteMessage(scanUpdate);
+                else if (!scanUpdate.completed) {
+                    setStatusMessage(composeInProgressMessage(scanUpdate));
+                    orderIdField.setText("");
+                    orderIdField.requestFocusInWindow();
+                    orderIdField.selectAll();
+                    return;
                 }
-                else {
-                    message = composeGenericHoldMessage(scanUpdate);
-                }
-                statusLabel.setText(message);
-                orderIdField.setText("");
-                orderIdField.requestFocusInWindow();
-                orderIdField.selectAll();
-                return;
             }
-            else if (!scanUpdate.completed) {
-                statusLabel.setText(composeInProgressMessage(scanUpdate));
-                orderIdField.setText("");
-                orderIdField.requestFocusInWindow();
-                orderIdField.selectAll();
-                return;
+            if (scanUpdate != null) {
+                stateForOrder = scanProgress.get(orderId);
             }
         }
         boolean printed = false;
@@ -585,7 +612,7 @@ public class LabelFinderUI extends JFrame {
             printed = printCombinedDirect();
             if (printed) {
                 if (scanUpdate != null && scanUpdate.completed) {
-                    markOrderComplete(orderId);
+                    markOrderComplete(orderId, stateForOrder);
                     completionMessage = composeCompletionMessage(scanUpdate);
                 }
                 else if (expectationMissing) {
@@ -608,7 +635,7 @@ public class LabelFinderUI extends JFrame {
             if (status == null) {
                 status = "Printed.";
             }
-            statusLabel.setText(status);
+            setStatusMessage(status);
         }
     }
     private static boolean applyTagWithBrew(Path filePath, String tagName) {
@@ -703,7 +730,7 @@ public class LabelFinderUI extends JFrame {
         if (slipPagesToPrint != null) pages.addAll(slipPagesToPrint);
         if (pages.isEmpty()) {
             if (combinedPreview == null) {
-                statusLabel.setText("Nothing to print.");
+                setStatusMessage("Nothing to print.");
                 return;
             }
             pages.add(combinedPreview);
@@ -717,14 +744,14 @@ public class LabelFinderUI extends JFrame {
         if (job.printDialog()) {
             try {
                 job.print();
-                statusLabel.setText("Print job sent.");
+                setStatusMessage("Print job sent.");
             }
             catch (PrinterException e) {
                 JOptionPane.showMessageDialog(this, "Could not print.\nError: " + e.getMessage(), "Print Error", JOptionPane.ERROR_MESSAGE);
             }
         }
         else {
-            statusLabel.setText("Print job canceled.");
+            setStatusMessage("Print job canceled.");
         }
     }
     private boolean printCombinedDirect() {
@@ -733,7 +760,7 @@ public class LabelFinderUI extends JFrame {
         if (slipPagesToPrint != null) pages.addAll(slipPagesToPrint);
         if (pages.isEmpty()) {
             if (combinedPreview == null) {
-                statusLabel.setText("Nothing to print.");
+                setStatusMessage("Nothing to print.");
                 return false;
             }
             pages.add(combinedPreview);
@@ -746,7 +773,7 @@ public class LabelFinderUI extends JFrame {
         job.setPrintable(new MultiPagePrintable(pages), pf);
         try {
             job.print();
-            statusLabel.setText("Printed (direct).");
+            setStatusMessage("Printed (direct).");
             return true;
         }
         catch (PrinterException e) {
@@ -760,7 +787,7 @@ public class LabelFinderUI extends JFrame {
     }
     private void populateBulkFromBase() {
         if (!hasBaseFolders()) {
-            statusLabel.setText("Select a valid base folder for BULK.");
+            setStatusMessage("Select a valid base folder for BULK.");
             return;
         }
         labelRefsModel.clear();
@@ -780,21 +807,21 @@ public class LabelFinderUI extends JFrame {
                 });
             }
             catch (IOException e) {
-                statusLabel.setText("Error reading bulk PDFs: " + e.getMessage());
+                setStatusMessage("Error reading bulk PDFs: " + e.getMessage());
                 return;
             }
         }
         photosModel.clear();
         List<Path> indexedPhotos = collectAllPhotosFromIndex();
         if (indexedPhotos.isEmpty()) {
-            statusLabel.setText("No photos indexed. Choose a base folder.");
+            setStatusMessage("No photos indexed. Choose a base folder.");
         }
         else {
             indexedPhotos.forEach(photosModel::addElement);
         }
         if (!labelRefsModel.isEmpty()) labelRefsList.setSelectedIndex(0);
         if (!photosModel.isEmpty()) photosList.setSelectedIndex(0);
-        statusLabel.setText("BULK loaded: " + labelRefsModel.size() + " pages, " + photosModel.size() + " photos.");
+        setStatusMessage("BULK loaded: " + labelRefsModel.size() + " pages, " + photosModel.size() + " photos.");
     }
     private void renderSelectedBulkPage() {
         LabelRef ref = labelRefsList.getSelectedValue();
@@ -827,7 +854,7 @@ public class LabelFinderUI extends JFrame {
             BufferedImage b = selected.size() > 1 ? ImageIO.read(selected.get(1).toFile()) : null;
             photoView.setImages(a, b);
             if (selected.size() > 2) {
-                statusLabel.setText("Only the first 2 selected photos are shown.");
+                setStatusMessage("Only the first 2 selected photos are shown.");
             }
         }
         catch (IOException ex) {
@@ -991,7 +1018,7 @@ public class LabelFinderUI extends JFrame {
     private void tagReadyDesigns(String orderId, List<Path> designMatches, boolean updateStatus, boolean allowEmptyStatusMessage) {
         if (designMatches == null || designMatches.isEmpty()) {
             if (updateStatus && allowEmptyStatusMessage) {
-                statusLabel.setText("No ready design found to tag for: " + orderId);
+                setStatusMessage("No ready design found to tag for: " + orderId);
             }
             return;
         }
@@ -1005,10 +1032,10 @@ public class LabelFinderUI extends JFrame {
             return;
         }
         if (ok > 0) {
-            statusLabel.setText("Ready designs tagged: Green (" + ok + "/" + designMatches.size() + ").");
+            setStatusMessage("Ready designs tagged: Green (" + ok + "/" + designMatches.size() + ").");
         }
         else {
-            statusLabel.setText("Tried to tag " + designMatches.size() + " item(s) with 'tag' command, but it failed. Is 'tag' installed and in your PATH?");
+            setStatusMessage("Tried to tag " + designMatches.size() + " item(s) with 'tag' command, but it failed. Is 'tag' installed and in your PATH?");
         }
     }
     /**
@@ -1033,14 +1060,14 @@ public class LabelFinderUI extends JFrame {
                 @SuppressWarnings("unchecked") List<File> files = (List<File>) support.getTransferable().getTransferData(DataFlavor.javaFileListFlavor);
                 List<File> normalized = normaliseRoots(files);
                 if (normalized.isEmpty()) {
-                    statusLabel.setText("Drop folders to load orders.");
+                    setStatusMessage("Drop folders to load orders.");
                     return false;
                 }
                 loadBaseFolders(normalized);
                 return true;
             }
             catch (UnsupportedFlavorException | IOException e) {
-                statusLabel.setText("Drop failed: " + e.getMessage());
+                setStatusMessage("Drop failed: " + e.getMessage());
                 return false;
             }
         }
@@ -1048,6 +1075,8 @@ public class LabelFinderUI extends JFrame {
     private void clearProgressCaches() {
         expectationIndex.clear();
         scanProgress.clear();
+        completedOrders.clear();
+        scanHistory.clear();
     }
     private void rebuildExpectations() {
         expectationIndex.clear();
@@ -1058,7 +1087,7 @@ public class LabelFinderUI extends JFrame {
             if (root == null || !root.isDirectory()) {
                 continue;
             }
-            try (Stream<Path> stream = Files.walk(root.toPath(), 6)) {
+            try (Stream<Path> stream = Files.walk(root.toPath(), 8)) {
                 stream.filter(Files::isRegularFile).filter(p -> p.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".json")).forEach(p -> {
                     OrderContribution contribution = readOrderContribution(p.toFile());
                     if (contribution == null || contribution.orderId == null || contribution.orderId.isBlank()) {
@@ -1096,7 +1125,7 @@ public class LabelFinderUI extends JFrame {
             if (root == null || !root.isDirectory()) {
                 continue;
             }
-            try (Stream<Path> stream = Files.walk(root.toPath(), 6)) {
+            try (Stream<Path> stream = Files.walk(root.toPath(), 8)) {
                 stream.filter(Files::isRegularFile).filter(p -> p.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".json")).forEach(p -> {
                     OrderContribution contribution = readOrderContribution(p.toFile());
                     if (contribution == null) {
@@ -1133,6 +1162,23 @@ public class LabelFinderUI extends JFrame {
         }
     }
     private ScanUpdate trackScanProgress(String orderId, String itemKey, String rawItemId) {
+        CompletedOrderInfo archived = completedOrders.get(orderId);
+        if (archived != null) {
+            String identifier = firstNonBlank(rawItemId, itemKey, archived.lastIdentifier());
+            String display = identifier != null ? shortenItemReference(identifier) : null;
+            return new ScanUpdate(orderId,
+                archived.totalScanned(),
+                archived.expectedTotal(),
+                true,
+                false,
+                false,
+                false,
+                true,
+                display,
+                archived.totalScanned(),
+                archived.expectedTotal(),
+                identifier);
+        }
         OrderExpectation expectation = resolveExpectation(orderId);
         if (expectation == null) {
             return null;
@@ -1140,11 +1186,21 @@ public class LabelFinderUI extends JFrame {
         OrderScanState state = scanProgress.computeIfAbsent(orderId, key -> new OrderScanState(orderId, expectation));
         return state.recordScan(itemKey, rawItemId);
     }
-    private void markOrderComplete(String orderId) {
+    private void markOrderComplete(String orderId, OrderScanState state) {
         if (orderId == null || orderId.isBlank()) {
             return;
         }
-        scanProgress.remove(orderId);
+        OrderScanState removed = scanProgress.remove(orderId);
+        if (removed != null) {
+            state = removed;
+        }
+        if (state != null) {
+            CompletedOrderInfo info = new CompletedOrderInfo(state.expectedTotal());
+            for (String identifier : state.scannedIdentifiersSnapshot()) {
+                info.addItem(identifier);
+            }
+            completedOrders.put(orderId, info);
+        }
         expectationIndex.remove(orderId);
     }
     private String describePhotoOutcome(String orderId) {
@@ -1158,6 +1214,28 @@ public class LabelFinderUI extends JFrame {
             return "Auto-selected 1 photo for preview.";
         }
         return "Auto-selected first 2 photos for preview.";
+    }
+    private void rememberScanEvent(String orderId, String itemIdentifier) {
+        if (orderId == null || orderId.isBlank()) {
+            return;
+        }
+        if (itemIdentifier == null || itemIdentifier.isBlank()) {
+            return;
+        }
+        String normalized = itemIdentifier.trim();
+        String combined = combineOrderAndItem(orderId.trim(), normalized);
+        scanHistory.addLast(combined);
+        while (scanHistory.size() > MAX_SCAN_HISTORY) {
+            scanHistory.removeFirst();
+        }
+    }
+    private void setStatusMessage(String message) {
+        String text = (message == null) ? "" : message;
+        topStatusLabel.setText(text);
+        statusLabel.setText(text);
+    }
+    private static String combineOrderAndItem(String orderId, String itemIdentifier) {
+        return orderId + "^" + itemIdentifier;
     }
     private ScanInput parseScanInput(String rawInput) {
         if (rawInput == null) {
@@ -1212,6 +1290,21 @@ public class LabelFinderUI extends JFrame {
             return trimmed;
         }
         return "…" + trimmed.substring(trimmed.length() - 6);
+    }
+    private static String firstNonBlank(String... values) {
+        if (values == null) {
+            return null;
+        }
+        for (String value : values) {
+            if (value == null) {
+                continue;
+            }
+            String trimmed = value.trim();
+            if (!trimmed.isEmpty()) {
+                return trimmed;
+            }
+        }
+        return null;
     }
     private String composeInProgressMessage(ScanUpdate update) {
         StringBuilder sb = new StringBuilder();
@@ -1314,6 +1407,7 @@ public class LabelFinderUI extends JFrame {
         private final List<ItemCounter> orderedCounters = new ArrayList<>();
         private final int expectedTotal;
         private int scannedTotal;
+        private final List<String> scannedIdentifiers = new ArrayList<>();
         OrderScanState(String orderId, OrderExpectation expectation) {
             this.orderId = orderId;
             int sum = 0;
@@ -1339,28 +1433,54 @@ public class LabelFinderUI extends JFrame {
         }
         ScanUpdate recordScan(String itemKey, String rawItemId) {
             if (scannedTotal >= expectedTotal) {
-                return new ScanUpdate(orderId, scannedTotal, expectedTotal, true, false, false, false, true, null, 0, 0);
+                return new ScanUpdate(orderId, scannedTotal, expectedTotal, true, false, false, false, true, null, 0, 0, lastIdentifier());
             }
             if (itemKey != null) {
                 ItemCounter counter = keyedCounters.get(itemKey);
                 if (counter != null) {
                     if (counter.scanned >= counter.expected) {
-                        return new ScanUpdate(orderId, scannedTotal, expectedTotal, scannedTotal >= expectedTotal, false, true, false, scannedTotal >= expectedTotal, counter.display(), counter.scanned, counter.expected);
+                        return new ScanUpdate(orderId, scannedTotal, expectedTotal, scannedTotal >= expectedTotal, false, true, false, scannedTotal >= expectedTotal, counter.display(), counter.scanned, counter.expected, counter.identifier());
                     }
                     counter.scanned++;
                     scannedTotal++;
-                    return new ScanUpdate(orderId, scannedTotal, expectedTotal, scannedTotal >= expectedTotal, true, false, false, scannedTotal >= expectedTotal, counter.display(), counter.scanned, counter.expected);
+                    String identifier = counter.identifier();
+                    recordIdentifier(identifier);
+                    return new ScanUpdate(orderId, scannedTotal, expectedTotal, scannedTotal >= expectedTotal, true, false, false, scannedTotal >= expectedTotal, counter.display(), counter.scanned, counter.expected, identifier);
                 }
-                String display = shortenItemReference(rawItemId != null ? rawItemId : itemKey);
-                return new ScanUpdate(orderId, scannedTotal, expectedTotal, scannedTotal >= expectedTotal, false, false, true, scannedTotal >= expectedTotal, display, 0, 0);
+                String identifier = firstNonBlank(rawItemId, itemKey);
+                String display = shortenItemReference(identifier);
+                return new ScanUpdate(orderId, scannedTotal, expectedTotal, scannedTotal >= expectedTotal, false, false, true, scannedTotal >= expectedTotal, display, 0, 0, identifier);
             }
             ItemCounter next = orderedCounters.stream().filter(c -> c.scanned < c.expected).findFirst().orElse(null);
             if (next == null) {
-                return new ScanUpdate(orderId, scannedTotal, expectedTotal, true, false, false, false, true, null, 0, 0);
+                return new ScanUpdate(orderId, scannedTotal, expectedTotal, true, false, false, false, true, null, 0, 0, lastIdentifier());
             }
             next.scanned++;
             scannedTotal++;
-            return new ScanUpdate(orderId, scannedTotal, expectedTotal, scannedTotal >= expectedTotal, true, false, false, scannedTotal >= expectedTotal, next.display(), next.scanned, next.expected);
+            String identifier = firstNonBlank(rawItemId, next.identifier());
+            recordIdentifier(identifier);
+            return new ScanUpdate(orderId, scannedTotal, expectedTotal, scannedTotal >= expectedTotal, true, false, false, scannedTotal >= expectedTotal, next.display(), next.scanned, next.expected, identifier);
+        }
+        private void recordIdentifier(String identifier) {
+            if (identifier == null) {
+                return;
+            }
+            String normalized = identifier.trim();
+            if (!normalized.isEmpty()) {
+                scannedIdentifiers.add(normalized);
+            }
+        }
+        List<String> scannedIdentifiersSnapshot() {
+            return new ArrayList<>(scannedIdentifiers);
+        }
+        int expectedTotal() {
+            return expectedTotal;
+        }
+        int totalScanned() {
+            return scannedTotal;
+        }
+        String lastIdentifier() {
+            return scannedIdentifiers.isEmpty() ? null : scannedIdentifiers.get(scannedIdentifiers.size() - 1);
         }
     }
     private static final class ItemCounter {
@@ -1380,6 +1500,42 @@ public class LabelFinderUI extends JFrame {
             }
             return shortenItemReference(candidate);
         }
+        String identifier() {
+            if (fullId != null && !fullId.isBlank()) {
+                return fullId;
+            }
+            return key;
+        }
+    }
+    private static final class CompletedOrderInfo {
+        private final int expectedTotal;
+        private int totalScanned;
+        private final LinkedHashMap<String, Integer> itemCounts = new LinkedHashMap<>();
+        private String lastIdentifier;
+        CompletedOrderInfo(int expectedTotal) {
+            this.expectedTotal = Math.max(expectedTotal, 0);
+        }
+        void addItem(String identifier) {
+            if (identifier == null) {
+                return;
+            }
+            String normalized = identifier.trim();
+            if (normalized.isEmpty()) {
+                return;
+            }
+            itemCounts.merge(normalized, 1, Integer::sum);
+            totalScanned++;
+            lastIdentifier = normalized;
+        }
+        int expectedTotal() {
+            return expectedTotal;
+        }
+        int totalScanned() {
+            return totalScanned;
+        }
+        String lastIdentifier() {
+            return lastIdentifier;
+        }
     }
     private static final class ScanUpdate {
         final String orderId;
@@ -1393,7 +1549,8 @@ public class LabelFinderUI extends JFrame {
         final String itemDisplay;
         final int itemProgress;
         final int itemExpected;
-        ScanUpdate(String orderId, int scanned, int expected, boolean completed, boolean counted, boolean duplicate, boolean unknownItem, boolean alreadyComplete, String itemDisplay, int itemProgress, int itemExpected) {
+        final String itemIdentifier;
+        ScanUpdate(String orderId, int scanned, int expected, boolean completed, boolean counted, boolean duplicate, boolean unknownItem, boolean alreadyComplete, String itemDisplay, int itemProgress, int itemExpected, String itemIdentifier) {
             this.orderId = orderId;
             this.scanned = scanned;
             this.expected = expected;
@@ -1405,6 +1562,7 @@ public class LabelFinderUI extends JFrame {
             this.itemDisplay = itemDisplay;
             this.itemProgress = itemProgress;
             this.itemExpected = itemExpected;
+            this.itemIdentifier = itemIdentifier;
         }
     }
     private record OrderContribution(String orderId, String orderItemId, int itemQuantity) {
