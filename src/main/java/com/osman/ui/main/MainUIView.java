@@ -3,6 +3,7 @@ package com.osman.ui.main;
 import com.osman.config.ConfigService;
 import com.osman.core.fs.OrderDiscoveryService;
 import com.osman.core.fs.ZipExtractor;
+import com.osman.core.pdf.ShippingLabelExtractor;
 import com.osman.core.render.FontRegistry;
 import com.osman.core.render.MugRenderer;
 import com.osman.integration.amazon.CustomerGroup;
@@ -20,9 +21,20 @@ import javax.swing.*;
 import javax.swing.filechooser.FileNameExtensionFilter;
 import java.awt.*;
 import java.io.File;
-import java.util.*;
+import java.io.IOException;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 /**
  * Main desktop UI for batch processing orders (folders & zip files).
  * <p>
@@ -39,6 +51,7 @@ public class MainUIView {
 
     private static final String OUTPUT_FOLDER_NAME = "Ready Designs";
     private static final int READY_FOLDER_ORDER_LIMIT = 25;
+    private static final Pattern ORDER_ID_PATTERN = Pattern.compile("\\d{3}-\\d{7}-\\d{7}");
     private final ConfigService configService = ConfigService.getInstance();
     private final OrderDiscoveryService orderDiscoveryService = new OrderDiscoveryService();
 
@@ -52,6 +65,7 @@ public class MainUIView {
     private volatile boolean cancelRequested = false;
     private String fontDirectory;
     private final List<String> failedItems = Collections.synchronizedList(new ArrayList<>());
+    private final Set<String> unmatchedOrders = Collections.synchronizedSet(new LinkedHashSet<>());
 
     /** Launches the window and triggers initial font scan. */
     public MainUIView() {
@@ -118,6 +132,131 @@ public class MainUIView {
         frame.setVisible(true);
 
         loadInitialFonts();
+    }
+
+    private List<File> filterOrdersByShippingLabels(List<File> leafOrders) {
+        if (leafOrders == null || leafOrders.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        Map<File, ShippingLabelCacheEntry> cache = new LinkedHashMap<>();
+        List<File> eligible = new ArrayList<>();
+
+        for (File orderFolder : leafOrders) {
+            if (orderFolder == null) {
+                continue;
+            }
+            File shippingFolder = resolveShippingLabelFolder(orderFolder);
+            if (shippingFolder == null) {
+                recordUnmatched(orderFolder, "shipping label folder not found");
+                log("    -> Skipping " + orderFolder.getAbsolutePath() + " (shipping label folder not found).");
+                continue;
+            }
+            File cacheKey = shippingFolder.getAbsoluteFile();
+            ShippingLabelCacheEntry entry = cache.computeIfAbsent(cacheKey, this::loadShippingLabelCacheEntry);
+            if (entry.orderIds().isEmpty()) {
+                recordUnmatched(orderFolder, "no shipping label order IDs detected in " + shippingFolder.getAbsolutePath());
+                log("    -> Skipping " + orderFolder.getAbsolutePath()
+                    + " (no shipping label order IDs detected in " + shippingFolder.getAbsolutePath() + ").");
+                continue;
+            }
+            String orderId = extractOrderIdFromName(orderFolder.getName());
+            if (orderId == null) {
+                recordUnmatched(orderFolder, "order ID not found in folder name");
+                log("    -> Skipping " + orderFolder.getAbsolutePath() + " (order ID not found in folder name).");
+                continue;
+            }
+            if (!entry.orderIds().contains(orderId)) {
+                recordUnmatched(orderFolder, "order " + orderId + " not present in shipping labels under " + shippingFolder.getAbsolutePath());
+                log("    -> Skipping " + orderFolder.getAbsolutePath()
+                    + " (order " + orderId + " not present in shipping labels under "
+                    + shippingFolder.getAbsolutePath() + ").");
+                continue;
+            }
+            eligible.add(orderFolder);
+        }
+
+        if (eligible.size() != leafOrders.size()) {
+            log("  -> Shipping label matcher retained " + eligible.size() + " of " + leafOrders.size() + " folder(s).");
+        }
+
+        return eligible;
+    }
+
+    private void recordUnmatched(File orderFolder, String reason) {
+        String descriptor = orderFolder != null ? orderFolder.getAbsolutePath() : "<unknown>";
+        unmatchedOrders.add(descriptor + " - " + reason);
+    }
+
+    private File resolveShippingLabelFolder(File orderFolder) {
+        if (orderFolder == null) {
+            return null;
+        }
+        File parent = orderFolder.getParentFile();
+        if (parent == null) {
+            return null;
+        }
+        String parentName = parent.getName();
+        if (parentName != null && (parentName.equalsIgnoreCase("images") || parentName.equalsIgnoreCase("img"))) {
+            File grandParent = parent.getParentFile();
+            return grandParent != null ? grandParent : parent;
+        }
+        return parent;
+    }
+
+    private ShippingLabelCacheEntry loadShippingLabelCacheEntry(File shippingFolder) {
+        try {
+            ShippingLabelExtractor.ScanResult result = ShippingLabelExtractor.scan(shippingFolder.toPath());
+            Set<String> orderIds = new LinkedHashSet<>(result.labelsByOrder().keySet());
+
+            if (orderIds.isEmpty()) {
+                log("  -> No shipping label order IDs found in " + shippingFolder.getAbsolutePath());
+            } else {
+                Set<String> labelFiles = result.labelsByOrder().values().stream()
+                    .map(ShippingLabelExtractor.LabelEntry::pdfPath)
+                    .map(path -> path.getFileName() != null ? path.getFileName().toString() : path.toString())
+                    .collect(Collectors.toCollection(LinkedHashSet::new));
+                log("  -> Shipping labels in " + shippingFolder.getAbsolutePath()
+                    + ": " + orderIds.size() + " order(s) across " + labelFiles.size() + " PDF(s).");
+            }
+
+            result.duplicateLabels().forEach((orderId, duplicates) -> log(
+                "  -> Duplicate labels for order " + orderId + " in " + shippingFolder.getAbsolutePath() + ": "
+                    + duplicates.stream()
+                        .map(entry -> {
+                            Path pdf = entry.pdfPath();
+                            return pdf.getFileName() != null ? pdf.getFileName().toString() : pdf.toString();
+                        })
+                        .collect(Collectors.joining(", "))
+            ));
+
+            result.skippedPackingSlips().forEach(path ->
+                log("  -> Skipped packing slip while scanning " + shippingFolder.getAbsolutePath() + ": " + path)
+            );
+
+            result.failures().forEach(failure ->
+                log("  -> Failed to read shipping label " + failure.pdfPath() + ": " + failure.message())
+            );
+
+            return new ShippingLabelCacheEntry(orderIds);
+        } catch (IOException ex) {
+            log("  -> Failed to scan shipping labels in " + shippingFolder.getAbsolutePath() + ": " + ex.getMessage());
+            return new ShippingLabelCacheEntry(Collections.emptySet());
+        }
+    }
+
+    private String extractOrderIdFromName(String name) {
+        if (name == null || name.isBlank()) {
+            return null;
+        }
+        Matcher matcher = ORDER_ID_PATTERN.matcher(name);
+        if (matcher.find()) {
+            return matcher.group();
+        }
+        return null;
+    }
+
+    private record ShippingLabelCacheEntry(Set<String> orderIds) {
     }
 
     private File resolveScanRoot(File customerFolder) {
@@ -203,6 +342,7 @@ public class MainUIView {
         if (selected == null || selected.length == 0) return;
 
         failedItems.clear();
+        unmatchedOrders.clear();
         cancelRequested = false;
         processButton.setEnabled(false);
         progressBar.setIndeterminate(true);
@@ -233,6 +373,17 @@ public class MainUIView {
                         publish("Skipped unsupported file: " + item.getName());
                     }
                 }
+                List<String> unmatchedSummary;
+                synchronized (unmatchedOrders) {
+                    unmatchedSummary = new ArrayList<>(unmatchedOrders);
+                }
+                if (!unmatchedSummary.isEmpty()) {
+                    publish("");
+                    publish(">>> SHIPPING LABEL MISMATCHES (" + unmatchedSummary.size() + ") <<<");
+                    unmatchedSummary.forEach(entry -> publish(" - " + entry));
+                    publish(">>> END OF SHIPPING LABEL MISMATCHES <<<");
+                }
+
                 publish("\n>>> ALL TASKS COMPLETED <<<");
                 return null;
             }
@@ -325,19 +476,23 @@ public class MainUIView {
             File scanRoot = resolveScanRoot(customerFolder);
 
             List<File> leafOrders = orderDiscoveryService.findOrderLeafFolders(scanRoot, 6);
+            log("  -> " + leafOrders.size() + " order folder(s) found inside the zip.");
+            List<File> eligibleOrders = filterOrdersByShippingLabels(leafOrders);
             ReadyFolderAllocator readyAllocator = new ReadyFolderAllocator(customerFolder, customerNameForFile, READY_FOLDER_ORDER_LIMIT);
             AtomicInteger orderSequence = new AtomicInteger();
             LeafOrderProcessor leafProcessor = new LeafOrderProcessor(() -> cancelRequested, this::log, failedItems, OUTPUT_FOLDER_NAME);
 
-            if (!leafOrders.isEmpty()) {
+            if (!eligibleOrders.isEmpty()) {
                 LeafOrderProcessor.ProcessingSummary summary = leafProcessor.processLeaves(
-                    leafOrders,
+                    eligibleOrders,
                     index -> readyAllocator.folderForOrder(index),
                     orderSequence,
                     customerNameForFile,
                     customerFolder
                 );
                 log("  -> Summary: " + summary.succeeded() + " succeeded, " + summary.failed() + " failed.");
+            } else if (!leafOrders.isEmpty()) {
+                log("  -> Shipping label filter removed all " + leafOrders.size() + " order folder(s); skipping rendering.");
             } else {
                 log("  -> No leaf order folder found. Trying the folder itself as MULTI order…");
                 leafProcessor.processAsMulti(
@@ -378,14 +533,14 @@ public class MainUIView {
 
             File scanRoot = extractRoot;
             List<File> leafOrders = orderDiscoveryService.findOrderLeafFolders(scanRoot, 6);
-
+            List<File> eligibleOrders = filterOrdersByShippingLabels(leafOrders);
             ReadyFolderAllocator readyAllocator = new ReadyFolderAllocator(extractRoot, customerName, READY_FOLDER_ORDER_LIMIT);
             AtomicInteger orderSequence = new AtomicInteger();
 
-            if (!leafOrders.isEmpty()) {
-                log("  -> " + leafOrders.size() + " order folder(s) found inside the zip.");
+            if (!eligibleOrders.isEmpty()) {
+                log("  -> " + eligibleOrders.size() + " order folder(s) will be rendered after shipping label filtering.");
                 LeafOrderProcessor.ProcessingSummary summary = leafProcessor.processLeaves(
-                    leafOrders,
+                    eligibleOrders,
                     index -> readyAllocator.folderForOrder(index),
                     orderSequence,
                     customerName,
@@ -393,6 +548,8 @@ public class MainUIView {
                 );
                 log("  -> Summary: " + summary.succeeded() + " succeeded, " + summary.failed() + " failed.");
                 processedOk = true;
+            } else if (!leafOrders.isEmpty()) {
+                log("  -> Shipping label filter removed all " + leafOrders.size() + " order folder(s); skipping rendering.");
             } else {
                 log("  -> No leaf folder found; trying zip root as MULTI order…");
                 processedOk = leafProcessor.processAsMulti(
