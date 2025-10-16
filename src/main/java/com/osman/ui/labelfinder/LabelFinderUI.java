@@ -81,12 +81,10 @@ public class LabelFinderUI extends JFrame {
     private final JButton findButton;
     private final JButton printButton;
     private final JButton chooseBaseBtn;
-    private final JCheckBox bulkModeCheck;
+    private final JButton showUnscannedButton;
     private final JLabel statusLabel;
     private final JLabel topStatusLabel;
     private final ImagePanel combinedPanel;
-    private final DefaultListModel<LabelRef> labelRefsModel;
-    private final JList<LabelRef> labelRefsList;
     private final DefaultListModel<Path> photosModel;
     private final JList<Path> photosList;
     private final DualImagePanel photoView;
@@ -108,7 +106,6 @@ public class LabelFinderUI extends JFrame {
     private static final Pattern IMG_NAME = Pattern.compile("(?i).+\\s*(?:\\(\\d+\\))?\\s*\\.(png|jpe?g)$");
     private static final Pattern XN_READY_NAME = Pattern.compile("(?i)^x(?:\\(\\d+\\)|\\d+)-.+\\s*(?:\\(\\d+\\))?\\s*\\.(?:png|jpe?g)$");
 
-    private static final String PREF_BULK_MODE        = "bulkMode";         // "true"/"false"
     private static final String PREF_WIN_BOUNDS       = "winBounds";        // x,y,w,h
     private static final String PREF_DIVIDER_LOCATION = "dividerLocation";  // JSplitPane divider
     private final PreferencesStore prefs = PreferencesStore.global();
@@ -130,7 +127,7 @@ public class LabelFinderUI extends JFrame {
         printButton = new JButton("Print Combined");
         printButton.setEnabled(false);
         chooseBaseBtn = new JButton("Choose File Path");
-        bulkModeCheck = new JCheckBox("Bulk Order (no matching)");
+        showUnscannedButton = new JButton("Show Unscanned Orders");
         JPanel controlsRow = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 10));
         controlsRow.setBorder(new EmptyBorder(6, 6, 6, 6));
         controlsRow.add(new JLabel("Order ID:"));
@@ -138,10 +135,10 @@ public class LabelFinderUI extends JFrame {
         controlsRow.add(findButton);
         controlsRow.add(printButton);
         controlsRow.add(chooseBaseBtn);
-        controlsRow.add(bulkModeCheck);
+        controlsRow.add(showUnscannedButton);
 
         String initialStatus = "Scan barcode → prints automatically. Choose base folder first.";
-        topStatusLabel = new JLabel("Scanned 0/0");
+        topStatusLabel = new JLabel("Just scanned 0/0");
         topStatusLabel.setFont(topStatusLabel.getFont().deriveFont(Font.BOLD, 18f));
         topStatusLabel.setForeground(Color.RED);
         JPanel statusRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 10));
@@ -151,13 +148,11 @@ public class LabelFinderUI extends JFrame {
         JPanel top = new JPanel(new BorderLayout());
         top.add(statusRow, BorderLayout.WEST);
         top.add(controlsRow, BorderLayout.CENTER);
-        labelRefsModel = new DefaultListModel<>();
-        labelRefsList = new JList<>(labelRefsModel);
         photosModel = new DefaultListModel<>();
         photosList = new JList<>(photosModel);
         JScrollPane photosScroll = new JScrollPane(photosList);
         photosScroll.setBorder(BorderFactory.createTitledBorder("Photos (select 1–2)"));
-        photosScroll.setPreferredSize(new Dimension(420, 130));
+        photosScroll.setPreferredSize(new Dimension(420, 260));
         JPanel photoPanel = new JPanel(new BorderLayout());
         photoPanel.setBorder(new EmptyBorder(0, 0, 8, 0));
         photoPanel.add(photosScroll, BorderLayout.CENTER);
@@ -194,10 +189,7 @@ public class LabelFinderUI extends JFrame {
         findButton.addActionListener(e -> onFind());
         printButton.addActionListener(e -> printCombined());
         orderIdField.addActionListener(e -> onFind());
-        bulkModeCheck.addItemListener(e -> onModeChanged(e.getStateChange() == ItemEvent.SELECTED));
-        labelRefsList.addListSelectionListener(e -> {
-            if (!e.getValueIsAdjusting()) renderSelectedBulkPage();
-        });
+        showUnscannedButton.addActionListener(e -> showUnscannedOrders());
         photosList.addListSelectionListener(e -> {
             if (!e.getValueIsAdjusting()) renderSelectedPhotos();
         });
@@ -235,24 +227,7 @@ public class LabelFinderUI extends JFrame {
         });
         addPrintShortcut(getRootPane());
 
-        applyModeUI();
         restorePreferences();
-
-    }
-    private void onModeChanged(boolean bulk) {
-        applyModeUI();
-        if (hasBaseFolders()) {
-            refreshBaseFolders();
-        }
-        else {
-            clearAllViews();
-        }
-    }
-    private void applyModeUI() {
-        boolean bulk = bulkModeCheck.isSelected();
-        orderIdField.setEnabled(!bulk);
-        findButton.setEnabled(true);
-        labelRefsList.setEnabled(bulk);
 
     }
     private void clearAllViews() {
@@ -260,7 +235,6 @@ public class LabelFinderUI extends JFrame {
         combinedPreview = null;
         combinedPanel.setImage(null);
         photoView.setImages(null, null);
-        labelRefsModel.clear();
         photosModel.clear();
         currentLabelLocation = null;
         printButton.setEnabled(false);
@@ -358,12 +332,7 @@ public class LabelFinderUI extends JFrame {
             @Override
             protected Void doInBackground() throws Exception {
                 rebuildPhotoIndex();
-                if (bulkModeCheck.isSelected()) {
-                    populateBulkFromBase();
-                }
-                else {
-                    buildLabelAndSlipIndices();
-                }
+                buildLabelAndSlipIndices();
                 rebuildExpectations();
                 return null;
             }
@@ -371,13 +340,8 @@ public class LabelFinderUI extends JFrame {
             protected void done() {
                 try {
                     get();
-                    if (bulkModeCheck.isSelected()) {
-                        setStatusMessage("BULK loaded: " + labelRefsModel.size() + " pages, " + photosModel.size() + " photos.");
-                    }
-                    else {
-                        int photoCount = (photoIndex == null) ? 0 : photoIndex.size();
-                        setStatusMessage("Indexed " + labelGroups.size() + " labels, " + slipGroups.size() + " packing slips, " + photoCount + " photos.");
-                    }
+                    int photoCount = (photoIndex == null) ? 0 : photoIndex.size();
+                    setStatusMessage("Indexed " + labelGroups.size() + " labels, " + slipGroups.size() + " packing slips, " + photoCount + " photos.");
                 }
                 catch (Exception e) {
                     Throwable cause = e.getCause() != null ? e.getCause() : e;
@@ -418,9 +382,8 @@ public class LabelFinderUI extends JFrame {
     private void setUIEnabled(boolean enabled) {
         findButton.setEnabled(enabled);
         chooseBaseBtn.setEnabled(enabled);
-        orderIdField.setEnabled(enabled && !bulkModeCheck.isSelected());
-        bulkModeCheck.setEnabled(enabled);
-        labelRefsList.setEnabled(enabled);
+        orderIdField.setEnabled(enabled);
+        showUnscannedButton.setEnabled(enabled);
         photosList.setEnabled(enabled);
     }
     private void rebuildPhotoIndex() throws IOException {
@@ -510,10 +473,6 @@ public class LabelFinderUI extends JFrame {
         setStatusMessage("Indexed " + labelGroups.size() + " labels, " + slipGroups.size() + " packing slips, " + photoCount + " photos.");
     }
     private void onFind() {
-        if (bulkModeCheck.isSelected()) {
-            populateBulkFromBase();
-            return;
-        }
         findSingleOrderFlow();
     }
     private void findSingleOrderFlow() {
@@ -786,64 +745,6 @@ public class LabelFinderUI extends JFrame {
     private void cleanupAndExit() {
         dispose();
         System.exit(0);
-    }
-    private void populateBulkFromBase() {
-        if (!hasBaseFolders()) {
-            setStatusMessage("Select a valid base folder for BULK.");
-            return;
-        }
-        labelRefsModel.clear();
-        for (File root : baseFolders) {
-            if (root == null || !root.isDirectory()) {
-                continue;
-            }
-            try (Stream<Path> stream = Files.walk(root.toPath())) {
-                stream.filter(Files::isRegularFile).filter(p -> p.getFileName().toString().toLowerCase(java.util.Locale.ROOT).endsWith(".pdf")).sorted(Comparator.comparing(p -> p.getFileName().toString(), String.CASE_INSENSITIVE_ORDER)).forEach(pdfPath -> {
-                    try (PDDocument doc = PDDocument.load(pdfPath.toFile())) {
-                        for (int p = 1; p <= doc.getNumberOfPages(); p++) {
-                            labelRefsModel.addElement(new LabelRef(pdfPath.toFile(), p));
-                        }
-                    }
-                    catch (IOException ignored) {
-                    }
-                });
-            }
-            catch (IOException e) {
-                setStatusMessage("Error reading bulk PDFs: " + e.getMessage());
-                return;
-            }
-        }
-        photosModel.clear();
-        List<Path> indexedPhotos = collectAllPhotosFromIndex();
-        if (indexedPhotos.isEmpty()) {
-            setStatusMessage("No photos indexed. Choose a base folder.");
-        }
-        else {
-            indexedPhotos.forEach(photosModel::addElement);
-        }
-        if (!labelRefsModel.isEmpty()) labelRefsList.setSelectedIndex(0);
-        if (!photosModel.isEmpty()) photosList.setSelectedIndex(0);
-        setStatusMessage("BULK loaded: " + labelRefsModel.size() + " pages, " + photosModel.size() + " photos.");
-    }
-    private void renderSelectedBulkPage() {
-        LabelRef ref = labelRefsList.getSelectedValue();
-        if (ref == null) {
-            clearAllViews();
-            return;
-        }
-        currentLabelLocation = new LabelLocation(ref.file, ref.page1Based);
-        try (PDDocument doc = PDDocument.load(ref.file)) {
-            PDFRenderer renderer = new PDFRenderer(doc);
-            BufferedImage img = renderer.renderImageWithDPI(ref.page1Based - 1, 150);
-            combinedPreview = addBorder(img, Color.DARK_GRAY, 8);
-            combinedPanel.setImage(combinedPreview);
-            printButton.setEnabled(true);
-            labelPagesToPrint = new ArrayList<>(List.of(img));
-            slipPagesToPrint = new ArrayList<>();
-        }
-        catch (IOException e) {
-            clearAllViews();
-        }
     }
     private void renderSelectedPhotos() {
         List<Path> selected = photosList.getSelectedValuesList();
@@ -1231,6 +1132,60 @@ public class LabelFinderUI extends JFrame {
         while (scanHistory.size() > MAX_SCAN_HISTORY) {
             scanHistory.removeFirst();
         }
+    }
+    private void showUnscannedOrders() {
+        if (labelGroups == null || labelGroups.isEmpty()) {
+            JOptionPane.showMessageDialog(this,
+                "No shipping labels indexed yet.",
+                "Unscanned Orders",
+                JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        java.util.TreeSet<String> allOrders = new java.util.TreeSet<>(labelGroups.keySet());
+        if (allOrders.isEmpty()) {
+            JOptionPane.showMessageDialog(this,
+                "No orders discovered from shipping labels.",
+                "Unscanned Orders",
+                JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        List<String> pending = new ArrayList<>();
+        for (String orderId : allOrders) {
+            if (completedOrders.containsKey(orderId)) {
+                continue;
+            }
+            OrderScanState state = scanProgress.get(orderId);
+            if (state != null) {
+                if (state.totalScanned() >= state.expectedTotal()) {
+                    continue;
+                }
+                pending.add(orderId + " (" + state.totalScanned() + "/" + state.expectedTotal() + ")");
+            }
+            else {
+                OrderExpectation expectation = resolveExpectation(orderId);
+                int expected = expectation != null ? Math.max(expectation.resolvedTotal(), 0) : 0;
+                String expectedText = expected > 0 ? String.valueOf(expected) : "?";
+                pending.add(orderId + " (0/" + expectedText + ")");
+            }
+        }
+        if (pending.isEmpty()) {
+            JOptionPane.showMessageDialog(this,
+                "All indexed orders are fully scanned.",
+                "Unscanned Orders",
+                JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        JTextArea area = new JTextArea(String.join(System.lineSeparator(), pending));
+        area.setEditable(false);
+        area.setFont(new Font("Monospaced", Font.PLAIN, 13));
+        area.setBorder(new EmptyBorder(8, 8, 8, 8));
+        JScrollPane scroll = new JScrollPane(area);
+        int preferredHeight = Math.min(400, 16 + pending.size() * 18);
+        scroll.setPreferredSize(new Dimension(420, preferredHeight));
+        JOptionPane.showMessageDialog(this,
+            scroll,
+            "Unscanned Orders (" + pending.size() + ")",
+            JOptionPane.INFORMATION_MESSAGE);
     }
     private void updateProgressBanner(int scanned, int expected) {
         if (scanned < 0) {
@@ -1690,24 +1645,6 @@ public class LabelFinderUI extends JFrame {
     private record PhotoIndexEntry(Path path, String lowerName) {
     }
     /**
-     * Lightweight description of a PDF and page pair for the bulk label list.
-     */
-    private static class LabelRef {
-        final File file;
-        final int page1Based;
-        LabelRef(File file, int page1Based) {
-            this.file = file;
-            this.page1Based = page1Based;
-        }
-        String toDisplayString() {
-            return file.getName() + " — p." + page1Based;
-        }
-        @Override
-        public String toString() {
-            return toDisplayString();
-        }
-    }
-    /**
      * Printable implementation that streams buffered images as sequential pages.
      */
     private static class MultiPagePrintable implements Printable {
@@ -1741,12 +1678,7 @@ public class LabelFinderUI extends JFrame {
      * @return configured page format
      */
     private void restorePreferences() {
-        // Bulk mode
-        boolean bulk = Boolean.parseBoolean(prefs.getString(PREF_BULK_MODE).orElse("false"));
-        bulkModeCheck.setSelected(bulk);
-        applyModeUI();
-
-        // Pencere konumu/boyutu
+        // Window bounds
         prefs.getString(PREF_WIN_BOUNDS).ifPresent(s -> {
             String[] parts = s.split(",");
             if (parts.length == 4) {
@@ -1760,7 +1692,7 @@ public class LabelFinderUI extends JFrame {
             }
         });
 
-        // Splitter
+        // Divider
         prefs.getString(PREF_DIVIDER_LOCATION).ifPresent(s -> {
             try {
                 int loc = Integer.parseInt(s);
@@ -1768,31 +1700,17 @@ public class LabelFinderUI extends JFrame {
                 SwingUtilities.invokeLater(() -> mainSplit.setDividerLocation(loc));
             } catch (NumberFormatException ignored) { }
         });
-
-
-
-
-
     }
 
     private void savePreferences() {
-        // pencere boyut/konum
+        // Window bounds
         Rectangle r = getBounds();
         String win = r.x + "," + r.y + "," + r.width + "," + r.height;
         prefs.putString(PREF_WIN_BOUNDS, win);
 
-        // divider
+        // Divider
         prefs.putString(PREF_DIVIDER_LOCATION, String.valueOf(((JSplitPane) getContentPane()
                 .getComponents()[1]).getDividerLocation())); // ama biz zaten mainSplit değişkenini tutuyoruz:
-
-
-        // bulk mode
-        prefs.putString(PREF_BULK_MODE, String.valueOf(bulkModeCheck.isSelected()));
-
-        // base dir(ler)
-        if (!baseFolders.isEmpty()) {
-
-        }
 
     }
 
