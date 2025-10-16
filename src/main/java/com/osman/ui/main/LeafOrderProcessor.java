@@ -1,5 +1,6 @@
 package com.osman.ui.main;
 
+import com.osman.core.render.MugRenderErrorLogger;
 import com.osman.core.render.MugRenderer;
 
 import java.io.File;
@@ -100,6 +101,14 @@ final class LeafOrderProcessor {
             String errorMsg = "  -> CRITICAL (" + contextFolder.getName() + "): " + ex.getMessage();
             log.accept(errorMsg);
             failedItems.add(contextFolder.getName() + " - Reason: " + ex.getMessage());
+            MugRenderErrorLogger.logFailure(
+                "multi",
+                contextFolder.toPath(),
+                folder != null ? folder.toPath() : null,
+                null,
+                customerNameForFile,
+                ex
+            );
             return false;
         }
     }
@@ -120,6 +129,14 @@ final class LeafOrderProcessor {
             String errorMsg = "    -> ERROR processing " + subFolder.getName() + ": " + ex.getMessage();
             log.accept(errorMsg);
             failedItems.add(contextFolder.getName() + "/" + subFolder.getName() + " - Reason: " + ex.getMessage());
+            MugRenderErrorLogger.logFailure(
+                "leaf",
+                contextFolder != null ? contextFolder.toPath() : null,
+                subFolder != null ? subFolder.toPath() : null,
+                readyFolder != null ? readyFolder.toPath() : null,
+                customerNameForFile,
+                ex
+            );
             failCounter.incrementAndGet();
         }
     }

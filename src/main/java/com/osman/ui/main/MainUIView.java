@@ -61,8 +61,10 @@ public class MainUIView {
     private JButton chooseFontDirBtn;
     private JLabel fontPathLabel;
     private JProgressBar progressBar;
+    private JCheckBox expeditedProcessingCheckBox;
 
     private volatile boolean cancelRequested = false;
+    private volatile boolean expeditedProcessingEnabled = false;
     private String fontDirectory;
     private final List<String> failedItems = Collections.synchronizedList(new ArrayList<>());
     private final Set<String> unmatchedOrders = Collections.synchronizedSet(new LinkedHashSet<>());
@@ -93,6 +95,12 @@ public class MainUIView {
         fontPathLabel = new JLabel(shortenPath(fontDirectory, 70));
         fontDirRow.add(fontPathLabel);
         topPanel.add(fontDirRow);
+
+        JPanel expeditedRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 8));
+        expeditedProcessingCheckBox = new JCheckBox("Process expedited orders (skip shipping label match)");
+        expeditedProcessingCheckBox.setToolTipText("Render every order folder even if no matching shipping label is found.");
+        expeditedRow.add(expeditedProcessingCheckBox);
+        topPanel.add(expeditedRow);
 
         // Center: log
         logArea = new JTextArea();
@@ -137,6 +145,11 @@ public class MainUIView {
     private List<File> filterOrdersByShippingLabels(List<File> leafOrders) {
         if (leafOrders == null || leafOrders.isEmpty()) {
             return Collections.emptyList();
+        }
+
+        if (expeditedProcessingEnabled) {
+            log("  -> Expedited mode active: skipping shipping label filtering for " + leafOrders.size() + " folder(s).");
+            return new ArrayList<>(leafOrders);
         }
 
         Map<File, ShippingLabelCacheEntry> cache = new LinkedHashMap<>();
@@ -340,6 +353,12 @@ public class MainUIView {
 
         File[] selected = chooser.getSelectedFiles();
         if (selected == null || selected.length == 0) return;
+
+        boolean expeditedSelected = expeditedProcessingCheckBox != null && expeditedProcessingCheckBox.isSelected();
+        expeditedProcessingEnabled = expeditedSelected;
+        log(expeditedSelected
+            ? ">>> Expedited processing enabled: all order folders will be rendered."
+            : ">>> Standard processing: shipping label match required.");
 
         failedItems.clear();
         unmatchedOrders.clear();

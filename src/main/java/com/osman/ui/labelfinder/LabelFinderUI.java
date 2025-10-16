@@ -82,6 +82,7 @@ public class LabelFinderUI extends JFrame {
     private final JButton printButton;
     private final JButton chooseBaseBtn;
     private final JButton showUnscannedButton;
+    private final JCheckBox autoPrintCheckBox;
     private final JLabel statusLabel;
     private final JLabel topStatusLabel;
     private final ImagePanel combinedPanel;
@@ -128,6 +129,8 @@ public class LabelFinderUI extends JFrame {
         printButton.setEnabled(false);
         chooseBaseBtn = new JButton("Choose File Path");
         showUnscannedButton = new JButton("Show Unscanned Orders");
+        autoPrintCheckBox = new JCheckBox("Auto Print");
+        autoPrintCheckBox.setSelected(true);
         JPanel controlsRow = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 10));
         controlsRow.setBorder(new EmptyBorder(6, 6, 6, 6));
         controlsRow.add(new JLabel("Order ID:"));
@@ -136,10 +139,11 @@ public class LabelFinderUI extends JFrame {
         controlsRow.add(printButton);
         controlsRow.add(chooseBaseBtn);
         controlsRow.add(showUnscannedButton);
+        controlsRow.add(autoPrintCheckBox);
 
         String initialStatus = "Scan barcode → prints automatically. Choose base folder first.";
         topStatusLabel = new JLabel("Just scanned 0/0");
-        topStatusLabel.setFont(topStatusLabel.getFont().deriveFont(Font.BOLD, 18f));
+        topStatusLabel.setFont(topStatusLabel.getFont().deriveFont(Font.BOLD, 30f));
         topStatusLabel.setForeground(Color.RED);
         JPanel statusRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 10));
         statusRow.setBorder(new EmptyBorder(6, 6, 6, 6));
@@ -539,12 +543,14 @@ public class LabelFinderUI extends JFrame {
                     String message;
                     if (scanUpdate.duplicate) {
                         message = composeDuplicateMessage(scanUpdate);
+                        showScanWarning("Already Scanned", message);
                     }
                     else if (scanUpdate.unknownItem) {
                         message = composeUnknownItemMessage(scanUpdate);
                     }
                     else if (scanUpdate.alreadyComplete) {
                         message = composeAlreadyCompleteMessage(scanUpdate);
+                        showScanWarning("Order Already Completed", message);
                     }
                     else {
                         message = composeGenericHoldMessage(scanUpdate);
@@ -570,7 +576,11 @@ public class LabelFinderUI extends JFrame {
         boolean printed = false;
         String completionMessage = null;
         if (hasPrintableContent) {
-            printed = printCombinedDirect();
+            if (autoPrintCheckBox.isSelected()) {
+                printed = printCombinedDirect();
+            } else {
+                setStatusMessage("Auto print disabled; review and print manually if needed.");
+            }
             if (printed) {
                 if (scanUpdate != null && scanUpdate.completed) {
                     markOrderComplete(orderId, stateForOrder);
@@ -1354,6 +1364,17 @@ public class LabelFinderUI extends JFrame {
     }
     private String composeGenericHoldMessage(ScanUpdate update) {
         return "Order " + update.orderId + ": waiting. Progress " + update.scanned + '/' + update.expected + '.';
+    }
+
+    private void showScanWarning(String title, String message) {
+        SwingUtilities.invokeLater(() ->
+            JOptionPane.showMessageDialog(
+                this,
+                message,
+                title,
+                JOptionPane.WARNING_MESSAGE
+            )
+        );
     }
     private static String formatItemSegment(ScanUpdate update) {
         if (update.itemDisplay == null || update.itemDisplay.isBlank()) {
