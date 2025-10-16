@@ -1159,13 +1159,12 @@ public class LabelFinderUI extends JFrame {
                 if (state.totalScanned() >= state.expectedTotal()) {
                     continue;
                 }
-                pending.add(orderId + " (" + state.totalScanned() + "/" + state.expectedTotal() + ")");
-            }
-            else {
+                pending.add(formatPendingOrderEntry(orderId, "(" + state.totalScanned() + "/" + state.expectedTotal() + ")"));
+            } else {
                 OrderExpectation expectation = resolveExpectation(orderId);
                 int expected = expectation != null ? Math.max(expectation.resolvedTotal(), 0) : 0;
                 String expectedText = expected > 0 ? String.valueOf(expected) : "?";
-                pending.add(orderId + " (0/" + expectedText + ")");
+                pending.add(formatPendingOrderEntry(orderId, "(0/" + expectedText + ")"));
             }
         }
         if (pending.isEmpty()) {
@@ -1186,6 +1185,51 @@ public class LabelFinderUI extends JFrame {
             scroll,
             "Unscanned Orders (" + pending.size() + ")",
             JOptionPane.INFORMATION_MESSAGE);
+    }
+    private String formatPendingOrderEntry(String orderId, String progressText) {
+        String labelPath = describeLabelLocation(orderId);
+        if (labelPath.isEmpty()) {
+            return orderId + " " + progressText;
+        }
+        return orderId + " " + progressText + " " + labelPath;
+    }
+
+    private String describeLabelLocation(String orderId) {
+        if (orderId == null || labelGroups == null) {
+            return "";
+        }
+        PageGroup group = labelGroups.get(orderId);
+        if (group == null || group.file == null) {
+            return "";
+        }
+        File labelFile = group.file;
+        Path candidate = (labelFile.getParentFile() != null)
+            ? labelFile.getParentFile().toPath()
+            : labelFile.toPath();
+        return formatPathForDisplay(candidate);
+    }
+
+    private String formatPathForDisplay(Path path) {
+        if (path == null) {
+            return "";
+        }
+        Path normalized = path.toAbsolutePath().normalize();
+        for (File base : baseFolders) {
+            if (base == null) {
+                continue;
+            }
+            Path basePath = base.toPath().toAbsolutePath().normalize();
+            if (normalized.startsWith(basePath)) {
+                Path relative = basePath.relativize(normalized);
+                String relativeText = relative.toString().replace(File.separatorChar, '/');
+                if (!relativeText.isEmpty()) {
+                    return "/" + relativeText;
+                }
+                String baseName = basePath.getFileName() != null ? basePath.getFileName().toString() : "";
+                return baseName.isEmpty() ? "/" : "/" + baseName;
+            }
+        }
+        return normalized.toString().replace(File.separatorChar, '/');
     }
     private void updateProgressBanner(int scanned, int expected) {
         if (scanned < 0) {
