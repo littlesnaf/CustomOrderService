@@ -11,6 +11,7 @@ import org.json.JSONObject;
 import javax.imageio.ImageIO;
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
+import javax.swing.border.LineBorder;
 import java.awt.*;
 import java.awt.event.*;
 import java.awt.datatransfer.DataFlavor;
@@ -79,6 +80,7 @@ public class LabelFinderUI extends JFrame {
     }
     private final JTextField orderIdField;
     private final JButton findButton;
+    private final JButton refreshButton;
     private final JButton printButton;
     private final JButton chooseBaseBtn;
     private final JButton showUnscannedButton;
@@ -111,7 +113,7 @@ public class LabelFinderUI extends JFrame {
     private static final String PREF_DIVIDER_LOCATION = "dividerLocation";  // JSplitPane divider
     private final PreferencesStore prefs = PreferencesStore.global();
     private JSplitPane mainSplit;
-    private static final int MAX_SCAN_HISTORY = 100;
+    private static final int MAX_SCAN_HISTORY = 500;
     private final Deque<String> scanHistory = new ArrayDeque<>();
     private final Map<String, CompletedOrderInfo> completedOrders = new LinkedHashMap<>();
 
@@ -125,6 +127,12 @@ public class LabelFinderUI extends JFrame {
         setLocationRelativeTo(null);
         orderIdField = new JTextField(20);
         findButton = new JButton("Find");
+        refreshButton = new JButton("↻");
+        refreshButton.setMargin(new Insets(1, 6, 1, 6));
+        refreshButton.setBorder(new LineBorder(new Color(0xCCCCCC), 1, true));
+        refreshButton.setPreferredSize(new Dimension(24, 20));
+        refreshButton.setToolTipText("Rescan current base folders");
+        refreshButton.setEnabled(false);
         printButton = new JButton("Print Combined");
         printButton.setEnabled(false);
         chooseBaseBtn = new JButton("Choose File Path");
@@ -136,6 +144,7 @@ public class LabelFinderUI extends JFrame {
         controlsRow.add(new JLabel("Order ID:"));
         controlsRow.add(orderIdField);
         controlsRow.add(findButton);
+        controlsRow.add(refreshButton);
         controlsRow.add(printButton);
         controlsRow.add(chooseBaseBtn);
         controlsRow.add(showUnscannedButton);
@@ -191,11 +200,20 @@ public class LabelFinderUI extends JFrame {
         getRootPane().setTransferHandler(new BaseFolderTransferHandler());
         chooseBaseBtn.addActionListener(e -> chooseBaseFolder());
         findButton.addActionListener(e -> onFind());
+        refreshButton.addActionListener(e -> onRefreshBaseFolders());
         printButton.addActionListener(e -> printCombined());
         orderIdField.addActionListener(e -> onFind());
         showUnscannedButton.addActionListener(e -> showUnscannedOrders());
         photosList.addListSelectionListener(e -> {
             if (!e.getValueIsAdjusting()) renderSelectedPhotos();
+        });
+        photosList.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseClicked(MouseEvent e) {
+                if (e.getClickCount() >= 2 && SwingUtilities.isLeftMouseButton(e)) {
+                    openSelectedPhoto();
+                }
+            }
         });
         addWindowListener(new WindowAdapter() {
             @Override
@@ -383,10 +401,47 @@ public class LabelFinderUI extends JFrame {
         }
         loadBaseFolders(chosen);
     }
+    private void onRefreshBaseFolders() {
+        if (!hasBaseFolders()) {
+            setStatusMessage("Select a base folder first.");
+            return;
+        }
+        loadBaseFolders(new ArrayList<>(baseFolders));
+    }
+    private void openSelectedPhoto() {
+        List<Path> selected = photosList.getSelectedValuesList();
+        if (selected == null || selected.isEmpty()) {
+            return;
+        }
+        Path target = selected.get(0);
+        if (target == null) {
+            return;
+        }
+        if (!Files.exists(target)) {
+            setStatusMessage("Photo missing: " + target.getFileName());
+            return;
+        }
+        if (!Desktop.isDesktopSupported()) {
+            setStatusMessage("File opening is not supported on this system.");
+            return;
+        }
+        Desktop desktop = Desktop.getDesktop();
+        if (!desktop.isSupported(Desktop.Action.OPEN)) {
+            setStatusMessage("Open action is not available here.");
+            return;
+        }
+        try {
+            desktop.open(target.toFile());
+        }
+        catch (IOException ex) {
+            setStatusMessage("Could not open photo: " + ex.getMessage());
+        }
+    }
     private void setUIEnabled(boolean enabled) {
         findButton.setEnabled(enabled);
         chooseBaseBtn.setEnabled(enabled);
         orderIdField.setEnabled(enabled);
+        refreshButton.setEnabled(enabled && hasBaseFolders());
         showUnscannedButton.setEnabled(enabled);
         photosList.setEnabled(enabled);
     }

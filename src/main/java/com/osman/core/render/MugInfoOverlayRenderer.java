@@ -13,6 +13,7 @@ import java.awt.FontMetrics;
 import java.awt.Graphics2D;
 import java.awt.geom.AffineTransform;
 import java.awt.image.BufferedImage;
+import java.util.Locale;
 
 final class MugInfoOverlayRenderer {
 
@@ -24,11 +25,13 @@ final class MugInfoOverlayRenderer {
                                    String sideLabel,
                                    MugTemplate template,
                                    int totalOrderQuantity) {
+        Color labelColor = pickTextColor(orderInfo.getLabel());
         Font infoFont = new Font("Arial", Font.BOLD, 48);
         Font orderIdFont = infoFont.deriveFont(infoFont.getSize2D() * 1.3f);
         g2d.setColor(Color.BLACK);
 
-        int infoBoxY = template.finalHeight - (template.finalHeight >= 1500 ? 160 : 190);
+        int baseOffset = template.finalHeight >= 1500 ? 160 : 190;
+        int infoBoxY = template.finalHeight - baseOffset + 30;
         int infoBoxX = 158;
         int infoBoxWidth = 2330;
         int infoBoxHeight = 146;
@@ -61,7 +64,7 @@ final class MugInfoOverlayRenderer {
             yRightLine1,
             infoFont,
             true);
-        drawMirroredString(g2d, orderInfo.getLabel(), rightEdge, yRightLine2, infoFont, true);
+        drawMirroredString(g2d, orderInfo.getLabel(), rightEdge, yRightLine2, infoFont, true, labelColor);
 
         String barcodePayload = buildBarcodePayload(orderInfo);
         BufferedImage barcode = generateBarcodeWithText(barcodePayload, 1000, 120);
@@ -71,8 +74,39 @@ final class MugInfoOverlayRenderer {
         g2d.drawImage(barcode, barcodeX, barcodeY, null);
     }
 
+    private static Color pickTextColor(String label) {
+        if (label == null) {
+            return Color.BLACK;
+        }
+        String lowered = label.toLowerCase(Locale.ROOT);
+        if (lowered.contains("black")) {
+            return Color.BLACK;
+        }
+        if (lowered.contains("gray") || lowered.contains("grey")) {
+            return Color.LIGHT_GRAY;
+        }
+        if (lowered.contains("pink")) {
+            return new Color(0xFF2AA5);
+        }
+        if (lowered.contains("red")) {
+            return Color.RED;
+        }
+        if (lowered.contains("navy")) {
+            return new Color(0x1E3A8A);
+        }
+        if (lowered.contains("blue")) {
+            return Color.BLUE;
+        }
+        return Color.BLACK;
+    }
+
     private static void drawMirroredString(Graphics2D g2d, String text, int x, int y, Font font, boolean alignRight) {
+        drawMirroredString(g2d, text, x, y, font, alignRight, g2d.getColor());
+    }
+
+    private static void drawMirroredString(Graphics2D g2d, String text, int x, int y, Font font, boolean alignRight, Color color) {
         AffineTransform original = g2d.getTransform();
+        Color previous = g2d.getColor();
         g2d.setFont(font);
         FontMetrics fm = g2d.getFontMetrics();
         int textWidth = fm.stringWidth(text);
@@ -80,7 +114,9 @@ final class MugInfoOverlayRenderer {
         int baselineY = y;
         g2d.translate(drawX, baselineY);
         g2d.scale(1, -1);
+        g2d.setColor(color);
         g2d.drawString(text, 0, 0);
+        g2d.setColor(previous);
         g2d.setTransform(original);
     }
 
@@ -119,25 +155,13 @@ final class MugInfoOverlayRenderer {
             BitMatrix matrix = writer.encode(text, BarcodeFormat.CODE_128, width, height);
             BufferedImage code = MatrixToImageWriter.toBufferedImage(matrix);
 
-            Font textFont = new Font("Arial", Font.PLAIN, 20);
-            BufferedImage temp = new BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB);
-            Graphics2D gTmp = temp.createGraphics();
-            gTmp.setFont(textFont);
-            FontMetrics fm = gTmp.getFontMetrics();
-            int textHeight = fm.getHeight();
-            gTmp.dispose();
-
-            int combinedH = height + textHeight;
-            BufferedImage out = new BufferedImage(width, combinedH, BufferedImage.TYPE_INT_RGB);
+            BufferedImage out = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
             Graphics2D g = out.createGraphics();
             g.setColor(Color.WHITE);
-            g.fillRect(0, 0, width, combinedH);
+            g.fillRect(0, 0, width, height);
             g.setColor(Color.BLACK);
-            g.setFont(textFont);
 
             g.drawImage(code, 0, 0, null);
-            int textWidth = fm.stringWidth(text);
-            g.drawString(text, (width - textWidth) / 2, height + fm.getAscent() - 3);
             g.dispose();
             return out;
         } catch (Exception e) {
