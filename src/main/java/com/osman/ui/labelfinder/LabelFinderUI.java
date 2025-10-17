@@ -142,7 +142,7 @@ public class LabelFinderUI extends JFrame {
         controlsRow.add(autoPrintCheckBox);
 
         String initialStatus = "Scan barcode → prints automatically. Choose base folder first.";
-        topStatusLabel = new JLabel("Just scanned 0/0");
+        topStatusLabel = new JLabel("Scanned 0/0");
         topStatusLabel.setFont(topStatusLabel.getFont().deriveFont(Font.BOLD, 30f));
         topStatusLabel.setForeground(Color.RED);
         JPanel statusRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 10));
