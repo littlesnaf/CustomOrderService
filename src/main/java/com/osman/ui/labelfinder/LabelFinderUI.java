@@ -1351,20 +1351,20 @@ public class LabelFinderUI extends JFrame {
         if (trimmed.isEmpty()) {
             return null;
         }
-        if (trimmed.length() <= 6) {
+        if (trimmed.length() <= 4) {
             return trimmed;
         }
-        return trimmed.substring(trimmed.length() - 6);
+        return trimmed.substring(trimmed.length() - 4);
     }
     private static String shortenItemReference(String value) {
         if (value == null) {
             return null;
         }
         String trimmed = value.trim();
-        if (trimmed.length() <= 6) {
+        if (trimmed.length() <= 4) {
             return trimmed;
         }
-        return "…" + trimmed.substring(trimmed.length() - 6);
+        return "…" + trimmed.substring(trimmed.length() - 4);
     }
     private static String firstNonBlank(String... values) {
         if (values == null) {

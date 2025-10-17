@@ -81,9 +81,10 @@ final class MugInfoOverlayRenderer {
         String lowered = label.toLowerCase(Locale.ROOT);
         if (lowered.contains("black")) {
             return Color.BLACK;
+
         }
-        if (lowered.contains("gray") || lowered.contains("grey")) {
-            return Color.LIGHT_GRAY;
+        if (lowered.contains("white")) {
+            return new Color(0x95ACD1) ;
         }
         if (lowered.contains("pink")) {
             return new Color(0xFF2AA5);
@@ -143,10 +144,10 @@ final class MugInfoOverlayRenderer {
         if (trimmed.isEmpty()) {
             return null;
         }
-        if (trimmed.length() <= 6) {
+        if (trimmed.length() <= 4) {
             return trimmed;
         }
-        return trimmed.substring(trimmed.length() - 6);
+        return trimmed.substring(trimmed.length() - 4);
     }
 
     private static BufferedImage generateBarcodeWithText(String text, int width, int height) {
