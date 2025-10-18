@@ -98,8 +98,6 @@ public final class OrnamentSkuTool {
             mixedOutput.addAll(lowQtyBundles);
 
             if (!mixedOutput.isEmpty()) {
-                Path mixOut = outDir.resolve("MIXED.pdf");
-                OrnamentBundleMerger.merge(singlePagesPerDoc, mixedOutput, mixOut);
                 writeMixedSectionBundles(outDir, singlePagesPerDoc, mixedOutput);
             }
         } finally {
@@ -322,19 +320,26 @@ public final class OrnamentSkuTool {
             grouped.computeIfAbsent(section, k -> new ArrayList<>()).add(ref);
         }
 
+        Set<String> usedNames = new HashSet<>();
+
         for (Map.Entry<String, List<BundleRef>> entry : grouped.entrySet()) {
             List<BundleRef> refs = entry.getValue();
             if (refs.isEmpty()) {
                 continue;
             }
             String section = entry.getKey();
-            Path sectionDir = mixDir.resolve(section);
-            Files.createDirectories(sectionDir);
             String fileName = section.replaceAll("[^A-Za-z0-9._-]", "_");
             if (fileName.isBlank()) {
                 fileName = "Section";
             }
-            Path sectionFile = sectionDir.resolve(fileName + ".pdf");
+            String baseName = fileName;
+            String candidate = baseName;
+            int suffix = 1;
+            while (!usedNames.add(candidate)) {
+                candidate = baseName + "_" + suffix;
+                suffix++;
+            }
+            Path sectionFile = mixDir.resolve(candidate + ".pdf");
             OrnamentBundleMerger.merge(singlePagesPerDoc, refs, sectionFile);
         }
     }

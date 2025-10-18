@@ -210,11 +210,9 @@ public class OrnamentSkuPanel extends JPanel {
                     mixedOutput.addAll(mixBundles);
                     mixedOutput.addAll(lowQtyBundles);
                     if (!mixedOutput.isEmpty()) {
-                        Path mixedOut = outDir.resolve("MIXED.pdf");
-                        OrnamentBundleMerger.merge(singlePagesPerDoc, mixedOutput, mixedOut);
-                        appendLog("Wrote: MIXED.pdf (" + mixedOutput.size()
-                                + " bundles from mixed or low-quantity SKUs)");
                         writeMixedSectionBundles(outDir, singlePagesPerDoc, mixedOutput);
+                        appendLog("Wrote: mix sections (" + mixedOutput.size()
+                                + " bundles from mixed or low-quantity SKUs)");
                     }
 
 
@@ -278,21 +276,28 @@ public class OrnamentSkuPanel extends JPanel {
             grouped.computeIfAbsent(section, k -> new ArrayList<>()).add(ref);
         }
 
+        Set<String> usedNames = new HashSet<>();
+
         for (Map.Entry<String, List<BundleRef>> entry : grouped.entrySet()) {
             List<BundleRef> refs = entry.getValue();
             if (refs.isEmpty()) {
                 continue;
             }
             String section = entry.getKey();
-            Path sectionDir = mixDir.resolve(section);
-            Files.createDirectories(sectionDir);
             String fileName = section.replaceAll("[^A-Za-z0-9._-]", "_");
             if (fileName.isBlank()) {
                 fileName = "Section";
             }
-            Path sectionFile = sectionDir.resolve(fileName + ".pdf");
+            String baseName = fileName;
+            String candidate = baseName;
+            int suffix = 1;
+            while (!usedNames.add(candidate)) {
+                candidate = baseName + "_" + suffix;
+                suffix++;
+            }
+            Path sectionFile = mixDir.resolve(candidate + ".pdf");
             OrnamentBundleMerger.merge(singlePagesPerDoc, refs, sectionFile);
-            appendLog("Wrote: mix/" + section + "/" + sectionFile.getFileName());
+            appendLog("Wrote: mix/" + sectionFile.getFileName());
         }
     }
 

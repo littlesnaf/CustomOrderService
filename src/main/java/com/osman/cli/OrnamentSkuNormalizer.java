@@ -63,7 +63,14 @@ public final class OrnamentSkuNormalizer {
             body = body.replaceAll("[-.]+$", "");
             
             if (body.isEmpty()) return s;
-            String suffix = prefix.equals("PF") ? ".PF" : ".OR";
+            String suffix = switch (prefix) {
+                case "PF" -> ".PF";
+                case "RN" -> ".RN";
+                case "RM" -> ".RM";
+                case "ORN" -> ".ORN";
+                case "OR" -> ".OR";
+                default -> ".OR";
+            };
             return "SKU" + body + suffix;
         }
 

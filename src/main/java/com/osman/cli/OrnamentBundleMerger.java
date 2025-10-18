@@ -31,7 +31,7 @@ public final class OrnamentBundleMerger {
         PDFMergerUtility mu = new PDFMergerUtility();
         mu.setDestinationFileName(outFile.toString());
         for (BundlePages ref : bundles) {
-            List<Path> files = singlePagesPerDoc.get(ref.docId());
+            List <Path> files = singlePagesPerDoc.get(ref.docId());
             mu.addSource(files.get(ref.labelPageIndex()).toFile());
             for (Integer pageIndex : ref.slipPageIndices()) {
                 mu.addSource(files.get(pageIndex).toFile());
