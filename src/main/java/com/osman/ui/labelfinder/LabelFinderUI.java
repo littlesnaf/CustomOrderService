@@ -34,6 +34,7 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -99,6 +100,9 @@ public class LabelFinderUI extends JFrame {
     private volatile String activeOrderId;
     private List<PhotoIndexEntry> photoIndex;
     private Set<Path> photoIndexPaths;
+    private int bannerScanned;
+    private int bannerExpected;
+    private String bannerOrderId;
     private File baseDir;
     private Map<String, PageGroup> labelGroups;
     private Map<String, PageGroup> slipGroups;
@@ -323,6 +327,10 @@ public class LabelFinderUI extends JFrame {
         return digitsOnly;
     }
     private void loadBaseFolders(List<File> folders) {
+        loadBaseFolders(folders, false);
+    }
+
+    private void loadBaseFolders(List<File> folders, boolean preserveScanProgress) {
         List<File> normalized = normaliseRoots(folders);
         if (normalized.isEmpty()) {
             setStatusMessage("Please select folder(s) containing your orders.");
@@ -331,15 +339,16 @@ public class LabelFinderUI extends JFrame {
         baseFolders.clear();
         baseFolders.addAll(normalized);
         baseDir = getPrimaryBaseFolder();
-        refreshBaseFolders();
+        refreshBaseFolders(preserveScanProgress);
 
     }
-    private void refreshBaseFolders() {
+    private void refreshBaseFolders(boolean preserveProgress) {
         if (!hasBaseFolders()) {
             setStatusMessage("Select a valid base folder.");
             return;
         }
         baseDir = getPrimaryBaseFolder();
+        ProgressSnapshot snapshot = preserveProgress ? snapshotProgressCaches() : null;
         clearAllViews();
         synchronized (photoIndexLock) {
             photoIndex = new ArrayList<>();
@@ -347,9 +356,14 @@ public class LabelFinderUI extends JFrame {
         }
         photoRefreshInFlight.clear();
         clearProgressCaches();
+        if (snapshot != null && !snapshot.isEmpty()) {
+            bannerOrderId = snapshot.bannerOrderId();
+            updateProgressBanner(snapshot.bannerScanned(), snapshot.bannerExpected());
+        }
         setUIEnabled(false);
         String scanningMessage = (baseFolders.size() == 1) ? "Scanning folder..." : "Scanning folders...";
         setStatusMessage(scanningMessage);
+        final ProgressSnapshot progressSnapshot = snapshot;
         SwingWorker<Void, Void> worker = new SwingWorker<>() {
             @Override
             protected Void doInBackground() throws Exception {
@@ -371,6 +385,7 @@ public class LabelFinderUI extends JFrame {
                     JOptionPane.showMessageDialog(LabelFinderUI.this, "Error while scanning:\n" + cause.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
                 }
                 finally {
+                    restoreProgressSnapshot(progressSnapshot);
                     setUIEnabled(true);
                     orderIdField.requestFocusInWindow();
                     orderIdField.selectAll();
@@ -406,7 +421,7 @@ public class LabelFinderUI extends JFrame {
             setStatusMessage("Select a base folder first.");
             return;
         }
-        loadBaseFolders(new ArrayList<>(baseFolders));
+        loadBaseFolders(new ArrayList<>(baseFolders), true);
     }
     private void openSelectedPhoto() {
         List<Path> selected = photosList.getSelectedValuesList();
@@ -590,6 +605,7 @@ public class LabelFinderUI extends JFrame {
                 expectationMissing = true;
             }
             else {
+                bannerOrderId = orderId;
                 updateProgressBanner(scanUpdate.scanned, scanUpdate.expected);
                 if (scanUpdate.counted) {
                     rememberScanEvent(orderId, scanUpdate.itemIdentifier);
@@ -1045,7 +1061,106 @@ public class LabelFinderUI extends JFrame {
         scanProgress.clear();
         completedOrders.clear();
         scanHistory.clear();
+        bannerOrderId = null;
         updateProgressBanner(0, 0);
+    }
+    private ProgressSnapshot snapshotProgressCaches() {
+        if (scanProgress.isEmpty() && completedOrders.isEmpty() && scanHistory.isEmpty()) {
+            return null;
+        }
+        Map<String, OrderScanState> progressCopy = new LinkedHashMap<>(scanProgress);
+        Map<String, CompletedOrderInfo> completedCopy = new LinkedHashMap<>(completedOrders);
+        Deque<String> historyCopy = new ArrayDeque<>(scanHistory);
+        return new ProgressSnapshot(progressCopy, completedCopy, historyCopy, bannerScanned, bannerExpected, bannerOrderId);
+    }
+    private void restoreProgressSnapshot(ProgressSnapshot snapshot) {
+        if (snapshot == null || snapshot.isEmpty()) {
+            return;
+        }
+        scanProgress.clear();
+        scanProgress.putAll(snapshot.scanStates());
+        completedOrders.clear();
+        completedOrders.putAll(snapshot.completedStates());
+        scanHistory.clear();
+        scanHistory.addAll(snapshot.scanHistory());
+        bannerOrderId = snapshot.bannerOrderId();
+        reconcileRestoredProgress();
+        if (bannerOrderId != null
+            && !scanProgress.containsKey(bannerOrderId)
+            && !completedOrders.containsKey(bannerOrderId)) {
+            bannerOrderId = null;
+        }
+        int[] totals = calculateProgressTotals(scanProgress, completedOrders);
+        updateProgressBanner(totals[0], totals[1]);
+    }
+    private void reconcileRestoredProgress() {
+        if (scanProgress.isEmpty() && completedOrders.isEmpty()) {
+            return;
+        }
+        for (Map.Entry<String, OrderScanState> entry : scanProgress.entrySet()) {
+            String orderId = entry.getKey();
+            OrderExpectation expectation = resolveExpectation(orderId);
+            if (expectation == null || expectation.isEmpty()) {
+                continue;
+            }
+            entry.getValue().reconcileExpectation(expectation);
+        }
+        Map<String, OrderScanState> reopened = new LinkedHashMap<>();
+        Iterator<Map.Entry<String, CompletedOrderInfo>> iterator = completedOrders.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<String, CompletedOrderInfo> entry = iterator.next();
+            String orderId = entry.getKey();
+            CompletedOrderInfo info = entry.getValue();
+            OrderExpectation expectation = resolveExpectation(orderId);
+            if (expectation == null || expectation.isEmpty()) {
+                continue;
+            }
+            int expected = Math.max(expectation.resolvedTotal(), 0);
+            info.resetExpectedTotal(expected);
+            if (info.totalScanned() < expected) {
+                iterator.remove();
+                OrderScanState state = new OrderScanState(orderId, expectation);
+                Map<String, Integer> counts = info.itemCountsSnapshot();
+                for (Map.Entry<String, Integer> countEntry : counts.entrySet()) {
+                    String identifier = countEntry.getKey();
+                    int quantity = (countEntry.getValue() == null) ? 0 : countEntry.getValue();
+                    for (int i = 0; i < quantity; i++) {
+                        state.recordScan(null, identifier);
+                    }
+                }
+                reopened.put(orderId, state);
+            }
+        }
+        if (!reopened.isEmpty()) {
+            scanProgress.putAll(reopened);
+        }
+    }
+    private static int[] calculateProgressTotals(Map<String, OrderScanState> inProgress,
+                                                 Map<String, CompletedOrderInfo> completed) {
+        int scanned = 0;
+        int expected = 0;
+        if (completed != null) {
+            for (CompletedOrderInfo info : completed.values()) {
+                if (info == null) {
+                    continue;
+                }
+                scanned += Math.max(info.totalScanned(), 0);
+                expected += Math.max(info.expectedTotal(), 0);
+            }
+        }
+        if (inProgress != null) {
+            for (OrderScanState state : inProgress.values()) {
+                if (state == null) {
+                    continue;
+                }
+                scanned += Math.max(state.totalScanned(), 0);
+                expected += Math.max(state.expectedTotal(), 0);
+            }
+        }
+        return new int[] {
+            scanned,
+            expected
+        };
     }
     private void rebuildExpectations() {
         expectationIndex.clear();
@@ -1303,7 +1418,11 @@ public class LabelFinderUI extends JFrame {
         if (expected < 0) {
             expected = 0;
         }
-        topStatusLabel.setText("Scanned " + scanned + "/" + expected);
+        bannerScanned = scanned;
+        bannerExpected = expected;
+        StringBuilder text = new StringBuilder("Scanned ").append(scanned).append('/').append(expected);
+
+        topStatusLabel.setText(text.toString());
     }
     private void setStatusMessage(String message) {
         String text = (message == null) ? "" : message;
@@ -1491,7 +1610,7 @@ public class LabelFinderUI extends JFrame {
         private final String orderId;
         private final Map<String, ItemCounter> keyedCounters = new LinkedHashMap<>();
         private final List<ItemCounter> orderedCounters = new ArrayList<>();
-        private final int expectedTotal;
+        private int expectedTotal;
         private int scannedTotal;
         private final List<String> scannedIdentifiers = new ArrayList<>();
         OrderScanState(String orderId, OrderExpectation expectation) {
@@ -1568,6 +1687,95 @@ public class LabelFinderUI extends JFrame {
         String lastIdentifier() {
             return scannedIdentifiers.isEmpty() ? null : scannedIdentifiers.get(scannedIdentifiers.size() - 1);
         }
+        void reconcileExpectation(OrderExpectation expectation) {
+            if (expectation == null || expectation.isEmpty()) {
+                return;
+            }
+            Map<String, ItemCounter> previousByKey = new LinkedHashMap<>(keyedCounters);
+            List<ItemCounter> previousOrdered = new ArrayList<>(orderedCounters);
+            keyedCounters.clear();
+            orderedCounters.clear();
+            int sum = 0;
+            for (ItemSpec spec : expectation.specs()) {
+                int expected = Math.max(spec.expected, 0);
+                if (expected <= 0) {
+                    continue;
+                }
+                ItemCounter counter = new ItemCounter(spec.key, spec.fullId, expected);
+                ItemCounter previous = findMatchingCounter(previousByKey, previousOrdered, spec.key, spec.fullId);
+                if (previous != null) {
+                    counter.scanned = Math.min(previous.scanned, expected);
+                }
+                if (spec.key != null) {
+                    keyedCounters.put(spec.key, counter);
+                }
+                orderedCounters.add(counter);
+                sum += expected;
+            }
+            int resolved = Math.max(sum, expectation.resolvedTotal());
+            if (resolved > sum) {
+                int remaining = resolved - sum;
+                ItemCounter genericPrev = findGenericCounter(previousOrdered);
+                ItemCounter extra = new ItemCounter(null, null, remaining);
+                if (genericPrev != null) {
+                    extra.scanned = Math.min(genericPrev.scanned, remaining);
+                }
+                orderedCounters.add(extra);
+                sum = resolved;
+            }
+            expectedTotal = Math.max(sum, 1);
+            int recomputed = 0;
+            for (ItemCounter counter : orderedCounters) {
+                counter.scanned = Math.min(counter.scanned, counter.expected);
+                recomputed += counter.scanned;
+            }
+            scannedTotal = Math.min(recomputed, expectedTotal);
+        }
+        private ItemCounter findMatchingCounter(Map<String, ItemCounter> previousByKey,
+                                                List<ItemCounter> previousOrdered,
+                                                String key,
+                                                String fullId) {
+            if (key != null) {
+                ItemCounter match = previousByKey.remove(key);
+                if (match != null) {
+                    previousOrdered.remove(match);
+                    return match;
+                }
+            }
+            if (fullId != null && !fullId.isBlank()) {
+                for (Iterator<ItemCounter> it = previousOrdered.iterator(); it.hasNext();) {
+                    ItemCounter candidate = it.next();
+                    if (fullId.equalsIgnoreCase(candidate.fullId)) {
+                        it.remove();
+                        if (candidate.key != null) {
+                            previousByKey.remove(candidate.key);
+                        }
+                        return candidate;
+                    }
+                }
+            }
+            if (key != null) {
+                for (Iterator<ItemCounter> it = previousOrdered.iterator(); it.hasNext();) {
+                    ItemCounter candidate = it.next();
+                    if (key.equals(candidate.key)) {
+                        it.remove();
+                        previousByKey.remove(key);
+                        return candidate;
+                    }
+                }
+            }
+            return null;
+        }
+        private ItemCounter findGenericCounter(List<ItemCounter> previousOrdered) {
+            for (Iterator<ItemCounter> it = previousOrdered.iterator(); it.hasNext();) {
+                ItemCounter candidate = it.next();
+                if (candidate.key == null && candidate.fullId == null) {
+                    it.remove();
+                    return candidate;
+                }
+            }
+            return null;
+        }
     }
     private static final class ItemCounter {
         final String key;
@@ -1594,7 +1802,7 @@ public class LabelFinderUI extends JFrame {
         }
     }
     private static final class CompletedOrderInfo {
-        private final int expectedTotal;
+        private int expectedTotal;
         private int totalScanned;
         private final LinkedHashMap<String, Integer> itemCounts = new LinkedHashMap<>();
         private String lastIdentifier;
@@ -1621,6 +1829,57 @@ public class LabelFinderUI extends JFrame {
         }
         String lastIdentifier() {
             return lastIdentifier;
+        }
+        void resetExpectedTotal(int newExpected) {
+            expectedTotal = Math.max(newExpected, 0);
+            if (totalScanned > expectedTotal) {
+                totalScanned = expectedTotal;
+            }
+        }
+        Map<String, Integer> itemCountsSnapshot() {
+            return new LinkedHashMap<>(itemCounts);
+        }
+    }
+    private static final class ProgressSnapshot {
+        private final Map<String, OrderScanState> scanStates;
+        private final Map<String, CompletedOrderInfo> completedStates;
+        private final Deque<String> scanHistory;
+        private final int bannerScanned;
+        private final int bannerExpected;
+        private final String bannerOrderId;
+        ProgressSnapshot(Map<String, OrderScanState> scanStates,
+                         Map<String, CompletedOrderInfo> completedStates,
+                         Deque<String> scanHistory,
+                         int bannerScanned,
+                         int bannerExpected,
+                         String bannerOrderId) {
+            this.scanStates = (scanStates == null) ? new LinkedHashMap<>() : scanStates;
+            this.completedStates = (completedStates == null) ? new LinkedHashMap<>() : completedStates;
+            this.scanHistory = (scanHistory == null) ? new ArrayDeque<>() : scanHistory;
+            this.bannerScanned = bannerScanned;
+            this.bannerExpected = bannerExpected;
+            this.bannerOrderId = bannerOrderId;
+        }
+        boolean isEmpty() {
+            return scanStates.isEmpty() && completedStates.isEmpty() && scanHistory.isEmpty();
+        }
+        Map<String, OrderScanState> scanStates() {
+            return scanStates;
+        }
+        Map<String, CompletedOrderInfo> completedStates() {
+            return completedStates;
+        }
+        Deque<String> scanHistory() {
+            return scanHistory;
+        }
+        int bannerScanned() {
+            return bannerScanned;
+        }
+        int bannerExpected() {
+            return bannerExpected;
+        }
+        String bannerOrderId() {
+            return bannerOrderId;
         }
     }
     private static final class ScanUpdate {

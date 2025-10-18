@@ -8,13 +8,16 @@ import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class OrnamentSkuToolTest {
 
@@ -63,6 +66,50 @@ class OrnamentSkuToolTest {
             } finally {
                 deleteQuietly(debugDir);
             }
+        }
+    }
+
+    @Test
+    void samplePdfNormalizesRareSku() throws Exception {
+        URL pdfUrl = OrnamentSkuToolTest.class.getResource("/ordertestfiles/final_2025-09-25_14:42:41.pdf");
+        assumeTrue(pdfUrl != null, "Sample PDF missing; skipping regression.");
+
+        Path pdf = Path.of(pdfUrl.toURI());
+
+        Method buildBundles = OrnamentSkuTool.class
+            .getDeclaredMethod("buildBundles", PDDocument.class, int.class, OrnamentDebugLogger.class);
+        buildBundles.setAccessible(true);
+
+        Path debugDir = Files.createTempDirectory("ornament-debug");
+        try (PDDocument doc = PDDocument.load(pdf.toFile());
+             OrnamentDebugLogger debug = OrnamentDebugLogger.create(debugDir)) {
+
+            @SuppressWarnings("unchecked")
+            List<?> bundles = (List<?>) buildBundles.invoke(null, doc, 0, debug);
+
+            boolean found = false;
+            Field skusField = null;
+
+            for (Object bundle : bundles) {
+                if (skusField == null) {
+                    skusField = bundle.getClass().getDeclaredField("skus");
+                    skusField.setAccessible(true);
+                }
+                @SuppressWarnings("unchecked")
+                Set<String> skus = (Set<String>) skusField.get(bundle);
+                if (skus.stream().anyMatch(s -> s != null && s.contains("SKU1847-P"))) {
+                    found = true;
+                    assertTrue(skus.contains("SKU1847-P.OR"), "Expected normalized SKU1847-P.OR");
+                    assertTrue(skus.stream().noneMatch(s -> s != null && s.contains("OR_NEW")),
+                        "Unexpected OR_NEW token present");
+                    assertEquals("Section 1", OrnamentSkuSections.resolveSection(skus));
+                    break;
+                }
+            }
+
+            assertTrue(found, "Expected to find bundle containing SKU1847-P");
+        } finally {
+            deleteQuietly(debugDir);
         }
     }
 

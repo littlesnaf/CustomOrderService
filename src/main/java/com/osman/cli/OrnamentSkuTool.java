@@ -25,11 +25,15 @@ public final class OrnamentSkuTool {
     private static final Pattern RE_NOT_CONT =
             Pattern.compile("\\bnot\\s*continued\\s*on\\s*next\\s*page\\b",
                     Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE | Pattern.DOTALL);
+    private static final Pattern SKU1847_EXCEPTION_PATTERN =
+            Pattern.compile("(?i)SKU1847-\\s*P\\.OR[_\\s]?NEW");
+    private static final String SKU1847_EXCEPTION_TOKEN =
+            OrnamentSkuNormalizer.normalizeToken("SKU1847-P.OR");
 
     private OrnamentSkuTool() {}
 
     public static void main(String[] args) throws Exception {
-        List<Path> inputs = resolveInputs();
+        List<Path> inputs = resolveInputs(args);
         if (inputs.isEmpty()) throw new IOException("No input file");
 
         Path outDir = inputs.get(0).getParent().resolve("ready-ornaments");
@@ -61,39 +65,82 @@ public final class OrnamentSkuTool {
 
             for (int docId = 0; docId < bundlesPerDoc.size(); docId++) {
                 for (Bundle b : bundlesPerDoc.get(docId)) {
-                    if (b.skus.isEmpty() || b.skus.size() > 1) {
-                        mixBundles.add(new BundleRef(docId, b));
-                    }
-                    for (String sku : b.skus) {
-                        skuIndex.computeIfAbsent(sku, k -> new ArrayList<>()).add(new BundleRef(docId, b));
+                    BundleRef ref = new BundleRef(docId, b);
+                    if (b.skus.size() == 1) {
+                        String sku = b.skus.iterator().next();
+                        skuIndex.computeIfAbsent(sku, k -> new ArrayList<>()).add(ref);
+                    } else {
+                        mixBundles.add(ref);
                     }
                 }
             }
 
+            List<BundleRef> lowQtyBundles = new ArrayList<>();
+            Map<String, List<BundleRef>> finalSkuIndex = new LinkedHashMap<>();
+
             for (Map.Entry<String, List<BundleRef>> entry : skuIndex.entrySet()) {
+                if (entry.getValue().size() < 3) {
+                    lowQtyBundles.addAll(entry.getValue());
+                } else {
+                    finalSkuIndex.put(entry.getKey(), entry.getValue());
+                }
+            }
+
+            for (Map.Entry<String, List<BundleRef>> entry : finalSkuIndex.entrySet()) {
                 String sku = entry.getKey();
                 List<BundleRef> list = entry.getValue();
                 Path skuOut = outDir.resolve(sanitize(sku) + ".pdf");
                 OrnamentBundleMerger.merge(singlePagesPerDoc, list, skuOut);
             }
 
-            if (!mixBundles.isEmpty()) {
+            List<BundleRef> mixedOutput = new ArrayList<>(mixBundles.size() + lowQtyBundles.size());
+            mixedOutput.addAll(mixBundles);
+            mixedOutput.addAll(lowQtyBundles);
+
+            if (!mixedOutput.isEmpty()) {
                 Path mixOut = outDir.resolve("MIXED.pdf");
-                OrnamentBundleMerger.merge(singlePagesPerDoc, mixBundles, mixOut);
+                OrnamentBundleMerger.merge(singlePagesPerDoc, mixedOutput, mixOut);
+                writeMixedSectionBundles(outDir, singlePagesPerDoc, mixedOutput);
             }
         } finally {
             cleanDir(tmpRoot);
         }
     }
 
-    private static List<Path> resolveInputs() throws IOException {
+    private static List<Path> resolveInputs(String[] args) throws IOException {
         List<Path> inputs = new ArrayList<>();
-        if (INPUT_PATHS.length > 0) {
+
+        // 1) CLI arguments
+        if (args != null && args.length > 0) {
+            for (String p : args) {
+                if (p == null || p.isBlank()) continue;
+                Path path = Path.of(p.trim());
+                if (Files.exists(path)) inputs.add(path);
+            }
+        }
+
+        // 2) System property (comma-separated): -Dornament.inputs=/path/a.pdf,/path/b.pdf
+        if (inputs.isEmpty()) {
+            String csv = System.getProperty("ornament.inputs");
+            if (csv != null && !csv.isBlank()) {
+                for (String p : csv.split(",")) {
+                    String s = p.trim();
+                    if (s.isEmpty()) continue;
+                    Path path = Path.of(s);
+                    if (Files.exists(path)) inputs.add(path);
+                }
+            }
+        }
+
+        // 3) Fallback constant (if populated)
+        if (inputs.isEmpty() && INPUT_PATHS.length > 0) {
             for (String p : INPUT_PATHS) {
                 Path path = Path.of(p);
                 if (Files.exists(path)) inputs.add(path);
             }
         }
+
+        if (inputs.isEmpty()) throw new IOException("No input file");
         return inputs;
     }
 
@@ -217,12 +264,25 @@ public final class OrnamentSkuTool {
             debug.logToken(raw, tok);
             if (tok != null && !tok.isBlank()) out.add(tok);
         }
+        addSku1847Exception(scan, out, debug);
         return OrnamentSkuNormalizer.canonicalizeTokens(out);
     }
 
     private static String firstMatch(Pattern pattern, String text, String fallback) {
         Matcher matcher = pattern.matcher(text);
         return matcher.find() ? matcher.group(1) : fallback;
+    }
+
+    private static void addSku1847Exception(String text, Set<String> out, OrnamentDebugLogger debug) {
+        if (SKU1847_EXCEPTION_TOKEN == null || SKU1847_EXCEPTION_TOKEN.isBlank()) {
+            return;
+        }
+        if (!SKU1847_EXCEPTION_PATTERN.matcher(text).find()) {
+            return;
+        }
+        debug.logToken("SKU1847-P.OR_NEW override", SKU1847_EXCEPTION_TOKEN);
+        out.add(SKU1847_EXCEPTION_TOKEN);
+        out.removeIf(token -> token != null && token.toUpperCase(Locale.ROOT).contains("SKU1847-P.OR_NEW"));
     }
 
     private static String safe(String text) { return text == null ? "" : text; }
@@ -242,6 +302,40 @@ public final class OrnamentSkuTool {
         try (var stream = Files.walk(dir)) {
             stream.sorted((a, b) -> b.getNameCount() - a.getNameCount())
                     .forEach(path -> { try { Files.deleteIfExists(path); } catch (IOException ignored) {} });
+        }
+    }
+
+    private static void writeMixedSectionBundles(Path outDir,
+                                                 List<List<Path>> singlePagesPerDoc,
+                                                 List<BundleRef> bundles) throws IOException {
+        Path mixDir = outDir.resolve("mix");
+        cleanDir(mixDir);
+        Files.createDirectories(mixDir);
+
+        Map<String, List<BundleRef>> grouped = new LinkedHashMap<>();
+        for (String section : OrnamentSkuSections.primarySections()) {
+            grouped.put(section, new ArrayList<>());
+        }
+
+        for (BundleRef ref : bundles) {
+            String section = OrnamentSkuSections.resolveSection(ref.bundle().skus);
+            grouped.computeIfAbsent(section, k -> new ArrayList<>()).add(ref);
+        }
+
+        for (Map.Entry<String, List<BundleRef>> entry : grouped.entrySet()) {
+            List<BundleRef> refs = entry.getValue();
+            if (refs.isEmpty()) {
+                continue;
+            }
+            String section = entry.getKey();
+            Path sectionDir = mixDir.resolve(section);
+            Files.createDirectories(sectionDir);
+            String fileName = section.replaceAll("[^A-Za-z0-9._-]", "_");
+            if (fileName.isBlank()) {
+                fileName = "Section";
+            }
+            Path sectionFile = sectionDir.resolve(fileName + ".pdf");
+            OrnamentBundleMerger.merge(singlePagesPerDoc, refs, sectionFile);
         }
     }
 

@@ -24,6 +24,7 @@ public final class AppLogger {
         logger.setUseParentHandlers(false);
         ConsoleHandler handler = new ConsoleHandler();
         handler.setLevel(Level.INFO);
+        handler.setLevel(Level.ALL);
         handler.setFormatter(new Formatter() {
             @Override
             public String format(LogRecord record) {

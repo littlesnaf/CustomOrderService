@@ -4,6 +4,7 @@ import com.osman.cli.OrnamentBundleMerger;
 import com.osman.cli.OrnamentDebugLogger;
 import com.osman.cli.OrnamentSkuNormalizer;
 import com.osman.cli.OrnamentSkuPatterns;
+import com.osman.cli.OrnamentSkuSections;
 import org.apache.pdfbox.multipdf.Splitter;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.text.PDFTextStripper;
@@ -41,6 +42,10 @@ public class OrnamentSkuPanel extends JPanel {
     private static final Pattern QTY_INLINE = Pattern.compile("(?i)\\bqty\\b\\s*[:x-]?\\s*(\\d{1,3})");
     private static final Pattern QTY_BEFORE_PRICE = Pattern.compile("(?s)\\b(\\d{1,3})\\s*\\$\\s*\\d"); // <-- güncel
     private static final Pattern STANDALONE_INT = Pattern.compile("^\\s*(\\d{1,3})\\s*$");
+    private static final Pattern SKU1847_EXCEPTION_PATTERN =
+            Pattern.compile("(?i)SKU1847-\\s*P\\.OR[_\\s]?NEW");
+    private static final String SKU1847_EXCEPTION_TOKEN =
+            OrnamentSkuNormalizer.normalizeToken("SKU1847-P.OR");
 
     public OrnamentSkuPanel() {
         setLayout(new BorderLayout(12, 12));
@@ -209,6 +214,7 @@ public class OrnamentSkuPanel extends JPanel {
                         OrnamentBundleMerger.merge(singlePagesPerDoc, mixedOutput, mixedOut);
                         appendLog("Wrote: MIXED.pdf (" + mixedOutput.size()
                                 + " bundles from mixed or low-quantity SKUs)");
+                        writeMixedSectionBundles(outDir, singlePagesPerDoc, mixedOutput);
                     }
 
 
@@ -252,6 +258,41 @@ public class OrnamentSkuPanel extends JPanel {
             } catch (IOException ioe) {
                 appendLog("Rename failed for " + oldFile.getFileName() + ": " + ioe.getMessage());
             }
+        }
+    }
+
+    private void writeMixedSectionBundles(Path outDir,
+                                          List<List<Path>> singlePagesPerDoc,
+                                          List<BundleRef> bundles) throws IOException {
+        Path mixDir = outDir.resolve("mix");
+        cleanDir(mixDir);
+        Files.createDirectories(mixDir);
+
+        Map<String, List<BundleRef>> grouped = new LinkedHashMap<>();
+        for (String section : OrnamentSkuSections.primarySections()) {
+            grouped.put(section, new ArrayList<>());
+        }
+
+        for (BundleRef ref : bundles) {
+            String section = OrnamentSkuSections.resolveSection(ref.bundle.skus);
+            grouped.computeIfAbsent(section, k -> new ArrayList<>()).add(ref);
+        }
+
+        for (Map.Entry<String, List<BundleRef>> entry : grouped.entrySet()) {
+            List<BundleRef> refs = entry.getValue();
+            if (refs.isEmpty()) {
+                continue;
+            }
+            String section = entry.getKey();
+            Path sectionDir = mixDir.resolve(section);
+            Files.createDirectories(sectionDir);
+            String fileName = section.replaceAll("[^A-Za-z0-9._-]", "_");
+            if (fileName.isBlank()) {
+                fileName = "Section";
+            }
+            Path sectionFile = sectionDir.resolve(fileName + ".pdf");
+            OrnamentBundleMerger.merge(singlePagesPerDoc, refs, sectionFile);
+            appendLog("Wrote: mix/" + section + "/" + sectionFile.getFileName());
         }
     }
 
@@ -450,6 +491,7 @@ public class OrnamentSkuPanel extends JPanel {
             }
             totals.merge(sku, qty, Integer::sum);
         }
+        applySku1847Override(scan, totals, debug);
         return totals;
     }
 
@@ -478,6 +520,36 @@ public class OrnamentSkuPanel extends JPanel {
             });
         } catch (IOException ignored) {
         }
+    }
+
+    private static void applySku1847Override(String text,
+                                             Map<String, Integer> totals,
+                                             OrnamentDebugLogger debug) {
+        if (SKU1847_EXCEPTION_TOKEN == null || SKU1847_EXCEPTION_TOKEN.isBlank()) {
+            return;
+        }
+        if (!SKU1847_EXCEPTION_PATTERN.matcher(text).find()) {
+            return;
+        }
+        int qty = 0;
+        Iterator<Map.Entry<String, Integer>> it = totals.entrySet().iterator();
+        while (it.hasNext()) {
+            Map.Entry<String, Integer> entry = it.next();
+            String key = entry.getKey();
+            if (key == null) {
+                continue;
+            }
+            String upper = key.toUpperCase(Locale.ROOT);
+            if (upper.contains("SKU1847-P.OR_NEW") || upper.contains("SKU1847-.OR")) {
+                qty += Math.max(0, entry.getValue());
+                it.remove();
+            }
+        }
+        if (qty <= 0) {
+            qty = 1;
+        }
+        totals.merge(SKU1847_EXCEPTION_TOKEN, qty, Integer::sum);
+        debug.logToken("SKU1847-P.OR_NEW override", SKU1847_EXCEPTION_TOKEN);
     }
 
     private static class Bundle {
