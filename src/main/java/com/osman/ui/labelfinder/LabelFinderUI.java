@@ -3,19 +3,21 @@ package com.osman.ui.labelfinder;
 import com.osman.PackSlipExtractor;
 import com.osman.PdfLinker;
 import com.osman.config.PreferencesStore;
+import com.osman.core.order.OrderContribution;
+import com.osman.core.order.OrderContributionReader;
+import com.osman.core.order.OrderQuantitiesManifest;
 import com.osman.logging.AppLogger;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.rendering.PDFRenderer;
-import org.json.JSONException;
-import org.json.JSONObject;
+
 import javax.imageio.ImageIO;
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
 import javax.swing.border.LineBorder;
 import java.awt.*;
-import java.awt.event.*;
 import java.awt.datatransfer.DataFlavor;
 import java.awt.datatransfer.UnsupportedFlavorException;
+import java.awt.event.*;
 import java.awt.image.BufferedImage;
 import java.awt.print.PageFormat;
 import java.awt.print.Paper;
@@ -41,12 +43,12 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 import java.util.logging.Logger;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
-import java.util.stream.Stream;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * Swing UI for locating shipping labels, packing slips, and matching order photos across one or more base folders.
@@ -93,6 +95,7 @@ public class LabelFinderUI extends JFrame {
     private final JList<Path> photosList;
     private final DualImagePanel photoView;
     private final Map<String, OrderExpectation> expectationIndex;
+    private final Map<String, OrderQuantitiesManifest.OrderSummary> manifestOrderSummaries;
     private final Map<String, OrderScanState> scanProgress;
     private final List<File> baseFolders;
     private final Set<String> photoRefreshInFlight;
@@ -181,6 +184,7 @@ public class LabelFinderUI extends JFrame {
         leftPanel.add(combinedScroll, BorderLayout.CENTER);
         photoView = new DualImagePanel();
         expectationIndex = new ConcurrentHashMap<>();
+        manifestOrderSummaries = new ConcurrentHashMap<>();
         scanProgress = new ConcurrentHashMap<>();
         baseFolders = new ArrayList<>();
         photoRefreshInFlight = Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
@@ -1058,6 +1062,7 @@ public class LabelFinderUI extends JFrame {
     }
     private void clearProgressCaches() {
         expectationIndex.clear();
+        manifestOrderSummaries.clear();
         scanProgress.clear();
         completedOrders.clear();
         scanHistory.clear();
@@ -1164,22 +1169,31 @@ public class LabelFinderUI extends JFrame {
     }
     private void rebuildExpectations() {
         expectationIndex.clear();
+        manifestOrderSummaries.clear();
         if (!hasBaseFolders()) {
             return;
+        }
+        Set<String> manifestOrders = new LinkedHashSet<>();
+        for (File root : baseFolders) {
+            manifestOrders.addAll(loadManifestOrders(root));
         }
         for (File root : baseFolders) {
             if (root == null || !root.isDirectory()) {
                 continue;
             }
             try (Stream<Path> stream = Files.walk(root.toPath(), 8)) {
-                stream.filter(Files::isRegularFile).filter(p -> p.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".json")).forEach(p -> {
-                    OrderContribution contribution = readOrderContribution(p.toFile());
-                    if (contribution == null || contribution.orderId == null || contribution.orderId.isBlank()) {
-                        return;
-                    }
-                    OrderExpectation expectation = expectationIndex.computeIfAbsent(contribution.orderId, OrderExpectation::new);
-                    expectation.registerItem(contribution.orderItemId, contribution.itemQuantity);
-                });
+                stream.filter(Files::isRegularFile)
+                    .filter(LabelFinderUI::isPotentialOrderJson)
+                    .forEach(path -> {
+                        OrderContribution contribution = OrderContributionReader.readFromFile(path.toFile());
+                        if (contribution == null) {
+                            return;
+                        }
+                        if (manifestOrders.contains(contribution.orderId())) {
+                            return;
+                        }
+                        registerContribution(contribution);
+                    });
             }
             catch (IOException ignored) {
             }
@@ -1201,6 +1215,16 @@ public class LabelFinderUI extends JFrame {
         return null;
     }
     private OrderExpectation loadExpectationForOrder(String orderId) {
+        if (orderId == null || orderId.isBlank()) {
+            return null;
+        }
+        OrderQuantitiesManifest.OrderSummary summary = manifestOrderSummaries.get(orderId);
+        if (summary != null) {
+            OrderExpectation expectation = buildExpectationFromSummary(summary);
+            if (expectation != null && !expectation.isEmpty()) {
+                return expectation;
+            }
+        }
         if (!hasBaseFolders()) {
             return null;
         }
@@ -1210,40 +1234,109 @@ public class LabelFinderUI extends JFrame {
                 continue;
             }
             try (Stream<Path> stream = Files.walk(root.toPath(), 8)) {
-                stream.filter(Files::isRegularFile).filter(p -> p.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".json")).forEach(p -> {
-                    OrderContribution contribution = readOrderContribution(p.toFile());
-                    if (contribution == null) {
-                        return;
-                    }
-                    if (!orderId.equals(contribution.orderId)) {
-                        return;
-                    }
-                    expectation.registerItem(contribution.orderItemId, contribution.itemQuantity);
-                });
+                stream.filter(Files::isRegularFile)
+                    .filter(LabelFinderUI::isPotentialOrderJson)
+                    .forEach(path -> {
+                        OrderContribution contribution = OrderContributionReader.readFromFile(path.toFile());
+                        if (contribution == null) {
+                            return;
+                        }
+                        if (!orderId.equals(contribution.orderId())) {
+                            return;
+                        }
+                        expectation.registerItem(contribution.orderItemId(), contribution.itemQuantity());
+                    });
             }
             catch (IOException ignored) {
             }
         }
         return expectation.isEmpty() ? null : expectation;
     }
-    private static OrderContribution readOrderContribution(File jsonFile) {
-        if (jsonFile == null || !jsonFile.isFile()) {
-            return null;
+    private Set<String> loadManifestOrders(File root) {
+        Set<String> coveredOrders = new LinkedHashSet<>();
+        if (root == null || !root.isDirectory()) {
+            return coveredOrders;
         }
-        try {
-            String content = Files.readString(jsonFile.toPath());
-            JSONObject root = new JSONObject(content);
-            String orderId = root.optString("orderId", "");
-            String itemId = root.optString("orderItemId", "");
-            if (orderId.isBlank() || itemId.isBlank()) {
-                return null;
+        LinkedHashSet<Path> manifestPaths = new LinkedHashSet<>(ancestorManifestCandidates(root));
+        try (Stream<Path> stream = Files.walk(root.toPath(), 4)) {
+            stream.filter(Files::isRegularFile)
+                .filter(path -> {
+                    String fileName = path.getFileName() != null ? path.getFileName().toString() : "";
+                    return fileName.equalsIgnoreCase(OrderQuantitiesManifest.DEFAULT_FILENAME);
+                })
+                .forEach(manifestPaths::add);
+        }
+        catch (IOException ignored) {
+        }
+        for (Path path : manifestPaths) {
+            if (path == null || !Files.isRegularFile(path)) {
+                continue;
             }
-            int quantity = Math.max(root.optInt("quantity", 1), 1);
-            return new OrderContribution(orderId, itemId, quantity);
+            try {
+                OrderQuantitiesManifest manifest = OrderQuantitiesManifest.load(path);
+                for (OrderQuantitiesManifest.OrderSummary summary : manifest.orders()) {
+                    if (summary == null || summary.orderId() == null || summary.orderId().isBlank()) {
+                        continue;
+                    }
+                    if (manifestOrderSummaries.containsKey(summary.orderId())) {
+                        coveredOrders.add(summary.orderId());
+                        continue;
+                    }
+                    manifestOrderSummaries.put(summary.orderId(), summary);
+                    OrderExpectation expectation = buildExpectationFromSummary(summary);
+                    if (expectation != null) {
+                        expectationIndex.put(summary.orderId(), expectation);
+                        coveredOrders.add(summary.orderId());
+                    }
+                }
+            }
+            catch (IOException ex) {
+                LOGGER.log(Level.FINE, "Failed to load manifest " + path + ": " + ex.getMessage(), ex);
+            }
         }
-        catch (IOException | JSONException ignored) {
+        return coveredOrders;
+    }
+    private List<Path> ancestorManifestCandidates(File root) {
+        List<Path> candidates = new ArrayList<>();
+        File current = root;
+        int steps = 0;
+        while (current != null && steps < 4) {
+            Path candidate = current.toPath().resolve(OrderQuantitiesManifest.DEFAULT_FILENAME);
+            if (Files.isRegularFile(candidate)) {
+                candidates.add(candidate);
+            }
+            current = current.getParentFile();
+            steps++;
+        }
+        return candidates;
+    }
+    private void registerContribution(OrderContribution contribution) {
+        if (contribution == null || contribution.orderId() == null || contribution.orderId().isBlank()) {
+            return;
+        }
+        OrderExpectation expectation = expectationIndex.computeIfAbsent(contribution.orderId(), OrderExpectation::new);
+        expectation.registerItem(contribution.orderItemId(), contribution.itemQuantity());
+    }
+    private OrderExpectation buildExpectationFromSummary(OrderQuantitiesManifest.OrderSummary summary) {
+        if (summary == null) {
             return null;
         }
+        OrderExpectation expectation = new OrderExpectation(summary.orderId());
+        List<OrderQuantitiesManifest.ItemSummary> items = summary.items();
+        if (items != null) {
+            for (OrderQuantitiesManifest.ItemSummary item : items) {
+                if (item == null) {
+                    continue;
+                }
+                expectation.registerItem(item.orderItemId(), item.itemQuantity());
+            }
+        }
+        return expectation.isEmpty() ? null : expectation;
+    }
+    private static boolean isPotentialOrderJson(Path path) {
+        String fileName = path.getFileName() != null ? path.getFileName().toString() : "";
+        String lower = fileName.toLowerCase(Locale.ROOT);
+        return lower.endsWith(".json") && !lower.equals(OrderQuantitiesManifest.DEFAULT_FILENAME);
     }
     private ScanUpdate trackScanProgress(String orderId, String itemKey, String rawItemId) {
         CompletedOrderInfo archived = completedOrders.get(orderId);
@@ -1909,8 +2002,6 @@ public class LabelFinderUI extends JFrame {
             this.itemExpected = itemExpected;
             this.itemIdentifier = itemIdentifier;
         }
-    }
-    private record OrderContribution(String orderId, String orderItemId, int itemQuantity) {
     }
     private void addPrintShortcut(JRootPane rootPane) {
         int mask = Toolkit.getDefaultToolkit().getMenuShortcutKeyMaskEx();

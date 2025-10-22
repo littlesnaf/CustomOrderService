@@ -2,8 +2,11 @@ package com.osman.ui.main;
 
 import com.osman.config.ConfigService;
 import com.osman.core.fs.OrderDiscoveryService;
+import com.osman.core.fs.OrderDiscoveryService.OrderSearchResult;
 import com.osman.core.fs.ZipExtractor;
 import com.osman.core.pdf.ShippingLabelExtractor;
+import com.osman.core.order.OrderQuantitiesManifest;
+import com.osman.core.order.OrderQuantitiesManifestBuilder;
 import com.osman.core.render.FontRegistry;
 import com.osman.core.render.MugRenderer;
 import com.osman.integration.amazon.CustomerGroup;
@@ -456,6 +459,8 @@ public class MainUIView {
      */
     private void handleFolder(File customerFolder, File outputDirectory, String customerNameForFile) {
         log("\n--- Processing folder: " + customerFolder.getName() + " ---");
+        OrderQuantitiesManifestBuilder manifestBuilder = new OrderQuantitiesManifestBuilder();
+        List<File> leafOrders = Collections.emptyList();
         try {
             if (customerFolder.getName().equalsIgnoreCase(OUTPUT_FOLDER_NAME)) {
                 log("  -> Skipped '" + OUTPUT_FOLDER_NAME + "' folder.");
@@ -494,8 +499,14 @@ public class MainUIView {
 
             File scanRoot = resolveScanRoot(customerFolder);
 
-            List<File> leafOrders = orderDiscoveryService.findOrderLeafFolders(scanRoot, 6);
+            OrderSearchResult discovery = orderDiscoveryService.discoverOrderFolders(scanRoot, 6);
+            leafOrders = new ArrayList<>(discovery.orderFolders());
             log("  -> " + leafOrders.size() + " order folder(s) found inside the zip.");
+            reportIncompleteOrders(discovery, customerFolder);
+            for (File leafOrder : leafOrders) {
+                manifestBuilder.collectFromFolder(leafOrder);
+            }
+
             List<File> eligibleOrders = filterOrdersByShippingLabels(leafOrders);
             ReadyFolderAllocator readyAllocator = new ReadyFolderAllocator(customerFolder, customerNameForFile, READY_FOLDER_ORDER_LIMIT);
             AtomicInteger orderSequence = new AtomicInteger();
@@ -514,6 +525,7 @@ public class MainUIView {
                 log("  -> Shipping label filter removed all " + leafOrders.size() + " order folder(s); skipping rendering.");
             } else {
                 log("  -> No leaf order folder found. Trying the folder itself as MULTI order…");
+                manifestBuilder.collectFromFolder(scanRoot);
                 leafProcessor.processAsMulti(
                     customerFolder,
                     index -> readyAllocator.folderForOrder(index),
@@ -526,6 +538,8 @@ public class MainUIView {
             String errorMsg = "  -> CRITICAL (" + customerFolder.getName() + "): " + ex.getMessage();
             log(errorMsg);
             failedItems.add(customerFolder.getName() + " - Reason: " + ex.getMessage());
+        } finally {
+            mergeIntoGlobalManifest(customerFolder, leafOrders, manifestBuilder);
         }
     }
 
@@ -535,6 +549,8 @@ public class MainUIView {
 
         boolean processedOk = false;
         File extractRoot = null;
+        OrderQuantitiesManifestBuilder manifestBuilder = new OrderQuantitiesManifestBuilder();
+        List<File> leafOrders = Collections.emptyList();
 
         ZipArchiveExtractor extractor = new ZipArchiveExtractor(this::log, failedItems, () -> cancelRequested, OUTPUT_FOLDER_NAME);
         LeafOrderProcessor leafProcessor = new LeafOrderProcessor(() -> cancelRequested, this::log, failedItems, OUTPUT_FOLDER_NAME);
@@ -551,7 +567,12 @@ public class MainUIView {
             String customerName = baseName;
 
             File scanRoot = extractRoot;
-            List<File> leafOrders = orderDiscoveryService.findOrderLeafFolders(scanRoot, 6);
+            OrderSearchResult discovery = orderDiscoveryService.discoverOrderFolders(scanRoot, 6);
+            leafOrders = new ArrayList<>(discovery.orderFolders());
+            reportIncompleteOrders(discovery, extractRoot);
+            for (File leafOrder : leafOrders) {
+                manifestBuilder.collectFromFolder(leafOrder);
+            }
             List<File> eligibleOrders = filterOrdersByShippingLabels(leafOrders);
             ReadyFolderAllocator readyAllocator = new ReadyFolderAllocator(extractRoot, customerName, READY_FOLDER_ORDER_LIMIT);
             AtomicInteger orderSequence = new AtomicInteger();
@@ -571,6 +592,7 @@ public class MainUIView {
                 log("  -> Shipping label filter removed all " + leafOrders.size() + " order folder(s); skipping rendering.");
             } else {
                 log("  -> No leaf folder found; trying zip root as MULTI order…");
+                manifestBuilder.collectFromFolder(scanRoot);
                 processedOk = leafProcessor.processAsMulti(
                     scanRoot,
                     index -> readyAllocator.folderForOrder(index),
@@ -587,6 +609,9 @@ public class MainUIView {
             log(errorMsg);
             failedItems.add(zipFile.getName() + " - Reason: " + ex.getMessage());
         } finally {
+            if (extractRoot != null) {
+                mergeIntoGlobalManifest(extractRoot, leafOrders, manifestBuilder);
+            }
             if (processedOk) {
                 if (zipFile.delete()) log("  -> Cleaned up: original zip deleted: " + zipFile.getName());
                 else log("  -> WARNING: Zip could not be deleted: " + zipFile.getName());
@@ -594,6 +619,75 @@ public class MainUIView {
                 log("  -> Zip not deleted (processing failed): " + zipFile.getName());
             }
         }
+    }
+
+    private void mergeIntoGlobalManifest(File referenceFolder,
+                                         List<File> leafOrders,
+                                         OrderQuantitiesManifestBuilder builder) {
+        if (referenceFolder == null || builder == null || builder.isEmpty()) {
+            return;
+        }
+        try {
+            Path manifestPath = resolveGlobalManifestPath(referenceFolder, leafOrders);
+            if (manifestPath == null) {
+                return;
+            }
+            builder.mergeInto(manifestPath);
+            log("  -> Updated order manifest: " + manifestPath.toAbsolutePath());
+        } catch (IOException ex) {
+            log("  -> WARNING: Failed to update order manifest for " + referenceFolder.getAbsolutePath() + ": " + ex.getMessage());
+        }
+    }
+
+    private Path resolveGlobalManifestPath(File referenceFolder, List<File> leafOrders) {
+        File sampleLeaf = (leafOrders != null && !leafOrders.isEmpty()) ? leafOrders.get(0) : null;
+        File batchRoot = findDigitAncestor(sampleLeaf);
+        if (batchRoot == null) {
+            batchRoot = findDigitAncestor(referenceFolder);
+        }
+        if (batchRoot == null) {
+            batchRoot = fallbackManifestContainer(referenceFolder);
+        }
+        if (batchRoot == null) {
+            return null;
+        }
+        return batchRoot.toPath().resolve(OrderQuantitiesManifest.DEFAULT_FILENAME);
+    }
+
+    private File findDigitAncestor(File start) {
+        File current = start;
+        while (current != null) {
+            if (isDigitsOnly(current.getName()) && current.isDirectory()) {
+                return current;
+            }
+            current = current.getParentFile();
+        }
+        return null;
+    }
+
+    private File fallbackManifestContainer(File referenceFolder) {
+        File current = referenceFolder;
+        int steps = 0;
+        while (current != null && steps < 2) {
+            current = current.getParentFile();
+            steps++;
+        }
+        if (current != null) {
+            return current;
+        }
+        return referenceFolder != null ? referenceFolder.getParentFile() : null;
+    }
+
+    private boolean isDigitsOnly(String name) {
+        if (name == null || name.isBlank()) {
+            return false;
+        }
+        for (int i = 0; i < name.length(); i++) {
+            if (!Character.isDigit(name.charAt(i))) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /** Returns true if both files resolve to the same canonical path. */
@@ -619,6 +713,23 @@ public class MainUIView {
         }
         boolean digitsOnly = name.chars().allMatch(Character::isDigit);
         return digitsOnly;
+    }
+
+    private void reportIncompleteOrders(OrderSearchResult discovery, File referenceFolder) {
+        if (discovery == null || !discovery.hasIncompleteFolders()) {
+            return;
+        }
+        List<File> incomplete = discovery.incompleteOrderFolders();
+        if (incomplete.isEmpty()) {
+            return;
+        }
+        log("  -> WARNING: Detected " + incomplete.size() + " order folder(s) missing SVG/JSON assets.");
+        for (File folder : incomplete) {
+            String message = "    -> Missing design assets: " + folder.getAbsolutePath();
+            log(message);
+            String referenceName = referenceFolder != null ? referenceFolder.getName() : "Unknown";
+            failedItems.add(referenceName + " - " + message.trim());
+        }
     }
 
     /** Appends a line to the UI log area. */

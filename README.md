@@ -49,6 +49,7 @@ java -jar target/OrnamentSkuUI.jar
 2. After fonts load, click **Select ‘Orders’ Folder or Zip Files…** to pick one or more customer folders or ZIP archives.
 3. The worker extracts embedded ZIPs, discovers leaf order folders, and renders artwork using `ImageProcessor`.
 4. Output PNGs are saved under a `Ready Designs` folder inside each order/customer directory.
+5. A consolidated `order-quantities.json` is maintained at the batch root (two levels above the customer folders) so LabelFinder can load order and item quantities without walking every subdirectory.
 
 ### LabelFinderUI workflow
 

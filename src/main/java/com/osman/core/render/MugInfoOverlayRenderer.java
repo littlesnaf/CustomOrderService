@@ -69,7 +69,7 @@ final class MugInfoOverlayRenderer {
         String barcodePayload = buildBarcodePayload(orderInfo);
         BufferedImage barcode = generateBarcodeWithText(barcodePayload, 1000, 120);
         int barcodeX = infoBoxX + (infoBoxWidth - barcode.getWidth()) / 2;
-        int barcodeCenterY = infoBoxY + infoBoxHeight / 2;
+        int barcodeCenterY = infoBoxY + infoBoxHeight / 2-20;
         int barcodeY = barcodeCenterY - barcode.getHeight() / 2;
         g2d.drawImage(barcode, barcodeX, barcodeY, null);
     }
