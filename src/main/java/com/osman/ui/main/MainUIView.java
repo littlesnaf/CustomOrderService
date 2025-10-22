@@ -27,6 +27,7 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -145,7 +146,8 @@ public class MainUIView {
         loadInitialFonts();
     }
 
-    private List<File> filterOrdersByShippingLabels(List<File> leafOrders) {
+    private List<File> filterOrdersByShippingLabels(List<File> leafOrders,
+                                                    Collection<File> incompleteOrderFolders) {
         if (leafOrders == null || leafOrders.isEmpty()) {
             return Collections.emptyList();
         }
@@ -156,6 +158,7 @@ public class MainUIView {
         }
 
         Map<File, ShippingLabelCacheEntry> cache = new LinkedHashMap<>();
+        Map<File, Set<String>> matchedOrdersByLabelFolder = new LinkedHashMap<>();
         List<File> eligible = new ArrayList<>();
 
         for (File orderFolder : leafOrders) {
@@ -189,14 +192,50 @@ public class MainUIView {
                     + shippingFolder.getAbsolutePath() + ").");
                 continue;
             }
+            matchedOrdersByLabelFolder
+                .computeIfAbsent(cacheKey, key -> new LinkedHashSet<>())
+                .add(orderId);
             eligible.add(orderFolder);
         }
 
-        if (eligible.size() != leafOrders.size()) {
-            log("  -> Shipping label matcher retained " + eligible.size() + " of " + leafOrders.size() + " folder(s).");
+        for (Map.Entry<File, ShippingLabelCacheEntry> entry : cache.entrySet()) {
+            File shippingFolder = entry.getKey();
+            Set<String> declaredOrders = new LinkedHashSet<>(entry.getValue().orderIds());
+            Set<String> matched = matchedOrdersByLabelFolder.getOrDefault(shippingFolder, Collections.emptySet());
+            declaredOrders.removeAll(matched);
+            if (!declaredOrders.isEmpty()) {
+                log("  -> ERROR: Shipping labels under " + shippingFolder.getAbsolutePath()
+                    + " reference " + declaredOrders.size() + " order(s) with no eligible customer folder.");
+                for (String orphanOrderId : declaredOrders) {
+                    File incomplete = findIncompleteFolder(orphanOrderId, incompleteOrderFolders);
+                    if (incomplete != null) {
+                        log("    -> ERROR: Missing design assets for folder " + incomplete.getAbsolutePath());
+                        failedItems.add(incomplete.getName() + " - Missing required SVG/JSON assets");
+                    } else {
+                        log("    -> ERROR: No customer folder discovered for shipping label order " + orphanOrderId);
+                        failedItems.add(orphanOrderId + " - Shipping label present but customer folder missing");
+                    }
+                }
+            }
         }
 
         return eligible;
+    }
+
+    private File findIncompleteFolder(String orderId, Collection<File> incompleteOrderFolders) {
+        if (orderId == null || incompleteOrderFolders == null || incompleteOrderFolders.isEmpty()) {
+            return null;
+        }
+        for (File folder : incompleteOrderFolders) {
+            if (folder == null) {
+                continue;
+            }
+            String name = folder.getName();
+            if (name != null && name.contains(orderId)) {
+                return folder;
+            }
+        }
+        return null;
     }
 
     private void recordUnmatched(File orderFolder, String reason) {
@@ -507,7 +546,7 @@ public class MainUIView {
                 manifestBuilder.collectFromFolder(leafOrder);
             }
 
-            List<File> eligibleOrders = filterOrdersByShippingLabels(leafOrders);
+            List<File> eligibleOrders = filterOrdersByShippingLabels(leafOrders, discovery.incompleteOrderFolders());
             ReadyFolderAllocator readyAllocator = new ReadyFolderAllocator(customerFolder, customerNameForFile, READY_FOLDER_ORDER_LIMIT);
             AtomicInteger orderSequence = new AtomicInteger();
             LeafOrderProcessor leafProcessor = new LeafOrderProcessor(() -> cancelRequested, this::log, failedItems, OUTPUT_FOLDER_NAME);
@@ -573,7 +612,7 @@ public class MainUIView {
             for (File leafOrder : leafOrders) {
                 manifestBuilder.collectFromFolder(leafOrder);
             }
-            List<File> eligibleOrders = filterOrdersByShippingLabels(leafOrders);
+            List<File> eligibleOrders = filterOrdersByShippingLabels(leafOrders, discovery.incompleteOrderFolders());
             ReadyFolderAllocator readyAllocator = new ReadyFolderAllocator(extractRoot, customerName, READY_FOLDER_ORDER_LIMIT);
             AtomicInteger orderSequence = new AtomicInteger();
 
