@@ -2,6 +2,7 @@ package com.osman.ui.main;
 
 import com.osman.core.render.MugRenderErrorLogger;
 import com.osman.core.render.MugRenderer;
+import com.osman.logging.AppLogger;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -14,8 +15,12 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.IntFunction;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 final class LeafOrderProcessor {
+
+    private static final Logger LOGGER = AppLogger.get();
 
     private final BooleanSupplier cancelRequested;
     private final Consumer<String> log;
@@ -100,7 +105,9 @@ final class LeafOrderProcessor {
         } catch (Exception ex) {
             String errorMsg = "  -> CRITICAL (" + contextFolder.getName() + "): " + ex.getMessage();
             log.accept(errorMsg);
-            failedItems.add(contextFolder.getName() + " - Reason: " + ex.getMessage());
+            String summary = contextFolder.getName() + " - Reason: " + ex.getMessage();
+            failedItems.add(summary);
+            LOGGER.log(Level.SEVERE, summary, ex);
             MugRenderErrorLogger.logFailure(
                 "multi",
                 contextFolder.toPath(),
@@ -128,7 +135,9 @@ final class LeafOrderProcessor {
         } catch (Exception ex) {
             String errorMsg = "    -> ERROR processing " + subFolder.getName() + ": " + ex.getMessage();
             log.accept(errorMsg);
-            failedItems.add(contextFolder.getName() + "/" + subFolder.getName() + " - Reason: " + ex.getMessage());
+            String summary = contextFolder.getName() + "/" + subFolder.getName() + " - Reason: " + ex.getMessage();
+            failedItems.add(summary);
+            LOGGER.log(Level.SEVERE, summary, ex);
             MugRenderErrorLogger.logFailure(
                 "leaf",
                 contextFolder != null ? contextFolder.toPath() : null,

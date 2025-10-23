@@ -1,6 +1,7 @@
 package com.osman.ui.main;
 
 import com.osman.core.fs.ZipExtractor;
+import com.osman.logging.AppLogger;
 
 import java.io.File;
 import java.io.IOException;
@@ -12,8 +13,12 @@ import java.util.Locale;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.stream.Stream;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 final class ZipArchiveExtractor {
+
+    private static final Logger LOGGER = AppLogger.get();
 
     private final Consumer<String> log;
     private final List<String> failedItems;
@@ -83,7 +88,9 @@ final class ZipArchiveExtractor {
             } catch (Exception ex) {
                 String errorMsg = "  -> ERROR extracting " + zip.getName() + ": " + ex.getMessage();
                 log.accept(errorMsg);
-                failedItems.add(zip.getName() + " - Reason: " + ex.getMessage());
+                String summary = zip.getName() + " - Reason: " + ex.getMessage();
+                failedItems.add(summary);
+                LOGGER.log(Level.SEVERE, summary, ex);
             }
         }
         return true;

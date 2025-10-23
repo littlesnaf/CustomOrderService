@@ -20,7 +20,7 @@ public final class AppLogger {
     }
 
     private static Logger createLogger() {
-        Logger logger = Logger.getLogger("com.osman.mugeditor");
+        Logger logger = Logger.getLogger("com.osman.CustomOrderService");
         logger.setUseParentHandlers(false);
         ConsoleHandler handler = new ConsoleHandler();
         handler.setLevel(Level.INFO);
@@ -33,6 +33,16 @@ public final class AppLogger {
         });
         logger.addHandler(handler);
         logger.setLevel(Level.INFO);
+
+        try {
+            DatabaseLogHandler dbHandler = new DatabaseLogHandler();
+            dbHandler.setLevel(Level.INFO);
+            logger.addHandler(dbHandler);
+        } catch (IllegalStateException ex) {
+            logger.info("Central logging disabled: " + ex.getMessage());
+        } catch (Exception ex) {
+            logger.warning("Failed to initialize central logging: " + ex.getMessage());
+        }
         return logger;
     }
 }

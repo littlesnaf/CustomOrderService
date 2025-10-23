@@ -17,6 +17,7 @@ import com.osman.integration.amazon.ItemTypeGroup;
 import com.osman.integration.amazon.ShippingLayoutPlanner;
 import com.osman.integration.amazon.ShippingLayoutPlanner.MixMetadata;
 import com.osman.integration.amazon.ShippingLayoutPlanner.ShippingSpeed;
+import com.osman.logging.AppLogger;
 import com.osman.ui.amazon.AmazonImportPanel;
 import com.osman.ui.ornament.OrnamentSkuPanel;
 
@@ -36,6 +37,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -56,6 +59,7 @@ public class MainUIView {
     private static final String OUTPUT_FOLDER_NAME = "Ready Designs";
     private static final int READY_FOLDER_ORDER_LIMIT = 25;
     private static final Pattern ORDER_ID_PATTERN = Pattern.compile("\\d{3}-\\d{7}-\\d{7}");
+    private static final Logger LOGGER = AppLogger.get();
     private final ConfigService configService = ConfigService.getInstance();
     private final OrderDiscoveryService orderDiscoveryService = new OrderDiscoveryService();
 
@@ -210,10 +214,14 @@ public class MainUIView {
                     File incomplete = findIncompleteFolder(orphanOrderId, incompleteOrderFolders);
                     if (incomplete != null) {
                         log("    -> ERROR: Missing design assets for folder " + incomplete.getAbsolutePath());
-                        failedItems.add(incomplete.getName() + " - Missing required SVG/JSON assets");
+                        String summary = incomplete.getName() + " - Missing required SVG/JSON assets";
+                        failedItems.add(summary);
+                        LOGGER.log(Level.SEVERE, summary);
                     } else {
                         log("    -> ERROR: No customer folder discovered for shipping label order " + orphanOrderId);
-                        failedItems.add(orphanOrderId + " - Shipping label present but customer folder missing");
+                        String summary = orphanOrderId + " - Shipping label present but customer folder missing";
+                        failedItems.add(summary);
+                        LOGGER.log(Level.SEVERE, summary);
                     }
                 }
             }
@@ -576,7 +584,9 @@ public class MainUIView {
         } catch (Exception ex) {
             String errorMsg = "  -> CRITICAL (" + customerFolder.getName() + "): " + ex.getMessage();
             log(errorMsg);
-            failedItems.add(customerFolder.getName() + " - Reason: " + ex.getMessage());
+            String summary = customerFolder.getName() + " - Reason: " + ex.getMessage();
+            failedItems.add(summary);
+            LOGGER.log(Level.SEVERE, summary, ex);
         } finally {
             mergeIntoGlobalManifest(customerFolder, leafOrders, manifestBuilder);
         }
@@ -646,7 +656,9 @@ public class MainUIView {
         } catch (Exception ex) {
             String errorMsg = "  -> CRITICAL (" + zipFile.getName() + "): " + ex.getMessage();
             log(errorMsg);
-            failedItems.add(zipFile.getName() + " - Reason: " + ex.getMessage());
+            String summary = zipFile.getName() + " - Reason: " + ex.getMessage();
+            failedItems.add(summary);
+            LOGGER.log(Level.SEVERE, summary, ex);
         } finally {
             if (extractRoot != null) {
                 mergeIntoGlobalManifest(extractRoot, leafOrders, manifestBuilder);
@@ -767,7 +779,9 @@ public class MainUIView {
             String message = "    -> Missing design assets: " + folder.getAbsolutePath();
             log(message);
             String referenceName = referenceFolder != null ? referenceFolder.getName() : "Unknown";
-            failedItems.add(referenceName + " - " + message.trim());
+            String summary = referenceName + " - " + message.trim();
+            failedItems.add(summary);
+            LOGGER.log(Level.SEVERE, summary);
         }
     }
 
