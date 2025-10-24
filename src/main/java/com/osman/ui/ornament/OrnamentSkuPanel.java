@@ -128,6 +128,8 @@ public class OrnamentSkuPanel extends JPanel {
         }
     }
 
+    private static final int MIN_UNITS_FOR_DEDICATED_SKU = 3;
+
     private void onRun() {
         if (inputListModel.isEmpty()) {
             JOptionPane.showMessageDialog(this, "Please add at least one input PDF.", "Missing Inputs", JOptionPane.WARNING_MESSAGE);
@@ -183,20 +185,24 @@ public class OrnamentSkuPanel extends JPanel {
                     }
 
 
-                appendLog("Checking for low quantity SKUs...");
-                List<BundleRef> lowQtyBundles = new ArrayList<>();
-                Map<String, List<BundleRef>> finalSkuIndex = new LinkedHashMap<>();
+                    appendLog("Checking for low quantity SKUs...");
+                    List<BundleRef> lowQtyBundles = new ArrayList<>();
+                    Map<String, List<BundleRef>> finalSkuIndex = new LinkedHashMap<>();
 
-                for (Map.Entry<String, List<BundleRef>> entry : skuIndex.entrySet()) {
-                    if (entry.getValue().size() < 3) {
-                  lowQtyBundles.addAll(entry.getValue());
-                    } else {
-
-                        finalSkuIndex.put(entry.getKey(), entry.getValue());
+                    for (Map.Entry<String, List<BundleRef>> entry : skuIndex.entrySet()) {
+                        String sku = entry.getKey();
+                        List<BundleRef> refs = entry.getValue();
+                        int totalUnits = calculateTotalUnitsForSku(sku, refs);
+                        if (totalUnits < MIN_UNITS_FOR_DEDICATED_SKU) {
+                            lowQtyBundles.addAll(refs);
+                            appendLog("  -> SKU " + sku + " has " + totalUnits + " unit(s); moving to mix.");
+                        } else {
+                            finalSkuIndex.put(sku, refs);
+                            appendLog("  -> SKU " + sku + " has " + totalUnits + " unit(s); dedicating output PDF.");
+                        }
                     }
-                }
 
-                appendLog("High-volume SKUs: " + finalSkuIndex.size());
+                    appendLog("High-volume SKUs: " + finalSkuIndex.size());
 
                     for (Map.Entry<String, List<BundleRef>> e : finalSkuIndex.entrySet()) {
                         String sku = e.getKey();
@@ -214,8 +220,6 @@ public class OrnamentSkuPanel extends JPanel {
                         appendLog("Wrote: mix sections (" + mixedOutput.size()
                                 + " bundles from mixed or low-quantity SKUs)");
                     }
-
-
                     renameSkuFilesWithCounts(outDir, finalSkuIndex);
                 }
 
@@ -234,11 +238,7 @@ public class OrnamentSkuPanel extends JPanel {
     private void renameSkuFilesWithCounts(Path outDir, Map<String, List<BundleRef>> skuIndex) {
         for (Map.Entry<String, List<BundleRef>> e : skuIndex.entrySet()) {
             String sku = e.getKey();
-            int totalCount = 0;
-            for (BundleRef br : e.getValue()) {
-                totalCount += br.bundle.skuCounts.getOrDefault(sku, 0);
-            }
-            if (totalCount <= 0) totalCount = e.getValue().size();
+            int totalCount = calculateTotalUnitsForSku(sku, e.getValue());
             String base = sanitize(sku);
             Path oldFile = outDir.resolve(base + ".pdf");
             if (!Files.exists(oldFile)) continue;
@@ -257,6 +257,17 @@ public class OrnamentSkuPanel extends JPanel {
                 appendLog("Rename failed for " + oldFile.getFileName() + ": " + ioe.getMessage());
             }
         }
+    }
+
+    private static int calculateTotalUnitsForSku(String sku, List<BundleRef> refs) {
+        int total = 0;
+        for (BundleRef ref : refs) {
+            total += ref.bundle.skuCounts.getOrDefault(sku, 0);
+        }
+        if (total <= 0) {
+            total = refs.size();
+        }
+        return total;
     }
 
     private void writeMixedSectionBundles(Path outDir,

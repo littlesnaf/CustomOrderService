@@ -550,9 +550,6 @@ public class MainUIView {
             leafOrders = new ArrayList<>(discovery.orderFolders());
             log("  -> " + leafOrders.size() + " order folder(s) found inside the zip.");
             reportIncompleteOrders(discovery, customerFolder);
-            for (File leafOrder : leafOrders) {
-                manifestBuilder.collectFromFolder(leafOrder);
-            }
 
             List<File> eligibleOrders = filterOrdersByShippingLabels(leafOrders, discovery.incompleteOrderFolders());
             ReadyFolderAllocator readyAllocator = new ReadyFolderAllocator(customerFolder, customerNameForFile, READY_FOLDER_ORDER_LIMIT);
@@ -560,6 +557,9 @@ public class MainUIView {
             LeafOrderProcessor leafProcessor = new LeafOrderProcessor(() -> cancelRequested, this::log, failedItems, OUTPUT_FOLDER_NAME);
 
             if (!eligibleOrders.isEmpty()) {
+                for (File eligibleOrder : eligibleOrders) {
+                    manifestBuilder.collectFromFolder(eligibleOrder);
+                }
                 LeafOrderProcessor.ProcessingSummary summary = leafProcessor.processLeaves(
                     eligibleOrders,
                     index -> readyAllocator.folderForOrder(index),
@@ -619,14 +619,14 @@ public class MainUIView {
             OrderSearchResult discovery = orderDiscoveryService.discoverOrderFolders(scanRoot, 6);
             leafOrders = new ArrayList<>(discovery.orderFolders());
             reportIncompleteOrders(discovery, extractRoot);
-            for (File leafOrder : leafOrders) {
-                manifestBuilder.collectFromFolder(leafOrder);
-            }
             List<File> eligibleOrders = filterOrdersByShippingLabels(leafOrders, discovery.incompleteOrderFolders());
             ReadyFolderAllocator readyAllocator = new ReadyFolderAllocator(extractRoot, customerName, READY_FOLDER_ORDER_LIMIT);
             AtomicInteger orderSequence = new AtomicInteger();
 
             if (!eligibleOrders.isEmpty()) {
+                for (File eligibleOrder : eligibleOrders) {
+                    manifestBuilder.collectFromFolder(eligibleOrder);
+                }
                 log("  -> " + eligibleOrders.size() + " order folder(s) will be rendered after shipping label filtering.");
                 LeafOrderProcessor.ProcessingSummary summary = leafProcessor.processLeaves(
                     eligibleOrders,
@@ -785,8 +785,12 @@ public class MainUIView {
         }
     }
 
-    /** Appends a line to the UI log area. */
+    /** Appends a line to the UI log area and persists it via the shared logger. */
     private void log(String message) {
+        if (message == null) {
+            return;
+        }
+        LOGGER.info(message);
         SwingUtilities.invokeLater(() -> logArea.append(message + "\n"));
     }
 

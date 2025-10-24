@@ -28,6 +28,7 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -46,6 +47,8 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.logging.FileHandler;
+import java.util.logging.SimpleFormatter;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -65,6 +68,30 @@ import java.util.stream.Stream;
  */
 public class LabelFinderUI extends JFrame {
     private static final Logger LOGGER = AppLogger.get();
+    private static final Path SCAN_LOG_PATH = Paths.get("label-finder-scans.log");
+    private static final Logger SCAN_LOGGER = createScanLogger();
+
+    private static Logger createScanLogger() {
+        Logger logger = Logger.getLogger("com.osman.labelfinder.scan");
+        logger.setUseParentHandlers(false);
+        logger.setLevel(Level.INFO);
+        if (logger.getHandlers().length > 0) {
+            return logger;
+        }
+        try {
+            Path parent = SCAN_LOG_PATH.getParent();
+            if (parent != null) {
+                Files.createDirectories(parent);
+            }
+            FileHandler handler = new FileHandler(SCAN_LOG_PATH.toString(), true);
+            handler.setFormatter(new SimpleFormatter());
+            logger.addHandler(handler);
+        } catch (IOException ex) {
+            LOGGER.log(Level.WARNING, "Failed to initialize scan log file", ex);
+        }
+        return logger;
+    }
+
     private static class LabelLocation {
         final File pdfFile;
         final int pageNumber;
@@ -570,7 +597,8 @@ public class LabelFinderUI extends JFrame {
         labelPagesToPrint = new ArrayList<>();
         slipPagesToPrint = new ArrayList<>();
         PageGroup lg = (labelGroups != null) ? labelGroups.get(orderId) : null;
-        if (lg != null) {
+        boolean labelFound = lg != null;
+        if (labelFound) {
             List<BufferedImage> labelPages = renderPdfPagesList(lg.file, lg.pages, 150);
             labelPagesToPrint.addAll(labelPages);
             labelImg = stackMany(withBorder(labelPages, Color.RED, 8), 12, Color.WHITE);
@@ -580,12 +608,13 @@ public class LabelFinderUI extends JFrame {
             setStatusMessage("Shipping label not found for: " + orderId);
         }
         PageGroup sg = (slipGroups != null) ? slipGroups.get(orderId) : null;
-        if (sg != null) {
+        boolean slipFound = sg != null;
+        if (slipFound) {
             List<BufferedImage> slipPages = renderPdfPagesList(sg.file, sg.pages, 150);
             slipPagesToPrint.addAll(slipPages);
             slipImg = stackMany(withBorder(slipPages, new Color(0,120,215), 8), 12, Color.WHITE);
         }
-        else if (lg != null) {
+        else if (labelFound) {
             setStatusMessage("Packing slip not found for: " + orderId);
         }
         combinedPreview = stackImagesVertically(labelImg, slipImg, 12, Color.WHITE);
@@ -595,8 +624,10 @@ public class LabelFinderUI extends JFrame {
         }
         photoView.setImages(null, null);
         List<Path> photoMatches = collectPhotosFromIndex(orderId);
+        int photoMatchCount = photoMatches.size();
         displayPhotosForOrder(orderId, photoMatches, false);
         List<Path> designMatches = collectReadyDesignPhotos(orderId);
+        int designMatchCount = designMatches.size();
         tagReadyDesigns(orderId, designMatches, true, true);
         refreshPhotosForOrderAsync(orderId);
         boolean hasPrintableContent = !labelPagesToPrint.isEmpty() || !slipPagesToPrint.isEmpty();
@@ -631,13 +662,16 @@ public class LabelFinderUI extends JFrame {
                         message = composeGenericHoldMessage(scanUpdate);
                     }
                     setStatusMessage(message);
+                    logScanEvent(orderId, scanInput, labelFound, slipFound, photoMatchCount, designMatchCount, scanUpdate, expectationMissing, false, message);
                     orderIdField.setText("");
                     orderIdField.requestFocusInWindow();
                     orderIdField.selectAll();
                     return;
                 }
                 else if (!scanUpdate.completed) {
-                    setStatusMessage(composeInProgressMessage(scanUpdate));
+                    String inProgress = composeInProgressMessage(scanUpdate);
+                    setStatusMessage(inProgress);
+                    logScanEvent(orderId, scanInput, labelFound, slipFound, photoMatchCount, designMatchCount, scanUpdate, expectationMissing, false, inProgress);
                     orderIdField.setText("");
                     orderIdField.requestFocusInWindow();
                     orderIdField.selectAll();
@@ -683,6 +717,78 @@ public class LabelFinderUI extends JFrame {
             }
             setStatusMessage(status);
         }
+        String finalStatusNote;
+        if (printed) {
+            finalStatusNote = (completionMessage != null) ? completionMessage : "Printed";
+        } else if (!hasPrintableContent) {
+            finalStatusNote = "No printable content for scan.";
+        } else if (expectationMissing) {
+            finalStatusNote = "No quantity data for order.";
+        } else {
+            finalStatusNote = "Awaiting manual action.";
+        }
+        logScanEvent(orderId, scanInput, labelFound, slipFound, photoMatchCount, designMatchCount, scanUpdate, expectationMissing, printed, finalStatusNote);
+    }
+
+    private void logScanEvent(String orderId,
+                              ScanInput scanInput,
+                              boolean labelFound,
+                              boolean slipFound,
+                              int photoCount,
+                              int readyDesignCount,
+                              ScanUpdate update,
+                              boolean expectationMissing,
+                              boolean printed,
+                              String note) {
+        if (orderId == null || orderId.isBlank()) {
+            return;
+        }
+        String rawItem = scanInput.rawItemId() != null ? scanInput.rawItemId() : "n/a";
+        String itemKey = scanInput.itemKey() != null ? scanInput.itemKey() : "n/a";
+        int scanned = (update != null) ? update.scanned : -1;
+        int expected = (update != null) ? update.expected : -1;
+        String status;
+        if (printed) {
+            status = "PRINTED";
+        } else if (update != null) {
+            if (update.duplicate) {
+                status = "DUPLICATE";
+            } else if (update.unknownItem) {
+                status = "UNKNOWN_ITEM";
+            } else if (update.alreadyComplete) {
+                status = "ALREADY_COMPLETE";
+            } else if (update.completed) {
+                status = "COMPLETED_PENDING_PRINT";
+            } else {
+                status = "IN_PROGRESS";
+            }
+        } else if (expectationMissing) {
+            status = "NO_EXPECTATION";
+        } else if (!labelFound) {
+            status = "NO_LABEL";
+        } else {
+            status = "SCANNED";
+        }
+        if (note != null && !note.isBlank()) {
+            status = status + " - " + note;
+        }
+        String basePath = (baseDir != null) ? baseDir.getAbsolutePath() : "n/a";
+        final String logMessage = String.format(
+            "order=%s item=%s key=%s labelFound=%s slipFound=%s photos=%d readyDesigns=%d scanned=%d expected=%d printed=%s baseDir=%s status=%s",
+            orderId,
+            rawItem,
+            itemKey,
+            labelFound,
+            slipFound,
+            photoCount,
+            readyDesignCount,
+            scanned,
+            expected,
+            printed,
+            basePath,
+            status
+        );
+        SCAN_LOGGER.info(logMessage);
     }
     private static boolean applyTagWithBrew(Path filePath, String tagName) {
         try {

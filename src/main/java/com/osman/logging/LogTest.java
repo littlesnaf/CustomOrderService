@@ -12,15 +12,14 @@ public class LogTest {
 
         System.out.println("Test log messages sent to database.");
 
-        // ---- BURAYI EKLEYİN ----
-        // Arka plan loglamasının bitmesi için zaman tanıyın.
+
         try {
             System.out.println("Waiting for logs to be written...");
-            Thread.sleep(3000); // 3 saniye bekle
+            Thread.sleep(3000);
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
         System.out.println("Test finished.");
-        // ---- BİTİŞ ----
+
     }
 }
