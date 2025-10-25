@@ -14,8 +14,8 @@ public final class ShippingLayoutPlanner {
     }
 
     public enum ShippingSpeed {
-        STANDARD("standard", "Standard"),
-        EXPEDITED("expedited", "Expedited");
+        STANDARD("automated", "Manual"),
+        EXPEDITED("manual", "Manual");
 
         private final String folderName;
         private final String displayName;
@@ -34,7 +34,7 @@ public final class ShippingLayoutPlanner {
         }
 
         public static ShippingSpeed from(String level) {
-            if (level != null && level.trim().equalsIgnoreCase("Standard")) {
+            if (level != null && level.trim().equalsIgnoreCase("Automated")) {
                 return STANDARD;
             }
             return EXPEDITED;
