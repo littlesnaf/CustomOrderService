@@ -150,29 +150,29 @@ public class AmazonImportPanel extends JPanel {
         loadButton.addActionListener(e -> chooseFileAndParse());
 
         downloadAllButton.addActionListener(e -> session.getCurrentBatch()
-            .ifPresentOrElse(
-                batch -> startDownload(batch, Optional.empty()),
-                () -> showMessage("Load a TXT file before downloading.")
-            ));
+                .ifPresentOrElse(
+                        batch -> startDownload(batch, Optional.empty()),
+                        () -> showMessage("Load a TXT file before downloading.")
+                ));
 
         downloadSelectedButton.addActionListener(e -> session.getCurrentBatch()
-            .ifPresentOrElse(
-                batch -> {
-                    Set<String> selectedItemTypes = resolveSelectedItemTypes();
-                    if (selectedItemTypes.isEmpty()) {
-                        showMessage("Select one or more item types in the tree to download.");
-                        return;
-                    }
-                    startDownload(batch, Optional.of(selectedItemTypes));
-                },
-                () -> showMessage("Load a TXT file before downloading.")
-            ));
+                .ifPresentOrElse(
+                        batch -> {
+                            Set<String> selectedItemTypes = resolveSelectedItemTypes();
+                            if (selectedItemTypes.isEmpty()) {
+                                showMessage("Select one or more item types in the tree to download.");
+                                return;
+                            }
+                            startDownload(batch, Optional.of(selectedItemTypes));
+                        },
+                        () -> showMessage("Load a TXT file before downloading.")
+                ));
 
         generatePackingSlipsButton.addActionListener(e -> session.getCurrentBatch()
-            .ifPresentOrElse(
-                this::generatePackingSlips,
-                () -> showMessage("Load a TXT file before generating packing slips.")
-            ));
+                .ifPresentOrElse(
+                        this::generatePackingSlips,
+                        () -> showMessage("Load a TXT file before generating packing slips.")
+                ));
 
         includeLateToggle.addItemListener(e -> {
             includeLateShipments = includeLateToggle.isSelected();
@@ -248,8 +248,8 @@ public class AmazonImportPanel extends JPanel {
                     updateTree(batch);
                     fileLabel.setText(file.toAbsolutePath().toString());
                     session.getLoadedAt().ifPresentOrElse(
-                        instant -> statusLabel.setText("Loaded at " + TIMESTAMP_FORMATTER.format(instant.atZone(ZoneId.systemDefault()))),
-                        () -> statusLabel.setText("Loaded.")
+                            instant -> statusLabel.setText("Loaded at " + TIMESTAMP_FORMATTER.format(instant.atZone(ZoneId.systemDefault()))),
+                            () -> statusLabel.setText("Loaded.")
                     );
                     downloadAllButton.setEnabled(!batch.isEmpty());
                     downloadSelectedButton.setEnabled(!batch.isEmpty());
@@ -285,12 +285,12 @@ public class AmazonImportPanel extends JPanel {
         setUiEnabled(false);
 
         String logMessage = itemTypes.filter(types -> !types.isEmpty())
-            .map(types -> "Downloading selected item types: " + types.stream()
-                .map(key -> Optional.ofNullable(batch.groups().get(key))
-                    .map(ItemTypeGroup::itemType)
-                    .orElse(key))
-                .collect(Collectors.joining(", ")))
-            .orElse("Downloading entire batch");
+                .map(types -> "Downloading selected item types: " + types.stream()
+                        .map(key -> Optional.ofNullable(batch.groups().get(key))
+                                .map(ItemTypeGroup::itemType)
+                                .orElse(key))
+                        .collect(Collectors.joining(", ")))
+                .orElse("Downloading entire batch");
         appendLog(logMessage);
 
         DownloadWorker worker = new DownloadWorker(batch, itemTypes);
@@ -432,7 +432,7 @@ public class AmazonImportPanel extends JPanel {
 
                 for (ItemTypeAggregate aggregate : ounceBucket.itemTypes.values()) {
                     DefaultMutableTreeNode itemNode = new DefaultMutableTreeNode(
-                        new ItemTypeNodeData(aggregate.groupKey, aggregate.itemType, aggregate.orderCount)
+                            new ItemTypeNodeData(aggregate.groupKey, aggregate.itemType, aggregate.orderCount)
                     );
                     for (CustomerAggregate customerAgg : aggregate.customers.values()) {
                         itemNode.add(createCustomerNode(customerAgg.customer, customerAgg.orders));
@@ -450,9 +450,9 @@ public class AmazonImportPanel extends JPanel {
             String speedLabel = speed.displayName();
             if (typeCount > 0 || mixCount > 0) {
                 speedLabel = "%s (%d types%s)".formatted(
-                    speed.displayName(),
-                    typeCount,
-                    mixCount > 0 ? ", mix" : ""
+                        speed.displayName(),
+                        typeCount,
+                        mixCount > 0 ? ", mix" : ""
                 );
             }
             speedNode.setUserObject(speedLabel);
@@ -465,8 +465,8 @@ public class AmazonImportPanel extends JPanel {
         }
 
         root.setUserObject("%s (%d types)".formatted(
-            ItemTypeCategorizer.MUGS_FOLDER_NAME,
-            totalTypes
+                ItemTypeCategorizer.MUGS_FOLDER_NAME,
+                totalTypes
         ));
 
         treeModel.setRoot(root);
@@ -492,7 +492,7 @@ public class AmazonImportPanel extends JPanel {
             }
 
             String defaultOunce = Optional.ofNullable(ShippingLayoutPlanner.extractOunce(group.itemType()))
-                .orElse(group.itemType());
+                    .orElse(group.itemType());
 
             for (CustomerGroup customer : group.customers().values()) {
                 for (CustomerOrder order : customer.orders().values()) {
@@ -501,11 +501,11 @@ public class AmazonImportPanel extends JPanel {
 
                     boolean mixOrder = mixOrderIds.contains(order.orderId());
                     String ounceKey = Optional.ofNullable(ShippingLayoutPlanner.extractOunce(group.itemType()))
-                        .orElse(defaultOunce);
+                            .orElse(defaultOunce);
                     String mixOunce = mixOrderOunces.get(order.orderId());
                     String targetOunce = mixOrder
-                        ? (mixOunce == null || mixOunce.isBlank() ? ounceKey : mixOunce)
-                        : ounceKey;
+                            ? (mixOunce == null || mixOunce.isBlank() ? ounceKey : mixOunce)
+                            : ounceKey;
 
                     OunceBucket ounceBucket = speedBucket.ounces.computeIfAbsent(targetOunce, key -> new OunceBucket());
                     if (mixOrder) {
@@ -522,7 +522,7 @@ public class AmazonImportPanel extends JPanel {
 
     private DefaultMutableTreeNode createCustomerNode(CustomerGroup customer, List<CustomerOrder> orders) {
         DefaultMutableTreeNode customerNode = new DefaultMutableTreeNode(
-            "%s (%d orders)".formatted(customer.originalBuyerName(), orders.size())
+                "%s (%d orders)".formatted(customer.originalBuyerName(), orders.size())
         );
         for (CustomerOrder order : orders) {
             DefaultMutableTreeNode orderNode = new DefaultMutableTreeNode("Order " + order.orderId());
@@ -634,14 +634,14 @@ public class AmazonImportPanel extends JPanel {
 
         int typeCount() {
             return ounces.values().stream()
-                .mapToInt(bucket -> bucket.itemTypes.size())
-                .sum();
+                    .mapToInt(bucket -> bucket.itemTypes.size())
+                    .sum();
         }
 
         int mixOrderCount() {
             return ounces.values().stream()
-                .mapToInt(OunceBucket::mixOrderCount)
-                .sum();
+                    .mapToInt(OunceBucket::mixOrderCount)
+                    .sum();
         }
     }
 
@@ -655,8 +655,8 @@ public class AmazonImportPanel extends JPanel {
                 return;
             }
             CustomerAggregate aggregate = mixCustomers.computeIfAbsent(
-                customer.originalBuyerName(),
-                key -> new CustomerAggregate(customer)
+                    customer.originalBuyerName(),
+                    key -> new CustomerAggregate(customer)
             );
             aggregate.orders.add(order);
         }
@@ -666,13 +666,13 @@ public class AmazonImportPanel extends JPanel {
                               CustomerGroup customer,
                               CustomerOrder order) {
             ItemTypeAggregate aggregate = itemTypes.computeIfAbsent(
-                itemType,
-                key -> new ItemTypeAggregate(groupKey, itemType)
+                    itemType,
+                    key -> new ItemTypeAggregate(groupKey, itemType)
             );
             aggregate.orderCount++;
             CustomerAggregate customerAggregate = aggregate.customers.computeIfAbsent(
-                customer.originalBuyerName(),
-                key -> new CustomerAggregate(customer)
+                    customer.originalBuyerName(),
+                    key -> new CustomerAggregate(customer)
             );
             customerAggregate.orders.add(order);
         }
@@ -683,8 +683,8 @@ public class AmazonImportPanel extends JPanel {
 
         int mixOrderCount() {
             return mixCustomers.values().stream()
-                .mapToInt(aggregate -> aggregate.orders.size())
-                .sum();
+                    .mapToInt(aggregate -> aggregate.orders.size())
+                    .sum();
         }
     }
 
@@ -717,7 +717,7 @@ public class AmazonImportPanel extends JPanel {
     }
 
     private final class DownloadWorker extends SwingWorker<Path, DownloadStatus>
-        implements AmazonOrderDownloadService.DownloadProgressListener {
+            implements AmazonOrderDownloadService.DownloadProgressListener {
 
         private final OrderBatch batch;
         private final Optional<Set<String>> itemTypes;
@@ -782,13 +782,13 @@ public class AmazonImportPanel extends JPanel {
         @Override
         public void onItemStarted(CustomerOrderItem item, int processedCount, int totalCount) {
             publish(new DownloadStatus(processedCount - 1, totalCount,
-                "Downloading item %s".formatted(item.orderItemId())));
+                    "Downloading item %s".formatted(item.orderItemId())));
         }
 
         @Override
         public void onItemCompleted(CustomerOrderItem item, Path downloadedFile, int processedCount, int totalCount) {
             publish(new DownloadStatus(processedCount, totalCount,
-                "Saved %s".formatted(downloadedFile.getFileName())));
+                    "Saved %s".formatted(downloadedFile.getFileName())));
         }
 
         @Override
@@ -798,8 +798,8 @@ public class AmazonImportPanel extends JPanel {
                 orderId = item.sourceRecord().orderId();
             }
             String descriptor = orderId == null
-                ? item.orderItemId()
-                : "%s (order %s)".formatted(item.orderItemId(), orderId);
+                    ? item.orderItemId()
+                    : "%s (order %s)".formatted(item.orderItemId(), orderId);
 
             if (orderId != null && !orderId.isBlank()) {
                 failedOrderIds.add(orderId);
@@ -808,13 +808,13 @@ public class AmazonImportPanel extends JPanel {
             }
 
             publish(new DownloadStatus(processedCount, totalCount,
-                "Failed item %s: %s".formatted(descriptor, error.getMessage())));
+                    "Failed item %s: %s".formatted(descriptor, error.getMessage())));
         }
 
         @Override
         public void onComplete(int processedCount, int totalCount, Path targetRoot) {
             publish(new DownloadStatus(processedCount, totalCount,
-                "Download finished. Files at " + targetRoot));
+                    "Download finished. Files at " + targetRoot));
 
             AmazonImportPanel.this.lastDownloadRoot = targetRoot;
 
@@ -822,14 +822,14 @@ public class AmazonImportPanel extends JPanel {
                 StringBuilder summary = new StringBuilder();
                 if (!failedOrderIds.isEmpty()) {
                     summary.append("Failed orders: ")
-                        .append(String.join(", ", failedOrderIds));
+                            .append(String.join(", ", failedOrderIds));
                 }
                 if (!failedItemsWithoutOrder.isEmpty()) {
                     if (summary.length() > 0) {
                         summary.append("; ");
                     }
                     summary.append("Failed items without order id: ")
-                        .append(String.join(", ", failedItemsWithoutOrder));
+                            .append(String.join(", ", failedItemsWithoutOrder));
                 }
                 publish(new DownloadStatus(processedCount, totalCount, summary.toString()));
                 showBanner(summary.toString(), BannerStyle.WARNING, 6000);

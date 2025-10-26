@@ -1,5 +1,5 @@
 package com.osman.ui.labelfinder;
-
+import java.nio.file.attribute.BasicFileAttributes;
 import com.osman.PackSlipExtractor;
 import com.osman.PdfLinker;
 import com.osman.config.PreferencesStore;
@@ -499,25 +499,60 @@ public class LabelFinderUI extends JFrame {
             }
             return;
         }
-        LinkedHashSet<Path> seen = new LinkedHashSet<>();
+
+
+        LinkedHashMap<String, Path> byKey = new LinkedHashMap<>();
+        List<Path> unresolved = new ArrayList<>();
+
         for (File root : baseFolders) {
-            if (root == null || !root.isDirectory()) {
-                continue;
-            }
+            if (root == null || !root.isDirectory()) continue;
+
             try (Stream<Path> stream = Files.walk(root.toPath())) {
-                stream.filter(Files::isRegularFile).filter(p -> IMG_NAME.matcher(p.getFileName().toString()).matches()).forEach(p -> seen.add(p.toAbsolutePath().normalize()));
+                stream.filter(Files::isRegularFile)
+                        .filter(LabelFinderUI::isGoodImageFile)
+                        .forEach(p -> {
+                            try {
+                                Path real = p.toRealPath();
+                                BasicFileAttributes attrs = Files.readAttributes(real, BasicFileAttributes.class);
+                                Object fk = attrs.fileKey();
+                                if (fk != null) {
+                                    byKey.putIfAbsent(fk.toString(), real);
+                                } else {
+                                    unresolved.add(real);
+                                }
+                            } catch (IOException e) {
+                                unresolved.add(p.toAbsolutePath().normalize());
+                            }
+                        });
+
             }
         }
-        List<PhotoIndexEntry> indexed = new ArrayList<>(seen.size());
-        LinkedHashSet<Path> pathSet = new LinkedHashSet<>(seen.size());
-        for (Path path : seen) {
-            Path normalized = path.toAbsolutePath().normalize();
+
+
+        List<Path> unique = new ArrayList<>(byKey.values());
+        outer:
+        for (Path cand : unresolved) {
+            for (Path kept : unique) {
+                try {
+                    if (Files.isSameFile(cand, kept)) continue outer;
+                } catch (IOException ignore) { }
+                if (cand.toAbsolutePath().normalize().equals(kept.toAbsolutePath().normalize())) continue outer;
+            }
+            unique.add(cand);
+        }
+
+
+        List<PhotoIndexEntry> indexed = new ArrayList<>(unique.size());
+        LinkedHashSet<Path> pathSet = new LinkedHashSet<>(unique.size());
+        for (Path real : unique) {
+            Path normalized = real.toAbsolutePath().normalize();
             if (pathSet.add(normalized)) {
                 String lower = normalized.getFileName().toString().toLowerCase(Locale.ROOT);
                 indexed.add(new PhotoIndexEntry(normalized, lower));
             }
         }
         indexed.sort(Comparator.comparing(PhotoIndexEntry::lowerName));
+
         synchronized (photoIndexLock) {
             photoIndex = indexed;
             photoIndexPaths = pathSet;
@@ -598,6 +633,7 @@ public class LabelFinderUI extends JFrame {
         slipPagesToPrint = new ArrayList<>();
         PageGroup lg = (labelGroups != null) ? labelGroups.get(orderId) : null;
         boolean labelFound = lg != null;
+        List<String> missingDocMessages = new ArrayList<>();
         if (labelFound) {
             List<BufferedImage> labelPages = renderPdfPagesList(lg.file, lg.pages, 150);
             labelPagesToPrint.addAll(labelPages);
@@ -605,7 +641,7 @@ public class LabelFinderUI extends JFrame {
             currentLabelLocation = new LabelLocation(lg.file, lg.pages.get(0));
         }
         else {
-            setStatusMessage("Shipping label not found for: " + orderId);
+            missingDocMessages.add("Shipping label not found for order " + orderId + '.');
         }
         PageGroup sg = (slipGroups != null) ? slipGroups.get(orderId) : null;
         boolean slipFound = sg != null;
@@ -614,8 +650,14 @@ public class LabelFinderUI extends JFrame {
             slipPagesToPrint.addAll(slipPages);
             slipImg = stackMany(withBorder(slipPages, new Color(0,120,215), 8), 12, Color.WHITE);
         }
-        else if (labelFound) {
-            setStatusMessage("Packing slip not found for: " + orderId);
+        else {
+            missingDocMessages.add("Packing slip not found for order " + orderId + '.');
+        }
+        if (!missingDocMessages.isEmpty()) {
+            String statusText = String.join(" ", missingDocMessages);
+            String dialogText = String.join("\n", missingDocMessages);
+            setStatusMessage(statusText);
+            showScanWarning("Documents Not Found", dialogText);
         }
         combinedPreview = stackImagesVertically(labelImg, slipImg, 12, Color.WHITE);
         if (combinedPreview != null) {
@@ -638,6 +680,13 @@ public class LabelFinderUI extends JFrame {
             scanUpdate = trackScanProgress(orderId, scanInput.itemKey(), scanInput.rawItemId());
             if (scanUpdate == null) {
                 expectationMissing = true;
+                String qtyMessage = "Quantity data not found for order " + orderId + '.';
+                String currentStatus = statusLabel.getText();
+                String combinedStatus = (currentStatus == null || currentStatus.isBlank())
+                    ? qtyMessage
+                    : currentStatus + ' ' + qtyMessage;
+                setStatusMessage(combinedStatus);
+                showScanWarning("Quantity Data Missing", qtyMessage);
             }
             else {
                 bannerOrderId = orderId;
@@ -987,8 +1036,9 @@ public class LabelFinderUI extends JFrame {
     }
     private void displayPhotosForOrder(String orderId, List<Path> matches, boolean preserveSelection) {
         List<Path> previouslySelected = preserveSelection ? new ArrayList<>(photosList.getSelectedValuesList()) : Collections.emptyList();
+        List<Path> deduped = dedupeByIdentity(matches);
         photosModel.clear();
-        for (Path match : matches) {
+        for (Path match : deduped) {
             photosModel.addElement(match);
         }
         if (matches.isEmpty()) {
@@ -998,7 +1048,7 @@ public class LabelFinderUI extends JFrame {
         if (preserveSelection && !previouslySelected.isEmpty()) {
             LinkedHashSet<Path> desired = new LinkedHashSet<>(previouslySelected);
             photosList.clearSelection();
-            for (int i = 0; i < matches.size(); i++) {
+            for (int i = 0; i < deduped.size(); i++) {
                 if (desired.contains(matches.get(i))) {
                     photosList.addSelectionInterval(i, i);
                 }
@@ -1059,33 +1109,71 @@ public class LabelFinderUI extends JFrame {
         worker.execute();
     }
     private List<Path> addPhotosToIndex(List<Path> candidates) {
-        if (candidates == null || candidates.isEmpty()) {
-            return Collections.emptyList();
-        }
+        if (candidates == null || candidates.isEmpty()) return Collections.emptyList();
+
         List<Path> newEntries = new ArrayList<>();
         synchronized (photoIndexLock) {
-            if (photoIndex == null) {
-                photoIndex = new ArrayList<>();
-            }
-            if (photoIndexPaths == null) {
-                photoIndexPaths = new LinkedHashSet<>();
-            }
+            if (photoIndex == null) photoIndex = new ArrayList<>();
+            if (photoIndexPaths == null) photoIndexPaths = new LinkedHashSet<>();
+
             for (Path candidate : candidates) {
-                if (candidate == null) {
-                    continue;
+                if (candidate == null) continue;
+
+                Path real;
+                try {
+                    real = candidate.toRealPath();
+                } catch (IOException e) {
+                    real = candidate.toAbsolutePath().normalize();
                 }
-                Path normalized = candidate.toAbsolutePath().normalize();
-                if (photoIndexPaths.add(normalized)) {
+
+                // Var olanlarla aynı dosya mı?
+                boolean duplicate = false;
+
+                // A) inode karşılaştır
+                try {
+                    BasicFileAttributes attrs = Files.readAttributes(real, BasicFileAttributes.class);
+                    Object fk = attrs.fileKey();
+                    if (fk != null) {
+                        for (Path existing : photoIndexPaths) {
+                            try {
+                                if (!Files.exists(existing)) continue;
+                                BasicFileAttributes ex = Files.readAttributes(existing, BasicFileAttributes.class);
+                                Object exFk = ex.fileKey();
+                                if (exFk != null && fk.toString().equals(exFk.toString())) {
+                                    duplicate = true; break;
+                                }
+                            } catch (IOException ignore) { }
+                        }
+                    }
+                } catch (IOException ignore) { }
+
+                // B) isSameFile / path eşitliği
+                if (!duplicate) {
+                    for (Path existing : photoIndexPaths) {
+                        try {
+                            if (Files.isSameFile(real, existing)) { duplicate = true; break; }
+                        } catch (IOException ignore) { }
+                        if (real.toAbsolutePath().normalize().equals(existing.toAbsolutePath().normalize())) {
+                            duplicate = true; break;
+                        }
+                    }
+                }
+
+                if (!duplicate) {
+                    Path normalized = real.toAbsolutePath().normalize();
+                    photoIndexPaths.add(normalized);
                     photoIndex.add(new PhotoIndexEntry(normalized, normalized.getFileName().toString().toLowerCase(Locale.ROOT)));
                     newEntries.add(normalized);
                 }
             }
+
             if (!newEntries.isEmpty()) {
                 photoIndex.sort(Comparator.comparing(PhotoIndexEntry::lowerName));
             }
         }
         return newEntries;
     }
+
     private List<Path> scanPhotosFromDisk(String orderId) throws IOException {
         if (orderId == null || orderId.isBlank() || !hasBaseFolders()) {
             return Collections.emptyList();
@@ -2385,4 +2473,75 @@ public class LabelFinderUI extends JFrame {
         }
         return false;
     }
+    private static List<Path> dedupeByIdentity(List<Path> candidates) {
+        if (candidates == null || candidates.isEmpty()) return Collections.emptyList();
+
+        // 1) fileKey (inode) ile tekilleştir
+        LinkedHashMap<String, Path> byKey = new LinkedHashMap<>();
+        List<Path> unresolved = new ArrayList<>();
+
+        for (Path p : candidates) {
+            if (p == null) continue;
+            try {
+                Path real = p.toRealPath(); // symlink/alias çözülsün
+                BasicFileAttributes attrs = Files.readAttributes(real, BasicFileAttributes.class);
+                Object fk = attrs.fileKey();
+                String key = (fk != null ? fk.toString() : null);
+                if (key != null) {
+                    byKey.putIfAbsent(key, real);
+                } else {
+                    unresolved.add(real);
+                }
+            } catch (IOException e) {
+
+                unresolved.add(p.toAbsolutePath().normalize());
+            }
+        }
+
+
+        List<Path> result = new ArrayList<>(byKey.values());
+        outer:
+        for (Path cand : unresolved) {
+            for (Path kept : result) {
+                try {
+                    if (Files.isSameFile(cand, kept)) {
+                        continue outer;
+                    }
+                } catch (IOException ignore) {}
+                if (cand.toAbsolutePath().normalize().equals(kept.toAbsolutePath().normalize())) {
+                    continue outer;
+                }
+            }
+            result.add(cand);
+        }
+        return result;
+    }
+    private static boolean isGoodImageFile(Path p) {
+        if (p == null) return false;
+        String name = p.getFileName().toString();
+
+
+        if (name.startsWith("._")) return false;
+        try { if (Files.isHidden(p)) return false; } catch (IOException ignore) {}
+
+
+        String lower = name.toLowerCase(Locale.ROOT);
+        if (!(lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".png")))
+            return false;
+
+
+        try { if (Files.size(p) <= 4096) return false; } catch (IOException e) { return false; }
+
+        return true;
+    }
+
+
+    private static boolean isGoodPdfFile(Path p) {
+        if (p == null) return false;
+        String name = p.getFileName().toString();
+        if (name.startsWith("._")) return false;
+        try { if (Files.isHidden(p)) return false; } catch (IOException ignore) {}
+        return name.toLowerCase(Locale.ROOT).endsWith(".pdf");
+    }
+
 }
