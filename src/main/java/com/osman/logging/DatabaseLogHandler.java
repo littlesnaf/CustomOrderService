@@ -42,6 +42,10 @@ public final class DatabaseLogHandler extends Handler {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """;
 
+    // --- Retry controls ---
+    private static final int MAX_WRITE_ATTEMPTS = 3;
+    private static final long RETRY_BACKOFF_MS = 250L; // linear backoff (attempt * RETRY_BACKOFF_MS)
+
     private final BlockingQueue<LogRecord> queue = new LinkedBlockingQueue<>(1024);
     private final HikariDataSource dataSource;
     private final String hostName;
@@ -67,7 +71,7 @@ public final class DatabaseLogHandler extends Handler {
             try {
                 LogRecord record = queue.poll(1, TimeUnit.SECONDS);
                 if (record != null) {
-                    writeRecord(record);
+                    writeRecordWithRetry(record);
                 }
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
@@ -80,7 +84,7 @@ public final class DatabaseLogHandler extends Handler {
         LogRecord record;
         while ((record = queue.poll()) != null) {
             try {
-                writeRecord(record);
+                writeRecordWithRetry(record);
             } catch (Exception ex) {
                 System.err.println("DatabaseLogHandler shutdown failure: " + ex.getMessage());
             }
@@ -94,6 +98,7 @@ public final class DatabaseLogHandler extends Handler {
             return;
         }
         if (!queue.offer(record)) {
+            // drop oldest if full
             queue.poll();
             queue.offer(record);
         }
@@ -115,6 +120,36 @@ public final class DatabaseLogHandler extends Handler {
         }
         dataSource.close();
     }
+
+    // --- NEW: retry wrapper ---
+    private void writeRecordWithRetry(LogRecord record) {
+        SQLException last = null;
+        for (int attempt = 1; attempt <= MAX_WRITE_ATTEMPTS; attempt++) {
+            try {
+                writeRecord(record); // existing method
+                return; // success
+            } catch (SQLException ex) {
+                last = ex;
+                if (attempt < MAX_WRITE_ATTEMPTS) {
+                    try {
+                        Thread.sleep(RETRY_BACKOFF_MS * attempt); // simple linear backoff
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+            }
+        }
+        // Give up after max attempts; drop the record to avoid blocking stream
+        System.err.println(
+                "DatabaseLogHandler: dropped log after " + MAX_WRITE_ATTEMPTS +
+                        " attempts. logger=" + record.getLoggerName() +
+                        " level=" + record.getLevel() +
+                        " msg=" + renderMessage(record) +
+                        " cause=" + (last != null ? last.getMessage() : "unknown")
+        );
+    }
+
 
     private void writeRecord(LogRecord record) throws SQLException {
         try (Connection connection = dataSource.getConnection();
@@ -179,39 +214,48 @@ public final class DatabaseLogHandler extends Handler {
         hikariConfig.setJdbcUrl(config.url());
         hikariConfig.setUsername(config.username());
         hikariConfig.setPassword(config.password());
+
+
+        hikariConfig.setMinimumIdle(0);
         hikariConfig.setMaximumPoolSize(config.poolSize());
-        hikariConfig.setPoolName("CentralLoggingPool");
+
         hikariConfig.setAutoCommit(true);
         hikariConfig.setConnectionTestQuery("SELECT 1");
-        hikariConfig.setInitializationFailTimeout(-1);
+
+
+        hikariConfig.setInitializationFailTimeout(TimeUnit.SECONDS.toMillis(2)); //
+
+
         return new HikariDataSource(hikariConfig);
     }
+
+
 
     private record DbConfig(String url, String username, String password, int poolSize, boolean enabled) {
 
         static DbConfig load() {
             Properties fileProps = loadFileProperties();
             String url = firstNonBlank(
-                System.getProperty("logging.jdbc.url"),
-                System.getenv("LOGGING_JDBC_URL"),
-                fileProps.getProperty("jdbc.url")
+                    System.getProperty("logging.jdbc.url"),
+                    System.getenv("LOGGING_JDBC_URL"),
+                    fileProps.getProperty("jdbc.url")
             );
             String username = firstNonBlank(
-                System.getProperty("logging.jdbc.user"),
-                System.getenv("LOGGING_JDBC_USER"),
-                fileProps.getProperty("jdbc.username")
+                    System.getProperty("logging.jdbc.user"),
+                    System.getenv("LOGGING_JDBC_USER"),
+                    fileProps.getProperty("jdbc.username")
             );
             String password = firstNonBlank(
-                System.getProperty("logging.jdbc.pass"),
-                System.getenv("LOGGING_JDBC_PASS"),
-                fileProps.getProperty("jdbc.password")
+                    System.getProperty("logging.jdbc.pass"),
+                    System.getenv("LOGGING_JDBC_PASS"),
+                    fileProps.getProperty("jdbc.password")
             );
             int poolSize = parsePoolSize(
-                firstNonBlank(
-                    System.getProperty("logging.jdbc.poolSize"),
-                    System.getenv("LOGGING_JDBC_POOL"),
-                    fileProps.getProperty("jdbc.poolSize")
-                )
+                    firstNonBlank(
+                            System.getProperty("logging.jdbc.poolSize"),
+                            System.getenv("LOGGING_JDBC_POOL"),
+                            fileProps.getProperty("jdbc.poolSize")
+                    )
             );
             boolean enabled = url != null && !url.isBlank();
             return new DbConfig(url, username, password, poolSize, enabled);
@@ -220,8 +264,8 @@ public final class DatabaseLogHandler extends Handler {
         private static Properties loadFileProperties() {
             Properties props = new Properties();
             try (InputStream stream = DatabaseLogHandler.class
-                .getClassLoader()
-                .getResourceAsStream("logging-db.properties")) {
+                    .getClassLoader()
+                    .getResourceAsStream("logging-db.properties")) {
                 if (stream != null) {
                     props.load(stream);
                 }

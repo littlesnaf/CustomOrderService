@@ -1,5 +1,5 @@
 package com.osman.ui.labelfinder;
-import java.nio.file.attribute.BasicFileAttributes;
+
 import com.osman.PackSlipExtractor;
 import com.osman.PdfLinker;
 import com.osman.config.PreferencesStore;
@@ -29,6 +29,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -115,6 +116,7 @@ public class LabelFinderUI extends JFrame {
     private final JButton chooseBaseBtn;
     private final JButton showUnscannedButton;
     private final JCheckBox autoPrintCheckBox;
+    private final JCheckBox autoScanCheckBox;
     private final JLabel statusLabel;
     private final JLabel topStatusLabel;
     private final ImagePanel combinedPanel;
@@ -130,6 +132,7 @@ public class LabelFinderUI extends JFrame {
     private volatile String activeOrderId;
     private List<PhotoIndexEntry> photoIndex;
     private Set<Path> photoIndexPaths;
+    private final QuietPeriodIncrementalScanner quietScanner;
     private int bannerScanned;
     private int bannerExpected;
     private String bannerOrderId;
@@ -142,6 +145,7 @@ public class LabelFinderUI extends JFrame {
     private List<BufferedImage> slipPagesToPrint;
     private static final Pattern IMG_NAME = Pattern.compile("(?i).+\\s*(?:\\(\\d+\\))?\\s*\\.(png|jpe?g)$");
     private static final Pattern XN_READY_NAME = Pattern.compile("(?i)^x(?:\\(\\d+\\)|\\d+)-.+\\s*(?:\\(\\d+\\))?\\s*\\.(?:png|jpe?g)$");
+    private static final Pattern PACKING_SLIP_NAME_PATTERN = Pattern.compile("(?i)^Amazon(?:\\s*\\(\\d+\\))?\\.pdf$");
 
     private static final String PREF_WIN_BOUNDS       = "winBounds";        // x,y,w,h
     private static final String PREF_DIVIDER_LOCATION = "dividerLocation";  // JSplitPane divider
@@ -159,7 +163,7 @@ public class LabelFinderUI extends JFrame {
         setDefaultCloseOperation(JFrame.DO_NOTHING_ON_CLOSE);
         setSize(1600, 900);
         setLocationRelativeTo(null);
-        orderIdField = new JTextField(20);
+        orderIdField = new JTextField(18);
         findButton = new JButton("Find");
         refreshButton = new JButton("↻");
         refreshButton.setMargin(new Insets(1, 6, 1, 6));
@@ -167,12 +171,16 @@ public class LabelFinderUI extends JFrame {
         refreshButton.setPreferredSize(new Dimension(24, 20));
         refreshButton.setToolTipText("Rescan current base folders");
         refreshButton.setEnabled(false);
-        printButton = new JButton("Print Combined");
+        printButton = new JButton("Print label");
         printButton.setEnabled(false);
-        chooseBaseBtn = new JButton("Choose File Path");
-        showUnscannedButton = new JButton("Show Unscanned Orders");
+        chooseBaseBtn = new JButton("Choose File");
+        showUnscannedButton = new JButton("Unscanned Orders");
         autoPrintCheckBox = new JCheckBox("Auto Print");
         autoPrintCheckBox.setSelected(true);
+        autoScanCheckBox = new JCheckBox("Auto Scan");
+        autoScanCheckBox.setSelected(true);
+        autoScanCheckBox.setToolTipText("Automatically scan for new folders after quiet period");
+        autoScanCheckBox.addActionListener(e -> onAutoScanToggle());
         JPanel controlsRow = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 10));
         controlsRow.setBorder(new EmptyBorder(6, 6, 6, 6));
         controlsRow.add(new JLabel("Order ID:"));
@@ -183,6 +191,7 @@ public class LabelFinderUI extends JFrame {
         controlsRow.add(chooseBaseBtn);
         controlsRow.add(showUnscannedButton);
         controlsRow.add(autoPrintCheckBox);
+        controlsRow.add(autoScanCheckBox);
 
         String initialStatus = "Scan barcode → prints automatically. Choose base folder first.";
         topStatusLabel = new JLabel("Scanned 0/0");
@@ -218,6 +227,42 @@ public class LabelFinderUI extends JFrame {
         activeOrderId = null;
         photoIndex = new ArrayList<>();
         photoIndexPaths = new LinkedHashSet<>();
+        quietScanner = new QuietPeriodIncrementalScanner(new QuietPeriodIncrementalScanner.Delegate() {
+            @Override
+            public boolean hasBaseFolders() {
+                return hasBaseFolders();
+            }
+
+            @Override
+            public List<File> baseFolders() {
+                return new ArrayList<>(baseFolders);
+            }
+
+            @Override
+            public void postStatusMessage(String message) {
+                postStatusAsync(message);
+            }
+
+            @Override
+            public List<Path> addPhotosToIndex(List<Path> candidates) {
+                return LabelFinderUI.this.addPhotosToIndex(candidates);
+            }
+
+            @Override
+            public QuietPeriodIncrementalScanner.PdfScanResult addPdfFilesToIndex(List<File> pdfFiles) {
+                return LabelFinderUI.this.addPdfFilesToIndex(pdfFiles);
+            }
+
+            @Override
+            public void updateExpectations(File folder) {
+                LabelFinderUI.this.updateExpectationsIncrementally(folder);
+            }
+
+            @Override
+            public Logger logger() {
+                return LOGGER;
+            }
+        });
         JScrollPane photoViewScroll = new JScrollPane(photoView);
         mainSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, leftPanel, photoViewScroll);
 
@@ -362,6 +407,7 @@ public class LabelFinderUI extends JFrame {
     }
 
     private void loadBaseFolders(List<File> folders, boolean preserveScanProgress) {
+        quietScanner.reset();
         List<File> normalized = normaliseRoots(folders);
         if (normalized.isEmpty()) {
             setStatusMessage("Please select folder(s) containing your orders.");
@@ -409,6 +455,13 @@ public class LabelFinderUI extends JFrame {
                     get();
                     int photoCount = (photoIndex == null) ? 0 : photoIndex.size();
                     setStatusMessage("Indexed " + labelGroups.size() + " labels, " + slipGroups.size() + " packing slips, " + photoCount + " photos.");
+                    if (autoScanCheckBox.isSelected()) {
+                        quietScanner.recordCurrentChildFolders();
+                        quietScanner.startMonitoring();
+                    }
+                    else {
+                        quietScanner.stopMonitoring();
+                    }
                 }
                 catch (Exception e) {
                     Throwable cause = e.getCause() != null ? e.getCause() : e;
@@ -453,6 +506,23 @@ public class LabelFinderUI extends JFrame {
             return;
         }
         loadBaseFolders(new ArrayList<>(baseFolders), true);
+    }
+    private void onAutoScanToggle() {
+        if (autoScanCheckBox.isSelected()) {
+            if (hasBaseFolders()) {
+                quietScanner.recordCurrentChildFolders();
+                quietScanner.startMonitoring();
+                setStatusMessage("Auto scan enabled.");
+            }
+            else {
+                quietScanner.stopMonitoring();
+                setStatusMessage("Auto scan enabled — select a base folder to begin.");
+            }
+        }
+        else {
+            quietScanner.stopMonitoring();
+            setStatusMessage("Auto scan paused.");
+        }
     }
     private void openSelectedPhoto() {
         List<Path> selected = photosList.getSelectedValuesList();
@@ -509,7 +579,7 @@ public class LabelFinderUI extends JFrame {
 
             try (Stream<Path> stream = Files.walk(root.toPath())) {
                 stream.filter(Files::isRegularFile)
-                        .filter(LabelFinderUI::isGoodImageFile)
+                        .filter(QuietPeriodIncrementalScanner::isGoodImageFile)
                         .forEach(p -> {
                             try {
                                 Path real = p.toRealPath();
@@ -559,8 +629,8 @@ public class LabelFinderUI extends JFrame {
         }
     }
     private void buildLabelAndSlipIndices() {
-        labelGroups = new HashMap<>();
-        slipGroups = new HashMap<>();
+        labelGroups = new ConcurrentHashMap<>();
+        slipGroups = new ConcurrentHashMap<>();
         if (!hasBaseFolders()) {
             setStatusMessage("Base folder invalid.");
             return;
@@ -579,14 +649,10 @@ public class LabelFinderUI extends JFrame {
                 return;
             }
         }
-        Pattern packingSlipName = Pattern.compile("(?i)^Amazon(?:\\s*\\(\\d+\\))?\\.pdf$");
-        Pattern packingSlipFolder = Pattern.compile("(?i)^(?:\\d{2}\\s*[PRWB]|mix).*");
         for (File pdf : pdfs) {
             String name = pdf.getName();
-            File parent = pdf.getParentFile();
-            String parentName = parent != null ? parent.getName() : "";
             String lowerName = name.toLowerCase(Locale.ROOT);
-            boolean looksLikePackingSlip = packingSlipName.matcher(name).matches()
+            boolean looksLikePackingSlip = PACKING_SLIP_NAME_PATTERN.matcher(name).matches()
                 || lowerName.startsWith("amazon");
             if (looksLikePackingSlip) {
                 try {
@@ -983,6 +1049,7 @@ public class LabelFinderUI extends JFrame {
         }
     }
     private void cleanupAndExit() {
+        quietScanner.shutdown();
         dispose();
         System.exit(0);
     }
@@ -1172,6 +1239,58 @@ public class LabelFinderUI extends JFrame {
             }
         }
         return newEntries;
+    }
+
+    private QuietPeriodIncrementalScanner.PdfScanResult addPdfFilesToIndex(List<File> pdfFiles) {
+        if (pdfFiles == null || pdfFiles.isEmpty()) {
+            return QuietPeriodIncrementalScanner.PdfScanResult.EMPTY;
+        }
+        if (labelGroups == null) {
+            labelGroups = new ConcurrentHashMap<>();
+        }
+        if (slipGroups == null) {
+            slipGroups = new ConcurrentHashMap<>();
+        }
+        int labelsAdded = 0;
+        int slipsAdded = 0;
+        for (File pdf : pdfFiles) {
+            if (pdf == null || !pdf.isFile()) {
+                continue;
+            }
+            String name = pdf.getName();
+            String lower = name.toLowerCase(Locale.ROOT);
+            boolean looksLikeSlip = PACKING_SLIP_NAME_PATTERN.matcher(name).matches() || lower.startsWith("amazon");
+            try {
+                Map<String, List<Integer>> mapping = looksLikeSlip
+                    ? PackSlipExtractor.indexOrderToPages(pdf)
+                    : PdfLinker.buildOrderIdToPagesMap(pdf);
+                if (mapping == null || mapping.isEmpty()) {
+                    continue;
+                }
+                for (Map.Entry<String, List<Integer>> entry : mapping.entrySet()) {
+                    String orderId = entry.getKey();
+                    if (orderId == null || orderId.isBlank()) {
+                        continue;
+                    }
+                    PageGroup group = new PageGroup(pdf, new ArrayList<>(entry.getValue()));
+                    if (looksLikeSlip) {
+                        PageGroup previous = slipGroups.put(orderId, group);
+                        if (previous == null) {
+                            slipsAdded++;
+                        }
+                    } else {
+                        PageGroup previous = labelGroups.put(orderId, group);
+                        if (previous == null) {
+                            labelsAdded++;
+                        }
+                    }
+                }
+            }
+            catch (IOException ex) {
+                LOGGER.log(Level.FINE, "Failed to parse PDF " + pdf + ": " + ex.getMessage(), ex);
+            }
+        }
+        return new QuietPeriodIncrementalScanner.PdfScanResult(labelsAdded, slipsAdded);
     }
 
     private List<Path> scanPhotosFromDisk(String orderId) throws IOException {
@@ -1391,6 +1510,29 @@ public class LabelFinderUI extends JFrame {
             }
             catch (IOException ignored) {
             }
+        }
+    }
+    private void updateExpectationsIncrementally(File folder) {
+        if (folder == null || !folder.isDirectory()) {
+            return;
+        }
+        Set<String> manifestOrders = loadManifestOrders(folder);
+        try (Stream<Path> stream = Files.walk(folder.toPath(), 8)) {
+            stream.filter(Files::isRegularFile)
+                .filter(LabelFinderUI::isPotentialOrderJson)
+                .forEach(path -> {
+                    OrderContribution contribution = OrderContributionReader.readFromFile(path.toFile());
+                    if (contribution == null || contribution.orderId() == null || contribution.orderId().isBlank()) {
+                        return;
+                    }
+                    if (manifestOrders.contains(contribution.orderId())) {
+                        return;
+                    }
+                    registerContribution(contribution);
+                });
+        }
+        catch (IOException ex) {
+            LOGGER.log(Level.FINE, "Failed to refresh expectations for " + folder + ": " + ex.getMessage(), ex);
         }
     }
     private OrderExpectation resolveExpectation(String orderId) {
@@ -1628,8 +1770,8 @@ public class LabelFinderUI extends JFrame {
                 }
                 pending.add(formatPendingOrderEntry(orderId, "(" + state.totalScanned() + "/" + state.expectedTotal() + ")"));
             } else {
-                OrderExpectation expectation = resolveExpectation(orderId);
-                int expected = expectation != null ? Math.max(expectation.resolvedTotal(), 0) : 0;
+                OrderExpectation expectation = expectationIndex.get(orderId);
+                int expected = (expectation != null) ? Math.max(expectation.resolvedTotal(), 0) : 0;
                 String expectedText = expected > 0 ? String.valueOf(expected) : "?";
                 pending.add(formatPendingOrderEntry(orderId, "(0/" + expectedText + ")"));
             }
@@ -1714,6 +1856,12 @@ public class LabelFinderUI extends JFrame {
     private void setStatusMessage(String message) {
         String text = (message == null) ? "" : message;
         statusLabel.setText(text);
+    }
+    private void postStatusAsync(String message) {
+        if (message == null) {
+            return;
+        }
+        SwingUtilities.invokeLater(() -> setStatusMessage(message));
     }
     private static String combineOrderAndItem(String orderId, String itemIdentifier) {
         return orderId + "^" + itemIdentifier;
@@ -2516,32 +2664,4 @@ public class LabelFinderUI extends JFrame {
         }
         return result;
     }
-    private static boolean isGoodImageFile(Path p) {
-        if (p == null) return false;
-        String name = p.getFileName().toString();
-
-
-        if (name.startsWith("._")) return false;
-        try { if (Files.isHidden(p)) return false; } catch (IOException ignore) {}
-
-
-        String lower = name.toLowerCase(Locale.ROOT);
-        if (!(lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".png")))
-            return false;
-
-
-        try { if (Files.size(p) <= 4096) return false; } catch (IOException e) { return false; }
-
-        return true;
-    }
-
-
-    private static boolean isGoodPdfFile(Path p) {
-        if (p == null) return false;
-        String name = p.getFileName().toString();
-        if (name.startsWith("._")) return false;
-        try { if (Files.isHidden(p)) return false; } catch (IOException ignore) {}
-        return name.toLowerCase(Locale.ROOT).endsWith(".pdf");
-    }
-
 }
