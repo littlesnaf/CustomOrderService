@@ -14,8 +14,8 @@ public final class ShippingLayoutPlanner {
     }
 
     public enum ShippingSpeed {
-        STANDARD("automated", "Manual"),
-        EXPEDITED("manual", "Manual");
+        STANDARD("automated", "Standard"),
+        EXPEDITED("manual", "Expedited");
 
         private final String folderName;
         private final String displayName;
@@ -34,10 +34,32 @@ public final class ShippingLayoutPlanner {
         }
 
         public static ShippingSpeed from(String level) {
-            if (level != null && level.trim().equalsIgnoreCase("Automated")) {
+            if (level == null || level.isBlank()) {
                 return STANDARD;
             }
-            return EXPEDITED;
+
+            String normalized = level.trim().toLowerCase(java.util.Locale.ROOT);
+
+            if (normalized.contains("standard")
+                || normalized.contains("economy")
+                || normalized.contains("ground")
+                || normalized.contains("automated")) {
+                return STANDARD;
+            }
+
+            if (normalized.contains("expedited")
+                || normalized.contains("manual")
+                || normalized.contains("next")
+                || normalized.contains("overnight")
+                || normalized.contains("priority")
+                || normalized.contains("second")
+                || normalized.contains("two-day")
+                || normalized.contains("same-day")
+                || normalized.contains("one-day")) {
+                return EXPEDITED;
+            }
+
+            return STANDARD;
         }
     }
 

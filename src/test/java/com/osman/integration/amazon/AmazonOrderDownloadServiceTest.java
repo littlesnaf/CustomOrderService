@@ -99,16 +99,16 @@ class AmazonOrderDownloadServiceTest {
         assertTrue(outputRoot.startsWith(tempDir));
         assertTrue(Files.isDirectory(outputRoot));
 
-        Path itemTypeRoot11 = outputRoot.resolve("expedited").resolve("11").resolve("mix");
+        Path itemTypeRoot11 = outputRoot.resolve("manual").resolve("11").resolve("mix");
         Path imagesRoot11 = itemTypeRoot11.resolve(ItemTypeCategorizer.IMAGES_FOLDER_NAME);
-        Path itemTypeRoot15 = outputRoot.resolve("standard").resolve("15").resolve("15R");
+        Path itemTypeRoot15 = outputRoot.resolve("automated").resolve("15").resolve("15R");
         Path imagesRoot15 = itemTypeRoot15.resolve(ItemTypeCategorizer.IMAGES_FOLDER_NAME);
         assertTrue(Files.isDirectory(itemTypeRoot11));
         assertTrue(Files.isDirectory(imagesRoot11));
         assertTrue(Files.isDirectory(itemTypeRoot15));
         assertTrue(Files.isDirectory(imagesRoot15));
 
-        assertFalse(Files.exists(outputRoot.resolve("expedited").resolve("11").resolve("11W")),
+        assertFalse(Files.exists(outputRoot.resolve("manual").resolve("11").resolve("11W")),
             "Mix orders should not create type-specific folders");
 
         assertFalse(Files.exists(outputRoot.resolve(ItemTypeCategorizer.MUGS_FOLDER_NAME)),
@@ -136,12 +136,12 @@ class AmazonOrderDownloadServiceTest {
         Path outputRoot = service.downloadItemTypes(batch, List.of("11W"), new AmazonOrderDownloadService.DownloadProgressListener() {
         });
 
-        Path itemTypeRoot = outputRoot.resolve("expedited").resolve("11").resolve("11W");
+        Path itemTypeRoot = outputRoot.resolve("manual").resolve("11").resolve("11W");
         Path imagesRoot = itemTypeRoot.resolve(ItemTypeCategorizer.IMAGES_FOLDER_NAME);
 
         assertTrue(Files.isDirectory(itemTypeRoot));
         assertTrue(Files.isDirectory(imagesRoot));
-        assertFalse(Files.exists(outputRoot.resolve("expedited").resolve("11").resolve("mix")),
+        assertFalse(Files.exists(outputRoot.resolve("manual").resolve("11").resolve("mix")),
             "Mix folder should not appear when only one item type is selected");
         assertFalse(Files.exists(outputRoot.resolve(ItemTypeCategorizer.MUGS_FOLDER_NAME)),
             "Legacy Mugs folder should not be created");
