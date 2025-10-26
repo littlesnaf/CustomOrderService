@@ -155,7 +155,7 @@ class AmazonOrderDownloadServiceTest {
         @Override
         protected Path downloadSingleItem(Path orderFolder, CustomerOrderItem item) throws IOException {
             Path target = orderFolder.resolve(item.orderItemId() + ".zip");
-            Files.writeString(target, "fake data for " + item.orderItemId(), StandardCharsets.UTF_8);
+            Files.writeString(target, "fake data forr " + item.orderItemId(), StandardCharsets.UTF_8);
             return target;
         }
     }
