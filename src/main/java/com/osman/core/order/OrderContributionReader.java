@@ -23,7 +23,6 @@ public final class OrderContributionReader {
 
     /**
      * Reads a single JSON file and extracts order + item quantity information.
-     *
      * @param jsonFile JSON file exported from Amazon Custom.
      * @return an {@link OrderContribution} or {@code null} if the file does not contain the expected fields.
      */

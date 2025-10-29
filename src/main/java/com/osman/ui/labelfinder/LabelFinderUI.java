@@ -142,6 +142,8 @@ public class LabelFinderUI extends JFrame {
     private List<BufferedImage> slipPagesToPrint;
     private static final Pattern IMG_NAME = Pattern.compile("(?i).+\\s*(?:\\(\\d+\\))?\\s*\\.(png|jpe?g)$");
     private static final Pattern XN_READY_NAME = Pattern.compile("(?i)^x(?:\\(\\d+\\)|\\d+)-.+\\s*(?:\\(\\d+\\))?\\s*\\.(?:png|jpe?g)$");
+    private static final int FIND_DELAY_MS = 2000;
+    private static final int ORDER_INACTIVITY_TIMEOUT_MS = 30_000;
 
     private static final String PREF_WIN_BOUNDS       = "winBounds";        // x,y,w,h
     private static final String PREF_DIVIDER_LOCATION = "dividerLocation";  // JSplitPane divider
@@ -150,6 +152,8 @@ public class LabelFinderUI extends JFrame {
     private static final int MAX_SCAN_HISTORY = 500;
     private final Deque<String> scanHistory = new ArrayDeque<>();
     private final Map<String, CompletedOrderInfo> completedOrders = new LinkedHashMap<>();
+    private final Timer findDelayTimer;
+    private final Map<String, Timer> orderInactivityTimers;
 
     /**
      * Constructs the UI, wires listeners, and prepares the initial application state.
@@ -173,6 +177,12 @@ public class LabelFinderUI extends JFrame {
         showUnscannedButton = new JButton("Show Unscanned Orders");
         autoPrintCheckBox = new JCheckBox("Auto Print");
         autoPrintCheckBox.setSelected(true);
+        orderInactivityTimers = new HashMap<>();
+        findDelayTimer = new Timer(FIND_DELAY_MS, event -> {
+            ((Timer) event.getSource()).stop();
+            findSingleOrderFlow();
+        });
+        findDelayTimer.setRepeats(false);
         JPanel controlsRow = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 10));
         controlsRow.setBorder(new EmptyBorder(6, 6, 6, 6));
         controlsRow.add(new JLabel("Order ID:"));
@@ -184,7 +194,7 @@ public class LabelFinderUI extends JFrame {
         controlsRow.add(showUnscannedButton);
         controlsRow.add(autoPrintCheckBox);
 
-        String initialStatus = "Scan barcode → prints automatically. Choose base folder first.";
+        String initialStatus = "Scan barcode → prints automatically. Choose 'Orders Scan' folder first.";
         topStatusLabel = new JLabel("Scanned 0/0");
         topStatusLabel.setFont(topStatusLabel.getFont().deriveFont(Font.BOLD, 30f));
         topStatusLabel.setForeground(Color.RED);
@@ -430,7 +440,7 @@ public class LabelFinderUI extends JFrame {
         JFileChooser chooser = new JFileChooser(getPrimaryBaseFolder());
         chooser.setFileSelectionMode(JFileChooser.FILES_AND_DIRECTORIES);
         chooser.setMultiSelectionEnabled(true);
-        chooser.setDialogTitle("Choose Base Folder (e.g., 'Orders')");
+        chooser.setDialogTitle("Choose 'Orders Scan' Folder ");
         if (chooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) return;
         File[] selections = chooser.getSelectedFiles();
         if (selections == null || selections.length == 0) {
@@ -578,7 +588,11 @@ public class LabelFinderUI extends JFrame {
         setStatusMessage("Indexed " + labelGroups.size() + " labels, " + slipGroups.size() + " packing slips, " + photoCount + " photos.");
     }
     private void onFind() {
-        findSingleOrderFlow();
+        if (findDelayTimer.isRunning()) {
+            findDelayTimer.restart();
+        } else {
+            findDelayTimer.start();
+        }
     }
     private void findSingleOrderFlow() {
         ScanInput scanInput = parseScanInput(orderIdField.getText());
@@ -689,6 +703,7 @@ public class LabelFinderUI extends JFrame {
                 }
                 else if (!scanUpdate.completed) {
                     String inProgress = composeInProgressMessage(scanUpdate);
+                    scheduleOrderInactivityTimer(orderId);
                     setStatusMessage(inProgress);
                     logScanEvent(orderId, scanInput, labelFound, slipFound, photoMatchCount, designMatchCount, scanUpdate, expectationMissing, false, inProgress);
                     orderIdField.setText("");
@@ -699,6 +714,11 @@ public class LabelFinderUI extends JFrame {
             }
             if (scanUpdate != null) {
                 stateForOrder = scanProgress.get(orderId);
+                if (scanUpdate.completed) {
+                    stopOrderInactivityTimer(orderId);
+                } else if (scanUpdate.counted) {
+                    scheduleOrderInactivityTimer(orderId);
+                }
             }
         }
         boolean printed = false;
@@ -747,6 +767,108 @@ public class LabelFinderUI extends JFrame {
             finalStatusNote = "Awaiting manual action.";
         }
         logScanEvent(orderId, scanInput, labelFound, slipFound, photoMatchCount, designMatchCount, scanUpdate, expectationMissing, printed, finalStatusNote);
+    }
+    private void scheduleOrderInactivityTimer(String orderId) {
+        if (orderId == null || orderId.isBlank()) {
+            return;
+        }
+        if (!SwingUtilities.isEventDispatchThread()) {
+            SwingUtilities.invokeLater(() -> scheduleOrderInactivityTimer(orderId));
+            return;
+        }
+        OrderScanState state = scanProgress.get(orderId);
+        if (state == null || state.totalScanned() >= state.expectedTotal()) {
+            stopOrderInactivityTimer(orderId);
+            return;
+        }
+        Timer existing = orderInactivityTimers.get(orderId);
+        if (existing != null) {
+            existing.restart();
+            return;
+        }
+        Timer timer = new Timer(ORDER_INACTIVITY_TIMEOUT_MS, evt -> handleOrderInactivity(orderId));
+        timer.setRepeats(false);
+        orderInactivityTimers.put(orderId, timer);
+        timer.start();
+    }
+    private void stopOrderInactivityTimer(String orderId) {
+        if (orderId == null || orderId.isBlank()) {
+            return;
+        }
+        Runnable stopper = () -> {
+            Timer timer = orderInactivityTimers.remove(orderId);
+            if (timer != null) {
+                timer.stop();
+            }
+        };
+        if (SwingUtilities.isEventDispatchThread()) {
+            stopper.run();
+        } else {
+            SwingUtilities.invokeLater(stopper);
+        }
+    }
+    private void stopAllOrderInactivityTimers() {
+        if (!SwingUtilities.isEventDispatchThread()) {
+            SwingUtilities.invokeLater(this::stopAllOrderInactivityTimers);
+            return;
+        }
+        if (orderInactivityTimers.isEmpty()) {
+            return;
+        }
+        for (Timer timer : orderInactivityTimers.values()) {
+            if (timer != null) {
+                timer.stop();
+            }
+        }
+        orderInactivityTimers.clear();
+    }
+    private void handleOrderInactivity(String orderId) {
+        if (!SwingUtilities.isEventDispatchThread()) {
+            SwingUtilities.invokeLater(() -> handleOrderInactivity(orderId));
+            return;
+        }
+        Timer timer = orderInactivityTimers.remove(orderId);
+        if (timer != null) {
+            timer.stop();
+        }
+        OrderScanState state = scanProgress.get(orderId);
+        if (state == null) {
+            return;
+        }
+        if (state.totalScanned() == 0 || state.totalScanned() >= state.expectedTotal()) {
+            return;
+        }
+        int expected = state.expectedTotal();
+        if (expected < 2 || expected > 4) {
+            return;
+        }
+        OrderExpectation expectation = resolveExpectation(orderId);
+        if (expectation != null) {
+            scanProgress.put(orderId, new OrderScanState(orderId, expectation));
+        } else {
+            scanProgress.remove(orderId);
+        }
+        clearScanHistoryForOrder(orderId);
+        setStatusMessage("Order " + orderId + ": timeout reached. Progress reset to 0/" + expected + ". Scan next barcode.");
+        refreshProgressBanner();
+        orderIdField.requestFocusInWindow();
+        orderIdField.selectAll();
+    }
+    private void clearScanHistoryForOrder(String orderId) {
+        if (orderId == null || orderId.isBlank()) {
+            return;
+        }
+        String prefix = orderId + "^";
+        for (Iterator<String> it = scanHistory.iterator(); it.hasNext();) {
+            String entry = it.next();
+            if (entry != null && entry.startsWith(prefix)) {
+                it.remove();
+            }
+        }
+    }
+    private void refreshProgressBanner() {
+        int[] totals = calculateProgressTotals(scanProgress, completedOrders);
+        updateProgressBanner(totals[0], totals[1]);
     }
 
     private void logScanEvent(String orderId,
@@ -1186,6 +1308,7 @@ public class LabelFinderUI extends JFrame {
         }
     }
     private void clearProgressCaches() {
+        stopAllOrderInactivityTimers();
         expectationIndex.clear();
         manifestOrderSummaries.clear();
         scanProgress.clear();
@@ -1492,6 +1615,7 @@ public class LabelFinderUI extends JFrame {
         if (orderId == null || orderId.isBlank()) {
             return;
         }
+        stopOrderInactivityTimer(orderId);
         OrderScanState removed = scanProgress.remove(orderId);
         if (removed != null) {
             state = removed;

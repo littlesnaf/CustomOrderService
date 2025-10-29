@@ -45,10 +45,6 @@ public class  AmazonOrderDownloadService {
             defaultBaseDirectory());
     }
 
-    public AmazonOrderDownloadService(HttpClient httpClient) {
-        this(httpClient, defaultBaseDirectory());
-    }
-
     public AmazonOrderDownloadService(HttpClient httpClient, Path baseDirectory) {
         this.httpClient = Objects.requireNonNull(httpClient, "httpClient");
         this.baseDirectory = baseDirectory == null ? defaultBaseDirectory() : baseDirectory;
