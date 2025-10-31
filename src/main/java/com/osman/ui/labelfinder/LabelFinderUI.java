@@ -128,37 +128,16 @@ public class LabelFinderUI extends JFrame {
             this.pages = pages;
         }
     }
-    private static final class RenderedOrder {
-        private final List<BufferedImage> labelPages;
-        private final List<BufferedImage> slipPages;
-        private final BufferedImage combinedPreview;
-        private final LabelLocation labelLocation;
 
-        RenderedOrder(List<BufferedImage> labelPages,
-                      List<BufferedImage> slipPages,
-                      BufferedImage combinedPreview,
-                      LabelLocation labelLocation) {
-            this.labelPages = labelPages;
-            this.slipPages = slipPages;
-            this.combinedPreview = combinedPreview;
-            this.labelLocation = labelLocation;
-        }
+    private record PageRenderSource(File file, int pageIndexZeroBased) {
+    }
 
-        List<BufferedImage> labelPages() {
-            return labelPages;
-        }
-
-        List<BufferedImage> slipPages() {
-            return slipPages;
-        }
-
-        BufferedImage combinedPreview() {
-            return combinedPreview;
-        }
-
-        LabelLocation labelLocation() {
-            return labelLocation;
-        }
+    private record RenderedOrder(List<BufferedImage> labelPages,
+                                 List<BufferedImage> slipPages,
+                                 BufferedImage combinedPreview,
+                                 LabelLocation labelLocation,
+                                 PageGroup labelSource,
+                                 PageGroup slipSource) {
     }
     private static final class RenderCacheKey {
         private final String absolutePath;
@@ -229,11 +208,15 @@ public class LabelFinderUI extends JFrame {
     private final Map<File, Map<String, List<Integer>>> slipPageCache;
     private LabelLocation currentLabelLocation;
     private BufferedImage combinedPreview;
-    private List<BufferedImage> labelPagesToPrint;
-    private List<BufferedImage> slipPagesToPrint;
+    private List<BufferedImage> labelPreviewPages;
+    private List<BufferedImage> slipPreviewPages;
+    private PageGroup labelPrintSource;
+    private PageGroup slipPrintSource;
     private static final Pattern IMG_NAME = Pattern.compile("(?i).+\\s*(?:\\(\\d+\\))?\\s*\\.(png|jpe?g)$");
     private static final Pattern XN_READY_NAME = Pattern.compile("(?i)^x(?:\\(\\d+\\)|\\d+)-.+\\s*(?:\\(\\d+\\))?\\s*\\.(?:png|jpe?g)$");
     private static final int FIND_DELAY_MS = 500;
+    private static final int PREVIEW_DPI = 90;
+    private static final int PRINT_DPI = 150;
 
     private static final String PREF_WIN_BOUNDS       = "winBounds";        // x,y,w,h
     private static final String PREF_DIVIDER_LOCATION = "dividerLocation";  // JSplitPane divider
@@ -399,8 +382,10 @@ public class LabelFinderUI extends JFrame {
         photosModel.clear();
         currentLabelLocation = null;
         printButton.setEnabled(false);
-        labelPagesToPrint = new ArrayList<>();
-        slipPagesToPrint = new ArrayList<>();
+        labelPreviewPages = new ArrayList<>();
+        slipPreviewPages = new ArrayList<>();
+        labelPrintSource = null;
+        slipPrintSource = null;
     }
     private void cancelActiveRenderWorker() {
         SwingWorker<RenderedOrder, Void> worker = activeRenderWorker;
@@ -462,7 +447,7 @@ public class LabelFinderUI extends JFrame {
             return false;
         }
         String lower = name.toLowerCase(Locale.ROOT);
-        if (lower.equals("standard") || lower.equals("expedited")) {
+        if (lower.equals("standard") || lower.equals("expedited") || lower.equals("automated") || lower.equals("manual")) {
             return true;
         }
         boolean digitsOnly = name.chars().allMatch(Character::isDigit);
@@ -708,8 +693,10 @@ public class LabelFinderUI extends JFrame {
         combinedPreview = null;
         combinedPanel.setImage(null);
         printButton.setEnabled(false);
-        labelPagesToPrint = new ArrayList<>();
-        slipPagesToPrint = new ArrayList<>();
+        labelPreviewPages = new ArrayList<>();
+        slipPreviewPages = new ArrayList<>();
+        labelPrintSource = null;
+        slipPrintSource = null;
         currentLabelLocation = null;
 
         PageGroup labelGroup = (labelGroups != null) ? labelGroups.get(orderId) : null;
@@ -758,10 +745,9 @@ public class LabelFinderUI extends JFrame {
 
             @Override
             protected RenderedOrder doInBackground() throws Exception {
-                CompletableFuture<List<BufferedImage>> labelFuture = CompletableFuture.supplyAsync(() -> {
-                    List<BufferedImage> pages = renderPdfPagesList(labelGroup.file, labelGroup.pages, 150);
-                    return pages;
-                }, RENDER_EXECUTOR);
+                CompletableFuture<List<BufferedImage>> labelFuture = CompletableFuture.supplyAsync(() ->
+                    renderPdfPagesList(labelGroup.file, labelGroup.pages, PREVIEW_DPI)
+                , RENDER_EXECUTOR);
                 CompletableFuture<PageGroup> slipGroupFuture = CompletableFuture.supplyAsync(() -> {
                     try {
                         return resolveSlipGroup(orderId, cachedSlipGroup);
@@ -808,7 +794,7 @@ public class LabelFinderUI extends JFrame {
                 if (isCancelled()) {
                     return null;
                 }
-                List<BufferedImage> slipPages = renderPdfPagesList(slipGroupResolved.file, slipGroupResolved.pages, 150);
+                List<BufferedImage> slipPages = renderPdfPagesList(slipGroupResolved.file, slipGroupResolved.pages, PREVIEW_DPI);
                 if (isCancelled()) {
                     return null;
                 }
@@ -817,11 +803,15 @@ public class LabelFinderUI extends JFrame {
                 BufferedImage combined = stackImagesVertically(labelImg, slipImg, 12, Color.WHITE);
                 Integer firstPage = (labelGroup.pages != null && !labelGroup.pages.isEmpty()) ? labelGroup.pages.get(0) : null;
                 LabelLocation location = (firstPage != null) ? new LabelLocation(labelGroup.file, firstPage) : null;
+                PageGroup labelSnapshot = snapshotPageGroup(labelGroup);
+                PageGroup slipSnapshot = snapshotPageGroup(slipGroupResolved);
                 return new RenderedOrder(
                     Collections.unmodifiableList(new ArrayList<>(labelPages)),
                     Collections.unmodifiableList(new ArrayList<>(slipPages)),
                     combined,
-                    location
+                    location,
+                    labelSnapshot,
+                    slipSnapshot
                 );
             }
 
@@ -930,13 +920,15 @@ public class LabelFinderUI extends JFrame {
             return;
         }
 
-        labelPagesToPrint = new ArrayList<>(render.labelPages());
-        slipPagesToPrint = new ArrayList<>(render.slipPages());
+        labelPreviewPages = new ArrayList<>(render.labelPages());
+        slipPreviewPages = new ArrayList<>(render.slipPages());
         combinedPreview = render.combinedPreview();
         currentLabelLocation = render.labelLocation();
+        labelPrintSource = render.labelSource();
+        slipPrintSource = render.slipSource();
 
         combinedPanel.setImage(combinedPreview);
-        boolean hasPrintableContent = !labelPagesToPrint.isEmpty() || !slipPagesToPrint.isEmpty();
+        boolean hasPrintableContent = hasPrintableMaterial();
         printButton.setEnabled(hasPrintableContent);
 
         List<Path> designMatches = collectReadyDesignPhotos(orderId);
@@ -1054,6 +1046,18 @@ public class LabelFinderUI extends JFrame {
         }
 
         logScanEvent(orderId, scanInput, labelFound, slipFound, photoMatchCount, designMatchCount, scanUpdate, expectationMissing, printed, finalStatusNote);
+    }
+
+    private boolean hasPrintableMaterial() {
+        return hasPdfPrintPages() || combinedPreview != null;
+    }
+
+    private boolean hasPdfPrintPages() {
+        return hasPages(labelPrintSource) || hasPages(slipPrintSource);
+    }
+
+    private boolean hasPages(PageGroup group) {
+        return group != null && group.pages != null && !group.pages.isEmpty() && group.file != null;
     }
     private void logScanEvent(String orderId,
                               ScanInput scanInput,
@@ -1235,21 +1239,24 @@ public class LabelFinderUI extends JFrame {
         return out;
     }
     private void printCombined() {
-        List<BufferedImage> pages = snapshotPrintablePages();
-        if (pages.isEmpty()) {
+        List<PageRenderSource> printSources = collectPrintPageSources();
+        BufferedImage fallbackImage = printSources.isEmpty() ? combinedPreview : null;
+        if (printSources.isEmpty() && fallbackImage == null) {
             setStatusMessage("Nothing to print.");
             return;
         }
+
         PrinterJob job = PrinterJob.getPrinterJob();
         job.setJobName("Shipping Label & Slip (4x6)");
-        BufferedImage first = pages.get(0);
-        boolean landscape = first.getWidth() > first.getHeight();
+        boolean landscape = determineLandscapeForPrint();
         PageFormat pf = create4x6PageFormat(job, landscape);
-        job.setPrintable(new MultiPagePrintable(pages), pf);
+        job.setPrintable(new PdfAndImagePrintable(printSources, fallbackImage, PRINT_DPI), pf);
+
         if (!job.printDialog()) {
             setStatusMessage("Print job canceled.");
             return;
         }
+
         printButton.setEnabled(false);
         setStatusMessage("Printing...");
         submitPrintJob(job).whenComplete((success, throwable) -> SwingUtilities.invokeLater(() -> {
@@ -1266,20 +1273,6 @@ public class LabelFinderUI extends JFrame {
         }));
     }
 
-    private List<BufferedImage> snapshotPrintablePages() {
-        List<BufferedImage> pages = new ArrayList<>();
-        if (labelPagesToPrint != null) {
-            pages.addAll(labelPagesToPrint);
-        }
-        if (slipPagesToPrint != null) {
-            pages.addAll(slipPagesToPrint);
-        }
-        if (pages.isEmpty() && combinedPreview != null) {
-            pages.add(combinedPreview);
-        }
-        return pages;
-    }
-
     private CompletableFuture<Boolean> submitPrintJob(PrinterJob job) {
         return CompletableFuture.supplyAsync(() -> {
             try {
@@ -1291,6 +1284,47 @@ public class LabelFinderUI extends JFrame {
         }, PRINT_EXECUTOR);
     }
 
+    private PageGroup snapshotPageGroup(PageGroup group) {
+        if (group == null) {
+            return null;
+        }
+        List<Integer> pagesCopy = (group.pages == null) ? List.of() : new ArrayList<>(group.pages);
+        return new PageGroup(group.file, pagesCopy);
+    }
+
+    private List<PageRenderSource> collectPrintPageSources() {
+        List<PageRenderSource> sources = new ArrayList<>();
+        appendSources(sources, labelPrintSource);
+        appendSources(sources, slipPrintSource);
+        return sources;
+    }
+
+    private void appendSources(List<PageRenderSource> target, PageGroup group) {
+        if (!hasPages(group)) {
+            return;
+        }
+        for (Integer page : group.pages) {
+            if (page == null || page <= 0) {
+                continue;
+            }
+            target.add(new PageRenderSource(group.file, page - 1));
+        }
+    }
+
+    private boolean determineLandscapeForPrint() {
+        BufferedImage reference = (!isEmpty(labelPreviewPages)) ? labelPreviewPages.get(0)
+            : (!isEmpty(slipPreviewPages)) ? slipPreviewPages.get(0)
+            : combinedPreview;
+        if (reference == null) {
+            return true;
+        }
+        return reference.getWidth() >= reference.getHeight();
+    }
+
+    private boolean isEmpty(List<BufferedImage> images) {
+        return images == null || images.isEmpty();
+    }
+
     private void startAutoPrint(String orderId,
                                 ScanInput scanInput,
                                 boolean labelFound,
@@ -1300,8 +1334,9 @@ public class LabelFinderUI extends JFrame {
                                 ScanUpdate scanUpdate,
                                 boolean expectationMissing,
                                 OrderScanState stateForOrder) {
-        List<BufferedImage> pages = snapshotPrintablePages();
-        if (pages.isEmpty()) {
+        List<PageRenderSource> printSources = collectPrintPageSources();
+        BufferedImage fallbackImage = printSources.isEmpty() ? combinedPreview : null;
+        if (printSources.isEmpty() && fallbackImage == null) {
             setStatusMessage("Nothing to print.");
             logScanEvent(orderId, scanInput, labelFound, slipFound, photoMatchCount, designMatchCount, scanUpdate, expectationMissing, false, "No printable content for scan.");
             orderIdField.requestFocusInWindow();
@@ -1309,13 +1344,11 @@ public class LabelFinderUI extends JFrame {
             return;
         }
 
-        List<BufferedImage> pagesCopy = List.copyOf(pages);
         PrinterJob job = PrinterJob.getPrinterJob();
         job.setJobName("Shipping Label & Slip (4x6) - Direct");
-        BufferedImage first = pagesCopy.get(0);
-        boolean landscape = first.getWidth() > first.getHeight();
+        boolean landscape = determineLandscapeForPrint();
         PageFormat pf = create4x6PageFormat(job, landscape);
-        job.setPrintable(new MultiPagePrintable(pagesCopy), pf);
+        job.setPrintable(new PdfAndImagePrintable(printSources, fallbackImage, PRINT_DPI), pf);
 
         setStatusMessage("Sending to printer...");
         orderIdField.setText("");
@@ -2654,27 +2687,52 @@ public class LabelFinderUI extends JFrame {
     /**
      * Printable implementation that streams buffered images as sequential pages.
      */
-    private static class MultiPagePrintable implements Printable {
-        private final List<BufferedImage> pages;
-        MultiPagePrintable(List<BufferedImage> pages) {
-            this.pages = pages == null ? java.util.Collections.emptyList() : pages;
+    private class PdfAndImagePrintable implements Printable {
+        private final List<PageRenderSource> sources;
+        private final BufferedImage fallback;
+        private final int dpi;
+
+        PdfAndImagePrintable(List<PageRenderSource> sources, BufferedImage fallback, int dpi) {
+            this.sources = (sources == null) ? List.of() : List.copyOf(sources);
+            this.fallback = fallback;
+            this.dpi = dpi;
         }
+
         @Override
         public int print(Graphics g, PageFormat pf, int pageIndex) throws PrinterException {
-            if (pageIndex < 0 || pageIndex >= pages.size()) return NO_SUCH_PAGE;
-            BufferedImage img = pages.get(pageIndex);
-            if (img == null) return NO_SUCH_PAGE;
+            int extra = (fallback != null) ? 1 : 0;
+            int total = sources.size() + extra;
+            if (pageIndex < 0 || pageIndex >= total) {
+                return NO_SUCH_PAGE;
+            }
+
+            BufferedImage image;
+            if (pageIndex < sources.size()) {
+                PageRenderSource source = sources.get(pageIndex);
+                try {
+                    image = getOrRenderPdfPage(source.file(), source.pageIndexZeroBased(), dpi);
+                } catch (IOException ex) {
+                    throw new PrinterException("Failed to render page: " + ex.getMessage());
+                }
+            } else {
+                image = fallback;
+            }
+
+            if (image == null) {
+                return NO_SUCH_PAGE;
+            }
+
             Graphics2D g2d = (Graphics2D) g;
             g2d.translate(pf.getImageableX(), pf.getImageableY());
             double pw = pf.getImageableWidth();
             double ph = pf.getImageableHeight();
-            double scale = Math.min(pw / img.getWidth(), ph / img.getHeight());
-            int dw = (int) Math.floor(img.getWidth() * scale);
-            int dh = (int) Math.floor(img.getHeight() * scale);
+            double scale = Math.min(pw / image.getWidth(), ph / image.getHeight());
+            int dw = (int) Math.floor(image.getWidth() * scale);
+            int dh = (int) Math.floor(image.getHeight() * scale);
             int dx = (int) ((pw - dw) / 2.0);
             int dy = (int) ((ph - dh) / 2.0);
             g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
-            g2d.drawImage(img, dx, dy, dw, dh, null);
+            g2d.drawImage(image, dx, dy, dw, dh, null);
             return PAGE_EXISTS;
         }
     }

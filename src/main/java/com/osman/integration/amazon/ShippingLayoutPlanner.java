@@ -14,8 +14,8 @@ public final class ShippingLayoutPlanner {
     }
 
     public enum ShippingSpeed {
-        STANDARD("automated", "Standard"),
-        EXPEDITED("manual", "Expedited");
+        STANDARD("automated", "Automated"),
+        EXPEDITED("manual", "Manual");
 
         private final String folderName;
         private final String displayName;
