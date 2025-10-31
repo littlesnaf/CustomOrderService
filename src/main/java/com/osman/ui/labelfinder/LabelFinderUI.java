@@ -44,7 +44,9 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.logging.FileHandler;
@@ -108,6 +110,48 @@ public class LabelFinderUI extends JFrame {
             this.pages = pages;
         }
     }
+    private static final class RenderedOrder {
+        private final List<BufferedImage> labelPages;
+        private final List<BufferedImage> slipPages;
+        private final BufferedImage combinedPreview;
+        private final LabelLocation labelLocation;
+
+        RenderedOrder(List<BufferedImage> labelPages,
+                      List<BufferedImage> slipPages,
+                      BufferedImage combinedPreview,
+                      LabelLocation labelLocation) {
+            this.labelPages = labelPages;
+            this.slipPages = slipPages;
+            this.combinedPreview = combinedPreview;
+            this.labelLocation = labelLocation;
+        }
+
+        List<BufferedImage> labelPages() {
+            return labelPages;
+        }
+
+        List<BufferedImage> slipPages() {
+            return slipPages;
+        }
+
+        BufferedImage combinedPreview() {
+            return combinedPreview;
+        }
+
+        LabelLocation labelLocation() {
+            return labelLocation;
+        }
+    }
+    private static final class MissingPackingSlipException extends Exception {
+        private final String orderId;
+        MissingPackingSlipException(String orderId) {
+            super("Missing packing slip for order " + orderId);
+            this.orderId = orderId;
+        }
+        String getOrderId() {
+            return orderId;
+        }
+    }
     private final JTextField orderIdField;
     private final JButton findButton;
     private final JButton refreshButton;
@@ -136,6 +180,8 @@ public class LabelFinderUI extends JFrame {
     private File baseDir;
     private Map<String, PageGroup> labelGroups;
     private Map<String, PageGroup> slipGroups;
+    private List<File> slipCandidates;
+    private final Map<File, Map<String, List<Integer>>> slipPageCache;
     private LabelLocation currentLabelLocation;
     private BufferedImage combinedPreview;
     private List<BufferedImage> labelPagesToPrint;
@@ -143,7 +189,6 @@ public class LabelFinderUI extends JFrame {
     private static final Pattern IMG_NAME = Pattern.compile("(?i).+\\s*(?:\\(\\d+\\))?\\s*\\.(png|jpe?g)$");
     private static final Pattern XN_READY_NAME = Pattern.compile("(?i)^x(?:\\(\\d+\\)|\\d+)-.+\\s*(?:\\(\\d+\\))?\\s*\\.(?:png|jpe?g)$");
     private static final int FIND_DELAY_MS = 2000;
-    private static final int ORDER_INACTIVITY_TIMEOUT_MS = 30_000;
 
     private static final String PREF_WIN_BOUNDS       = "winBounds";        // x,y,w,h
     private static final String PREF_DIVIDER_LOCATION = "dividerLocation";  // JSplitPane divider
@@ -152,8 +197,9 @@ public class LabelFinderUI extends JFrame {
     private static final int MAX_SCAN_HISTORY = 500;
     private final Deque<String> scanHistory = new ArrayDeque<>();
     private final Map<String, CompletedOrderInfo> completedOrders = new LinkedHashMap<>();
+    private final Map<String, RenderedOrder> renderCache;
+    private SwingWorker<RenderedOrder, Void> activeRenderWorker;
     private final Timer findDelayTimer;
-    private final Map<String, Timer> orderInactivityTimers;
 
     /**
      * Constructs the UI, wires listeners, and prepares the initial application state.
@@ -177,7 +223,6 @@ public class LabelFinderUI extends JFrame {
         showUnscannedButton = new JButton("Show Unscanned Orders");
         autoPrintCheckBox = new JCheckBox("Auto Print");
         autoPrintCheckBox.setSelected(true);
-        orderInactivityTimers = new HashMap<>();
         findDelayTimer = new Timer(FIND_DELAY_MS, event -> {
             ((Timer) event.getSource()).stop();
             findSingleOrderFlow();
@@ -225,6 +270,10 @@ public class LabelFinderUI extends JFrame {
         scanProgress = new ConcurrentHashMap<>();
         baseFolders = new ArrayList<>();
         photoRefreshInFlight = Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
+        slipCandidates = new ArrayList<>();
+        slipPageCache = new ConcurrentHashMap<>();
+        renderCache = new ConcurrentHashMap<>();
+        activeRenderWorker = null;
         activeOrderId = null;
         photoIndex = new ArrayList<>();
         photoIndexPaths = new LinkedHashSet<>();
@@ -308,6 +357,13 @@ public class LabelFinderUI extends JFrame {
         labelPagesToPrint = new ArrayList<>();
         slipPagesToPrint = new ArrayList<>();
     }
+    private void cancelActiveRenderWorker() {
+        SwingWorker<RenderedOrder, Void> worker = activeRenderWorker;
+        if (worker != null && !worker.isDone()) {
+            worker.cancel(true);
+        }
+        activeRenderWorker = null;
+    }
     private File getPrimaryBaseFolder() {
         return baseFolders.isEmpty() ? null : baseFolders.get(0);
     }
@@ -390,6 +446,7 @@ public class LabelFinderUI extends JFrame {
         }
         baseDir = getPrimaryBaseFolder();
         ProgressSnapshot snapshot = preserveProgress ? snapshotProgressCaches() : null;
+        cancelActiveRenderWorker();
         clearAllViews();
         synchronized (photoIndexLock) {
             photoIndex = new ArrayList<>();
@@ -536,6 +593,7 @@ public class LabelFinderUI extends JFrame {
     private void buildLabelAndSlipIndices() {
         labelGroups = new HashMap<>();
         slipGroups = new HashMap<>();
+        slipCandidates = new ArrayList<>();
         if (!hasBaseFolders()) {
             setStatusMessage("Base folder invalid.");
             return;
@@ -564,13 +622,12 @@ public class LabelFinderUI extends JFrame {
             boolean looksLikePackingSlip = packingSlipName.matcher(name).matches()
                 || lowerName.startsWith("amazon");
             if (looksLikePackingSlip) {
-                try {
-                    Map<String, List<Integer>> m = PackSlipExtractor.indexOrderToPages(pdf);
-                    for (Map.Entry<String, List<Integer>> e : m.entrySet()) {
+                slipCandidates.add(pdf);
+                Map<String, List<Integer>> cached = slipPageCache.get(pdf);
+                if (cached != null) {
+                    for (Map.Entry<String, List<Integer>> e : cached.entrySet()) {
                         slipGroups.put(e.getKey(), new PageGroup(pdf, new ArrayList<>(e.getValue())));
                     }
-                }
-                catch (IOException ignored) {
                 }
             }
             else {
@@ -606,18 +663,12 @@ public class LabelFinderUI extends JFrame {
         combinedPreview = null;
         combinedPanel.setImage(null);
         printButton.setEnabled(false);
-        BufferedImage labelImg = null;
-        BufferedImage slipImg = null;
         labelPagesToPrint = new ArrayList<>();
         slipPagesToPrint = new ArrayList<>();
-        PageGroup lg = (labelGroups != null) ? labelGroups.get(orderId) : null;
-        boolean labelFound = lg != null;
-        if (labelFound) {
-            List<BufferedImage> labelPages = renderPdfPagesList(lg.file, lg.pages, 150);
-            labelPagesToPrint.addAll(labelPages);
-            labelImg = stackMany(withBorder(labelPages, Color.RED, 8), 12, Color.WHITE);
-            currentLabelLocation = new LabelLocation(lg.file, lg.pages.get(0));
-        } else {
+        currentLabelLocation = null;
+
+        PageGroup labelGroup = (labelGroups != null) ? labelGroups.get(orderId) : null;
+        if (labelGroup == null) {
             String missingLabel = "Order " + orderId + ": shipping label not found.";
             setStatusMessage(missingLabel);
             showScanError("Missing Shipping Label", missingLabel);
@@ -627,39 +678,220 @@ public class LabelFinderUI extends JFrame {
             orderIdField.selectAll();
             return;
         }
-        PageGroup sg = (slipGroups != null) ? slipGroups.get(orderId) : null;
-        boolean slipFound = sg != null;
-        if (slipFound) {
-            List<BufferedImage> slipPages = renderPdfPagesList(sg.file, sg.pages, 150);
-            slipPagesToPrint.addAll(slipPages);
-            slipImg = stackMany(withBorder(slipPages, new Color(0,120,215), 8), 12, Color.WHITE);
-        } else {
-            String missingSlip = "Order " + orderId + ": packing slip not found.";
-            setStatusMessage(missingSlip);
-            showScanError("Missing Packing Slip", missingSlip);
-            logScanEvent(orderId, scanInput, true, false, 0, 0, null, false, false, missingSlip);
-            orderIdField.setText("");
-            orderIdField.requestFocusInWindow();
-            orderIdField.selectAll();
-            return;
-        }
-        combinedPreview = stackImagesVertically(labelImg, slipImg, 12, Color.WHITE);
-        if (combinedPreview != null) {
-            combinedPanel.setImage(combinedPreview);
-            printButton.setEnabled(true);
-        }
+
+        PageGroup cachedSlipGroup = (slipGroups != null) ? slipGroups.get(orderId) : null;
+
         photoView.setImages(null, null);
         List<Path> photoMatches = collectPhotosFromIndex(orderId);
         int photoMatchCount = photoMatches.size();
         displayPhotosForOrder(orderId, photoMatches, false);
+
+        long lookupStart = System.nanoTime();
+        RenderedOrder cached = renderCache.get(orderId);
+        long lookupEnd = System.nanoTime();
+        LOGGER.log(Level.FINE, () -> String.format("Render cache lookup for %s took %.2f ms (%s)",
+            orderId,
+            (lookupEnd - lookupStart) / 1_000_000.0,
+            cached != null ? "HIT" : "MISS"));
+        if (cached != null) {
+            applyRenderedOrder(orderId, scanInput, cached, photoMatchCount, true, true);
+            return;
+        }
+
+        setStatusMessage("Rendering order " + orderId + "...");
+        startOrderRendering(orderId, scanInput, labelGroup, cachedSlipGroup, photoMatchCount);
+    }
+
+    private void startOrderRendering(String orderId,
+                                     ScanInput scanInput,
+                                     PageGroup labelGroup,
+                                     PageGroup cachedSlipGroup,
+                                     int photoMatchCount) {
+        cancelActiveRenderWorker();
+        SwingWorker<RenderedOrder, Void> worker = new SwingWorker<>() {
+            private long renderStartNanos;
+            private boolean slipFound = false;
+
+            @Override
+            protected RenderedOrder doInBackground() throws Exception {
+                renderStartNanos = System.nanoTime();
+                long labelStart = System.nanoTime();
+                List<BufferedImage> labelPages = renderPdfPagesList(labelGroup.file, labelGroup.pages, 150);
+                long labelEnd = System.nanoTime();
+                LOGGER.log(Level.INFO, () -> String.format("Render %s - label pages: %.2f ms", orderId, (labelEnd - labelStart) / 1_000_000.0));
+                if (isCancelled()) {
+                    return null;
+                }
+                long slipResolveStart = System.nanoTime();
+                PageGroup slipGroupResolved = resolveSlipGroup(orderId, cachedSlipGroup);
+                long slipResolveEnd = System.nanoTime();
+                LOGGER.log(Level.INFO, () -> String.format("Render %s - slip resolve: %.2f ms", orderId, (slipResolveEnd - slipResolveStart) / 1_000_000.0));
+                if (slipGroupResolved == null || slipGroupResolved.pages == null || slipGroupResolved.pages.isEmpty()) {
+                    throw new MissingPackingSlipException(orderId);
+                }
+                slipFound = true;
+                long slipStart = System.nanoTime();
+                List<BufferedImage> slipPages = renderPdfPagesList(slipGroupResolved.file, slipGroupResolved.pages, 150);
+                long slipEnd = System.nanoTime();
+                LOGGER.log(Level.INFO, () -> String.format("Render %s - slip pages: %.2f ms", orderId, (slipEnd - slipStart) / 1_000_000.0));
+                if (isCancelled()) {
+                    return null;
+                }
+                long stackStart = System.nanoTime();
+                BufferedImage labelImg = stackMany(withBorder(labelPages, Color.RED, 8), 12, Color.WHITE);
+                BufferedImage slipImg = stackMany(withBorder(slipPages, new Color(0,120,215), 8), 12, Color.WHITE);
+                BufferedImage combined = stackImagesVertically(labelImg, slipImg, 12, Color.WHITE);
+                long stackEnd = System.nanoTime();
+                LOGGER.log(Level.INFO, () -> String.format("Render %s - image composition: %.2f ms", orderId, (stackEnd - stackStart) / 1_000_000.0));
+                Integer firstPage = (labelGroup.pages != null && !labelGroup.pages.isEmpty()) ? labelGroup.pages.get(0) : null;
+                LabelLocation location = (firstPage != null) ? new LabelLocation(labelGroup.file, firstPage) : null;
+                return new RenderedOrder(
+                    Collections.unmodifiableList(new ArrayList<>(labelPages)),
+                    Collections.unmodifiableList(new ArrayList<>(slipPages)),
+                    combined,
+                    location
+                );
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    if (isCancelled()) {
+                        return;
+                    }
+                    RenderedOrder render = get();
+                    if (render == null) {
+                        return;
+                    }
+                    long renderEndNanos = System.nanoTime();
+                    LOGGER.log(Level.INFO, () -> String.format("Render %s - total worker time: %.2f ms", orderId, (renderEndNanos - renderStartNanos) / 1_000_000.0));
+                    renderCache.put(orderId, render);
+                    if (!orderId.equals(activeOrderId)) {
+                        return;
+                    }
+                    applyRenderedOrder(orderId, scanInput, render, photoMatchCount, true, slipFound);
+                }
+                catch (CancellationException ignored) {
+                }
+                catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                catch (ExecutionException e) {
+                    Throwable cause = (e.getCause() != null) ? e.getCause() : e;
+                    if (cause instanceof MissingPackingSlipException mse) {
+                        String order = mse.getOrderId();
+                        String missingSlip = "Order " + order + ": packing slip not found.";
+                        setStatusMessage(missingSlip);
+                        showScanError("Missing Packing Slip", missingSlip);
+                        logScanEvent(order, scanInput, true, false, photoMatchCount, 0, null, false, false, missingSlip);
+                        orderIdField.setText("");
+                        orderIdField.requestFocusInWindow();
+                        orderIdField.selectAll();
+                        return;
+                    }
+                    String message = (cause.getMessage() == null || cause.getMessage().isBlank())
+                        ? cause.toString()
+                        : cause.getMessage();
+                    setStatusMessage("Failed to render order: " + message);
+                    showScanError("Render Error", message);
+                    orderIdField.requestFocusInWindow();
+                    orderIdField.selectAll();
+                }
+                finally {
+                    if (activeRenderWorker == this) {
+                        activeRenderWorker = null;
+                    }
+                }
+            }
+        };
+        activeRenderWorker = worker;
+        worker.execute();
+    }
+
+    private PageGroup resolveSlipGroup(String orderId, PageGroup cached) throws IOException {
+        if (cached != null && cached.pages != null && !cached.pages.isEmpty()) {
+            return cached;
+        }
+        if (orderId == null || orderId.isBlank()) {
+            return null;
+        }
+        synchronized (slipPageCache) {
+            if (slipGroups == null) {
+                slipGroups = new HashMap<>();
+            }
+            PageGroup existing = slipGroups.get(orderId);
+            if (existing != null && existing.pages != null && !existing.pages.isEmpty()) {
+                return existing;
+            }
+            if (slipCandidates == null || slipCandidates.isEmpty()) {
+                return null;
+            }
+            for (File pdf : slipCandidates) {
+                if (pdf == null || !pdf.isFile()) {
+                    continue;
+                }
+                Map<String, List<Integer>> indexed = slipPageCache.get(pdf);
+                if (indexed == null) {
+                    long start = System.nanoTime();
+                    indexed = PackSlipExtractor.indexOrderToPages(pdf);
+                    long end = System.nanoTime();
+                    LOGGER.log(Level.INFO, () -> String.format("Slip index %s - PackSlipExtractor: %.2f ms", pdf.getName(), (end - start) / 1_000_000.0));
+                    slipPageCache.put(pdf, indexed);
+                } else {
+                    LOGGER.log(Level.FINE, () -> String.format("Slip index %s - cache HIT", pdf.getName()));
+                }
+                if (indexed == null || indexed.isEmpty()) {
+                    continue;
+                }
+                for (Map.Entry<String, List<Integer>> entry : indexed.entrySet()) {
+                    slipGroups.putIfAbsent(entry.getKey(), new PageGroup(pdf, new ArrayList<>(entry.getValue())));
+                }
+                PageGroup resolved = slipGroups.get(orderId);
+                if (resolved != null && resolved.pages != null && !resolved.pages.isEmpty()) {
+                    return resolved;
+                }
+            }
+            return slipGroups.get(orderId);
+        }
+    }
+
+    private void applyRenderedOrder(String orderId,
+                                    ScanInput scanInput,
+                                    RenderedOrder render,
+                                    int photoMatchCount,
+                                    boolean labelFound,
+                                    boolean slipFound) {
+        if (!orderId.equals(activeOrderId)) {
+            return;
+        }
+
+        labelPagesToPrint = new ArrayList<>(render.labelPages());
+        slipPagesToPrint = new ArrayList<>(render.slipPages());
+        combinedPreview = render.combinedPreview();
+        currentLabelLocation = render.labelLocation();
+
+        combinedPanel.setImage(combinedPreview);
+        boolean hasPrintableContent = !labelPagesToPrint.isEmpty() || !slipPagesToPrint.isEmpty();
+        printButton.setEnabled(hasPrintableContent);
+
+        long designsStart = System.nanoTime();
         List<Path> designMatches = collectReadyDesignPhotos(orderId);
         int designMatchCount = designMatches.size();
-        tagReadyDesigns(orderId, designMatches, true, true);
-        refreshPhotosForOrderAsync(orderId);
-        boolean hasPrintableContent = !labelPagesToPrint.isEmpty() || !slipPagesToPrint.isEmpty();
+        long designsEnd = System.nanoTime();
+        LOGGER.log(Level.INFO, () -> String.format("Collected ready designs for %s in %.2f ms (matches=%d)",
+            orderId,
+            (designsEnd - designsStart) / 1_000_000.0,
+            designMatchCount));
+        if (designMatchCount == 0) {
+            setStatusMessage("No ready design found for: " + orderId);
+        } else {
+            setStatusMessage("Ready designs located: " + designMatchCount + ".");
+        }
+
         ScanUpdate scanUpdate = null;
         OrderScanState stateForOrder = null;
         boolean expectationMissing = false;
+
         if (hasPrintableContent) {
             scanUpdate = trackScanProgress(orderId, scanInput.itemKey(), scanInput.rawItemId());
             if (scanUpdate == null) {
@@ -703,7 +935,6 @@ public class LabelFinderUI extends JFrame {
                 }
                 else if (!scanUpdate.completed) {
                     String inProgress = composeInProgressMessage(scanUpdate);
-                    scheduleOrderInactivityTimer(orderId);
                     setStatusMessage(inProgress);
                     logScanEvent(orderId, scanInput, labelFound, slipFound, photoMatchCount, designMatchCount, scanUpdate, expectationMissing, false, inProgress);
                     orderIdField.setText("");
@@ -712,15 +943,9 @@ public class LabelFinderUI extends JFrame {
                     return;
                 }
             }
-            if (scanUpdate != null) {
-                stateForOrder = scanProgress.get(orderId);
-                if (scanUpdate.completed) {
-                    stopOrderInactivityTimer(orderId);
-                } else if (scanUpdate.counted) {
-                    scheduleOrderInactivityTimer(orderId);
-                }
-            }
+            stateForOrder = scanProgress.get(orderId);
         }
+
         boolean printed = false;
         String completionMessage = null;
         if (hasPrintableContent) {
@@ -745,6 +970,7 @@ public class LabelFinderUI extends JFrame {
             orderIdField.requestFocusInWindow();
             orderIdField.selectAll();
         }
+
         if (printed) {
             String photoMessage = describePhotoOutcome(orderId);
             String status = completionMessage;
@@ -756,6 +982,7 @@ public class LabelFinderUI extends JFrame {
             }
             setStatusMessage(status);
         }
+
         String finalStatusNote;
         if (printed) {
             finalStatusNote = (completionMessage != null) ? completionMessage : "Printed";
@@ -766,111 +993,9 @@ public class LabelFinderUI extends JFrame {
         } else {
             finalStatusNote = "Awaiting manual action.";
         }
+
         logScanEvent(orderId, scanInput, labelFound, slipFound, photoMatchCount, designMatchCount, scanUpdate, expectationMissing, printed, finalStatusNote);
     }
-    private void scheduleOrderInactivityTimer(String orderId) {
-        if (orderId == null || orderId.isBlank()) {
-            return;
-        }
-        if (!SwingUtilities.isEventDispatchThread()) {
-            SwingUtilities.invokeLater(() -> scheduleOrderInactivityTimer(orderId));
-            return;
-        }
-        OrderScanState state = scanProgress.get(orderId);
-        if (state == null || state.totalScanned() >= state.expectedTotal()) {
-            stopOrderInactivityTimer(orderId);
-            return;
-        }
-        Timer existing = orderInactivityTimers.get(orderId);
-        if (existing != null) {
-            existing.restart();
-            return;
-        }
-        Timer timer = new Timer(ORDER_INACTIVITY_TIMEOUT_MS, evt -> handleOrderInactivity(orderId));
-        timer.setRepeats(false);
-        orderInactivityTimers.put(orderId, timer);
-        timer.start();
-    }
-    private void stopOrderInactivityTimer(String orderId) {
-        if (orderId == null || orderId.isBlank()) {
-            return;
-        }
-        Runnable stopper = () -> {
-            Timer timer = orderInactivityTimers.remove(orderId);
-            if (timer != null) {
-                timer.stop();
-            }
-        };
-        if (SwingUtilities.isEventDispatchThread()) {
-            stopper.run();
-        } else {
-            SwingUtilities.invokeLater(stopper);
-        }
-    }
-    private void stopAllOrderInactivityTimers() {
-        if (!SwingUtilities.isEventDispatchThread()) {
-            SwingUtilities.invokeLater(this::stopAllOrderInactivityTimers);
-            return;
-        }
-        if (orderInactivityTimers.isEmpty()) {
-            return;
-        }
-        for (Timer timer : orderInactivityTimers.values()) {
-            if (timer != null) {
-                timer.stop();
-            }
-        }
-        orderInactivityTimers.clear();
-    }
-    private void handleOrderInactivity(String orderId) {
-        if (!SwingUtilities.isEventDispatchThread()) {
-            SwingUtilities.invokeLater(() -> handleOrderInactivity(orderId));
-            return;
-        }
-        Timer timer = orderInactivityTimers.remove(orderId);
-        if (timer != null) {
-            timer.stop();
-        }
-        OrderScanState state = scanProgress.get(orderId);
-        if (state == null) {
-            return;
-        }
-        if (state.totalScanned() == 0 || state.totalScanned() >= state.expectedTotal()) {
-            return;
-        }
-        int expected = state.expectedTotal();
-        if (expected < 2 || expected > 4) {
-            return;
-        }
-        OrderExpectation expectation = resolveExpectation(orderId);
-        if (expectation != null) {
-            scanProgress.put(orderId, new OrderScanState(orderId, expectation));
-        } else {
-            scanProgress.remove(orderId);
-        }
-        clearScanHistoryForOrder(orderId);
-        setStatusMessage("Order " + orderId + ": timeout reached. Progress reset to 0/" + expected + ". Scan next barcode.");
-        refreshProgressBanner();
-        orderIdField.requestFocusInWindow();
-        orderIdField.selectAll();
-    }
-    private void clearScanHistoryForOrder(String orderId) {
-        if (orderId == null || orderId.isBlank()) {
-            return;
-        }
-        String prefix = orderId + "^";
-        for (Iterator<String> it = scanHistory.iterator(); it.hasNext();) {
-            String entry = it.next();
-            if (entry != null && entry.startsWith(prefix)) {
-                it.remove();
-            }
-        }
-    }
-    private void refreshProgressBanner() {
-        int[] totals = calculateProgressTotals(scanProgress, completedOrders);
-        updateProgressBanner(totals[0], totals[1]);
-    }
-
     private void logScanEvent(String orderId,
                               ScanInput scanInput,
                               boolean labelFound,
@@ -930,23 +1055,6 @@ public class LabelFinderUI extends JFrame {
             status
         );
         SCAN_LOGGER.info(logMessage);
-    }
-    private static boolean applyTagWithBrew(Path filePath, String tagName) {
-        try {
-            ProcessBuilder pb = new ProcessBuilder("tag", "-a", tagName, filePath.toAbsolutePath().toString());
-            Process p = pb.start();
-            int exitCode = p.waitFor();
-            return exitCode == 0;
-        }
-        catch (IOException e) {
-            LOGGER.log(Level.SEVERE, "Failed to apply Finder tag via 'tag' command", e);
-            return false;
-        }
-        catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            LOGGER.log(Level.WARNING, "Tag application interrupted", e);
-            return false;
-        }
     }
     /**
      * Launches the application on the Swing event thread.
@@ -1177,17 +1285,15 @@ public class LabelFinderUI extends JFrame {
                 try {
                     List<Path> diskMatches = get();
                     List<Path> newEntries = addPhotosToIndex(diskMatches);
-                    List<Path> designMatches = collectReadyDesignPhotos(orderId);
-                    boolean newReadyDesignFound = !newEntries.isEmpty() && designMatches.stream().anyMatch(newEntries::contains);
                     if (orderId.equals(activeOrderId)) {
                         List<Path> refreshed = collectPhotosFromIndex(orderId);
                         displayPhotosForOrder(orderId, refreshed, true);
-                        if (newReadyDesignFound) {
-                            tagReadyDesigns(orderId, designMatches, true, false);
+                        List<Path> designMatches = collectReadyDesignPhotos(orderId);
+                        if (designMatches.isEmpty()) {
+                            setStatusMessage("No ready design found for: " + orderId);
+                        } else {
+                            setStatusMessage("Ready designs located: " + designMatches.size() + ".");
                         }
-                    }
-                    else if (newReadyDesignFound) {
-                        tagReadyDesigns(orderId, designMatches, false, false);
                     }
                 }
                 catch (Exception ignored) {
@@ -1250,29 +1356,6 @@ public class LabelFinderUI extends JFrame {
         sorted.sort(Comparator.comparing(p -> p.getFileName().toString(), String.CASE_INSENSITIVE_ORDER));
         return sorted;
     }
-    private void tagReadyDesigns(String orderId, List<Path> designMatches, boolean updateStatus, boolean allowEmptyStatusMessage) {
-        if (designMatches == null || designMatches.isEmpty()) {
-            if (updateStatus && allowEmptyStatusMessage) {
-                setStatusMessage("No ready design found to tag for: " + orderId);
-            }
-            return;
-        }
-        int ok = 0;
-        for (Path p : designMatches) {
-            if (applyTagWithBrew(p, "Green")) {
-                ok++;
-            }
-        }
-        if (!updateStatus) {
-            return;
-        }
-        if (ok > 0) {
-            setStatusMessage("Ready designs tagged: Green (" + ok + "/" + designMatches.size() + ").");
-        }
-        else {
-            setStatusMessage("Tried to tag " + designMatches.size() + " item(s) with 'tag' command, but it failed. Is 'tag' installed and in your PATH?");
-        }
-    }
     /**
      * Enables drag-and-drop of folders so operators can quickly switch data sources.
      */
@@ -1308,7 +1391,7 @@ public class LabelFinderUI extends JFrame {
         }
     }
     private void clearProgressCaches() {
-        stopAllOrderInactivityTimers();
+        cancelActiveRenderWorker();
         expectationIndex.clear();
         manifestOrderSummaries.clear();
         scanProgress.clear();
@@ -1316,6 +1399,9 @@ public class LabelFinderUI extends JFrame {
         scanHistory.clear();
         bannerOrderId = null;
         updateProgressBanner(0, 0);
+        renderCache.clear();
+        slipPageCache.clear();
+        slipCandidates = new ArrayList<>();
     }
     private ProgressSnapshot snapshotProgressCaches() {
         if (scanProgress.isEmpty() && completedOrders.isEmpty() && scanHistory.isEmpty()) {
@@ -1615,7 +1701,6 @@ public class LabelFinderUI extends JFrame {
         if (orderId == null || orderId.isBlank()) {
             return;
         }
-        stopOrderInactivityTimer(orderId);
         OrderScanState removed = scanProgress.remove(orderId);
         if (removed != null) {
             state = removed;

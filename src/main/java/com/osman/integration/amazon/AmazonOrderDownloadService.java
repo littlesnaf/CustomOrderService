@@ -65,26 +65,7 @@ public class  AmazonOrderDownloadService {
         return downloadInternal(batch, personalizedGroups, listener);
     }
 
-    /**
-     * Downloads only the specified item type within the provided batch.
-     */
-    public Path downloadItemType(OrderBatch batch, String itemType, DownloadProgressListener listener) throws IOException {
-        validateBatch(batch);
-        Objects.requireNonNull(itemType, "itemType");
-        Objects.requireNonNull(listener, "listener");
 
-        if (batch.groups().containsKey(itemType)) {
-            return downloadItemTypes(batch, java.util.List.of(itemType), listener);
-        }
-
-        String matchingKey = batch.groups().entrySet().stream()
-            .filter(entry -> itemType.equals(entry.getValue().itemType()))
-            .map(Map.Entry::getKey)
-            .findFirst()
-            .orElseThrow(() -> new IllegalArgumentException("Item type '%s' not found in batch.".formatted(itemType)));
-
-        return downloadItemTypes(batch, java.util.List.of(matchingKey), listener);
-    }
 
     /**
      * Downloads only the specified item types within the provided batch.
