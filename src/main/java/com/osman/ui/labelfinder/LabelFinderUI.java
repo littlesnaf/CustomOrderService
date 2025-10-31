@@ -45,8 +45,12 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.logging.FileHandler;
@@ -72,6 +76,13 @@ public class LabelFinderUI extends JFrame {
     private static final Logger LOGGER = AppLogger.get();
     private static final Path SCAN_LOG_PATH = Paths.get("label-finder-scans.log");
     private static final Logger SCAN_LOGGER = createScanLogger();
+    private static final ExecutorService RENDER_EXECUTOR = Executors.newFixedThreadPool(
+        Math.max(2, Runtime.getRuntime().availableProcessors()),
+        r -> {
+            Thread t = new Thread(r, "LabelFinder-RenderPool");
+            t.setDaemon(true);
+            return t;
+        });
 
     private static Logger createScanLogger() {
         Logger logger = Logger.getLogger("com.osman.labelfinder.scan");
@@ -715,21 +726,63 @@ public class LabelFinderUI extends JFrame {
             @Override
             protected RenderedOrder doInBackground() throws Exception {
                 renderStartNanos = System.nanoTime();
-                long labelStart = System.nanoTime();
-                List<BufferedImage> labelPages = renderPdfPagesList(labelGroup.file, labelGroup.pages, 150);
-                long labelEnd = System.nanoTime();
-                LOGGER.log(Level.INFO, () -> String.format("Render %s - label pages: %.2f ms", orderId, (labelEnd - labelStart) / 1_000_000.0));
-                if (isCancelled()) {
+                CompletableFuture<List<BufferedImage>> labelFuture = CompletableFuture.supplyAsync(() -> {
+                    long labelStart = System.nanoTime();
+                    List<BufferedImage> pages = renderPdfPagesList(labelGroup.file, labelGroup.pages, 150);
+                    long labelEnd = System.nanoTime();
+                    LOGGER.log(Level.INFO, () -> String.format("Render %s - label pages: %.2f ms", orderId, (labelEnd - labelStart) / 1_000_000.0));
+                    return pages;
+                }, RENDER_EXECUTOR);
+                CompletableFuture<PageGroup> slipGroupFuture = CompletableFuture.supplyAsync(() -> {
+                    long slipResolveStart = System.nanoTime();
+                    try {
+                        PageGroup resolved = resolveSlipGroup(orderId, cachedSlipGroup);
+                        long slipResolveEnd = System.nanoTime();
+                        LOGGER.log(Level.INFO, () -> String.format("Render %s - slip resolve: %.2f ms", orderId, (slipResolveEnd - slipResolveStart) / 1_000_000.0));
+                        return resolved;
+                    } catch (IOException ex) {
+                        throw new CompletionException(ex);
+                    }
+                }, RENDER_EXECUTOR);
+                List<BufferedImage> labelPages;
+                PageGroup slipGroupResolved;
+                try {
+                    labelPages = labelFuture.get();
+                    if (isCancelled()) {
+                        slipGroupFuture.cancel(true);
+                        return null;
+                    }
+                    slipGroupResolved = slipGroupFuture.get();
+                } catch (InterruptedException e) {
+                    labelFuture.cancel(true);
+                    slipGroupFuture.cancel(true);
+                    Thread.currentThread().interrupt();
                     return null;
+                } catch (ExecutionException e) {
+                    labelFuture.cancel(true);
+                    slipGroupFuture.cancel(true);
+                    Throwable cause = e.getCause();
+                    if (cause instanceof MissingPackingSlipException missing) {
+                        throw missing;
+                    }
+                    if (cause instanceof IOException io) {
+                        throw io;
+                    }
+                    if (cause instanceof RuntimeException runtime) {
+                        throw runtime;
+                    }
+                    if (cause instanceof Error error) {
+                        throw error;
+                    }
+                    throw new RuntimeException(cause);
                 }
-                long slipResolveStart = System.nanoTime();
-                PageGroup slipGroupResolved = resolveSlipGroup(orderId, cachedSlipGroup);
-                long slipResolveEnd = System.nanoTime();
-                LOGGER.log(Level.INFO, () -> String.format("Render %s - slip resolve: %.2f ms", orderId, (slipResolveEnd - slipResolveStart) / 1_000_000.0));
                 if (slipGroupResolved == null || slipGroupResolved.pages == null || slipGroupResolved.pages.isEmpty()) {
                     throw new MissingPackingSlipException(orderId);
                 }
                 slipFound = true;
+                if (isCancelled()) {
+                    return null;
+                }
                 long slipStart = System.nanoTime();
                 List<BufferedImage> slipPages = renderPdfPagesList(slipGroupResolved.file, slipGroupResolved.pages, 150);
                 long slipEnd = System.nanoTime();
