@@ -43,6 +43,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
@@ -83,6 +84,12 @@ public class LabelFinderUI extends JFrame {
             t.setDaemon(true);
             return t;
         });
+    private static final ExecutorService PRINT_EXECUTOR = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "LabelFinder-Print");
+        t.setDaemon(true);
+        return t;
+    });
+    private static final ConcurrentHashMap<RenderCacheKey, CompletableFuture<BufferedImage>> PAGE_RENDER_CACHE = new ConcurrentHashMap<>();
 
     private static Logger createScanLogger() {
         Logger logger = Logger.getLogger("com.osman.labelfinder.scan");
@@ -153,6 +160,33 @@ public class LabelFinderUI extends JFrame {
             return labelLocation;
         }
     }
+    private static final class RenderCacheKey {
+        private final String absolutePath;
+        private final int pageIndex;
+        private final int dpi;
+        RenderCacheKey(File pdfFile, int pageIndex, int dpi) {
+            this.absolutePath = (pdfFile == null) ? "" : pdfFile.getAbsolutePath();
+            this.pageIndex = pageIndex;
+            this.dpi = dpi;
+        }
+        @Override
+        public boolean equals(Object obj) {
+            if (this == obj) {
+                return true;
+            }
+            if (obj == null || getClass() != obj.getClass()) {
+                return false;
+            }
+            RenderCacheKey other = (RenderCacheKey) obj;
+            return pageIndex == other.pageIndex
+                && dpi == other.dpi
+                && Objects.equals(absolutePath, other.absolutePath);
+        }
+        @Override
+        public int hashCode() {
+            return Objects.hash(absolutePath, pageIndex, dpi);
+        }
+    }
     private static final class MissingPackingSlipException extends Exception {
         private final String orderId;
         MissingPackingSlipException(String orderId) {
@@ -199,7 +233,7 @@ public class LabelFinderUI extends JFrame {
     private List<BufferedImage> slipPagesToPrint;
     private static final Pattern IMG_NAME = Pattern.compile("(?i).+\\s*(?:\\(\\d+\\))?\\s*\\.(png|jpe?g)$");
     private static final Pattern XN_READY_NAME = Pattern.compile("(?i)^x(?:\\(\\d+\\)|\\d+)-.+\\s*(?:\\(\\d+\\))?\\s*\\.(?:png|jpe?g)$");
-    private static final int FIND_DELAY_MS = 2000;
+    private static final int FIND_DELAY_MS = 500;
 
     private static final String PREF_WIN_BOUNDS       = "winBounds";        // x,y,w,h
     private static final String PREF_DIVIDER_LOCATION = "dividerLocation";  // JSplitPane divider
@@ -720,26 +754,17 @@ public class LabelFinderUI extends JFrame {
                                      int photoMatchCount) {
         cancelActiveRenderWorker();
         SwingWorker<RenderedOrder, Void> worker = new SwingWorker<>() {
-            private long renderStartNanos;
             private boolean slipFound = false;
 
             @Override
             protected RenderedOrder doInBackground() throws Exception {
-                renderStartNanos = System.nanoTime();
                 CompletableFuture<List<BufferedImage>> labelFuture = CompletableFuture.supplyAsync(() -> {
-                    long labelStart = System.nanoTime();
                     List<BufferedImage> pages = renderPdfPagesList(labelGroup.file, labelGroup.pages, 150);
-                    long labelEnd = System.nanoTime();
-                    LOGGER.log(Level.INFO, () -> String.format("Render %s - label pages: %.2f ms", orderId, (labelEnd - labelStart) / 1_000_000.0));
                     return pages;
                 }, RENDER_EXECUTOR);
                 CompletableFuture<PageGroup> slipGroupFuture = CompletableFuture.supplyAsync(() -> {
-                    long slipResolveStart = System.nanoTime();
                     try {
-                        PageGroup resolved = resolveSlipGroup(orderId, cachedSlipGroup);
-                        long slipResolveEnd = System.nanoTime();
-                        LOGGER.log(Level.INFO, () -> String.format("Render %s - slip resolve: %.2f ms", orderId, (slipResolveEnd - slipResolveStart) / 1_000_000.0));
-                        return resolved;
+                        return resolveSlipGroup(orderId, cachedSlipGroup);
                     } catch (IOException ex) {
                         throw new CompletionException(ex);
                     }
@@ -783,19 +808,13 @@ public class LabelFinderUI extends JFrame {
                 if (isCancelled()) {
                     return null;
                 }
-                long slipStart = System.nanoTime();
                 List<BufferedImage> slipPages = renderPdfPagesList(slipGroupResolved.file, slipGroupResolved.pages, 150);
-                long slipEnd = System.nanoTime();
-                LOGGER.log(Level.INFO, () -> String.format("Render %s - slip pages: %.2f ms", orderId, (slipEnd - slipStart) / 1_000_000.0));
                 if (isCancelled()) {
                     return null;
                 }
-                long stackStart = System.nanoTime();
                 BufferedImage labelImg = stackMany(withBorder(labelPages, Color.RED, 8), 12, Color.WHITE);
                 BufferedImage slipImg = stackMany(withBorder(slipPages, new Color(0,120,215), 8), 12, Color.WHITE);
                 BufferedImage combined = stackImagesVertically(labelImg, slipImg, 12, Color.WHITE);
-                long stackEnd = System.nanoTime();
-                LOGGER.log(Level.INFO, () -> String.format("Render %s - image composition: %.2f ms", orderId, (stackEnd - stackStart) / 1_000_000.0));
                 Integer firstPage = (labelGroup.pages != null && !labelGroup.pages.isEmpty()) ? labelGroup.pages.get(0) : null;
                 LabelLocation location = (firstPage != null) ? new LabelLocation(labelGroup.file, firstPage) : null;
                 return new RenderedOrder(
@@ -816,8 +835,6 @@ public class LabelFinderUI extends JFrame {
                     if (render == null) {
                         return;
                     }
-                    long renderEndNanos = System.nanoTime();
-                    LOGGER.log(Level.INFO, () -> String.format("Render %s - total worker time: %.2f ms", orderId, (renderEndNanos - renderStartNanos) / 1_000_000.0));
                     renderCache.put(orderId, render);
                     if (!orderId.equals(activeOrderId)) {
                         return;
@@ -885,13 +902,8 @@ public class LabelFinderUI extends JFrame {
                 }
                 Map<String, List<Integer>> indexed = slipPageCache.get(pdf);
                 if (indexed == null) {
-                    long start = System.nanoTime();
                     indexed = PackSlipExtractor.indexOrderToPages(pdf);
-                    long end = System.nanoTime();
-                    LOGGER.log(Level.INFO, () -> String.format("Slip index %s - PackSlipExtractor: %.2f ms", pdf.getName(), (end - start) / 1_000_000.0));
                     slipPageCache.put(pdf, indexed);
-                } else {
-                    LOGGER.log(Level.FINE, () -> String.format("Slip index %s - cache HIT", pdf.getName()));
                 }
                 if (indexed == null || indexed.isEmpty()) {
                     continue;
@@ -927,14 +939,8 @@ public class LabelFinderUI extends JFrame {
         boolean hasPrintableContent = !labelPagesToPrint.isEmpty() || !slipPagesToPrint.isEmpty();
         printButton.setEnabled(hasPrintableContent);
 
-        long designsStart = System.nanoTime();
         List<Path> designMatches = collectReadyDesignPhotos(orderId);
         int designMatchCount = designMatches.size();
-        long designsEnd = System.nanoTime();
-        LOGGER.log(Level.INFO, () -> String.format("Collected ready designs for %s in %.2f ms (matches=%d)",
-            orderId,
-            (designsEnd - designsStart) / 1_000_000.0,
-            designMatchCount));
         if (designMatchCount == 0) {
             setStatusMessage("No ready design found for: " + orderId);
         } else {
@@ -1003,18 +1009,18 @@ public class LabelFinderUI extends JFrame {
         String completionMessage = null;
         if (hasPrintableContent) {
             if (autoPrintCheckBox.isSelected()) {
-                printed = printCombinedDirect();
+                startAutoPrint(orderId,
+                    scanInput,
+                    labelFound,
+                    slipFound,
+                    photoMatchCount,
+                    designMatchCount,
+                    scanUpdate,
+                    expectationMissing,
+                    stateForOrder);
+                return;
             } else {
                 setStatusMessage("Auto print disabled; review and print manually if needed.");
-            }
-            if (printed) {
-                if (scanUpdate != null && scanUpdate.completed) {
-                    markOrderComplete(orderId, stateForOrder);
-                    completionMessage = composeCompletionMessage(scanUpdate);
-                }
-                else if (expectationMissing) {
-                    completionMessage = "Printed (no quantity data for order: " + orderId + ").";
-                }
             }
             orderIdField.setText("");
             orderIdField.requestFocusInWindow();
@@ -1117,17 +1123,67 @@ public class LabelFinderUI extends JFrame {
     public static void main(String[] args) {
         SwingUtilities.invokeLater(() -> new LabelFinderUI().setVisible(true));
     }
+    private BufferedImage getOrRenderPdfPage(File pdf, int pageIndexZeroBased, int dpi) throws IOException {
+        RenderCacheKey key = new RenderCacheKey(pdf, pageIndexZeroBased, dpi);
+        CompletableFuture<BufferedImage> future = PAGE_RENDER_CACHE.computeIfAbsent(key, k ->
+            CompletableFuture.supplyAsync(() -> {
+                try (PDDocument doc = PDDocument.load(pdf)) {
+                    PDFRenderer renderer = new PDFRenderer(doc);
+                    renderer.setSubsamplingAllowed(true);
+                    return renderer.renderImageWithDPI(pageIndexZeroBased, dpi);
+                }
+                catch (IOException ex) {
+                    throw new CompletionException(ex);
+                }
+            }, RENDER_EXECUTOR)
+        );
+        try {
+            return future.get();
+        }
+        catch (InterruptedException e) {
+            future.cancel(true);
+            PAGE_RENDER_CACHE.remove(key, future);
+            Thread.currentThread().interrupt();
+            throw new IOException("Interrupted while rendering PDF page", e);
+        }
+        catch (CancellationException e) {
+            PAGE_RENDER_CACHE.remove(key, future);
+            throw new IOException("Rendering cancelled", e);
+        }
+        catch (ExecutionException e) {
+            PAGE_RENDER_CACHE.remove(key, future);
+            Throwable cause = e.getCause();
+            if (cause instanceof CompletionException completion && completion.getCause() != null) {
+                cause = completion.getCause();
+            }
+            if (cause instanceof IOException io) {
+                throw io;
+            }
+            if (cause instanceof RuntimeException runtime) {
+                throw runtime;
+            }
+            throw new IOException("Failed to render PDF page", cause);
+        }
+    }
     private List<BufferedImage> renderPdfPagesList(File pdf, List<Integer> pages1Based, int dpi) {
         List<BufferedImage> out = new ArrayList<>();
-        if (pdf == null || pages1Based == null || pages1Based.isEmpty()) return out;
-        try (PDDocument doc = PDDocument.load(pdf)) {
-            PDFRenderer renderer = new PDFRenderer(doc);
-            for (int p : pages1Based) {
-                BufferedImage img = renderer.renderImageWithDPI(p - 1, dpi);
-                out.add(img);
-            }
+        if (pdf == null || pages1Based == null || pages1Based.isEmpty()) {
+            return out;
         }
-        catch (IOException ignored) {
+        for (int p : pages1Based) {
+            int pageIndexZeroBased = p - 1;
+            if (pageIndexZeroBased < 0) {
+                continue;
+            }
+            try {
+                BufferedImage img = getOrRenderPdfPage(pdf, pageIndexZeroBased, dpi);
+                if (img != null) {
+                    out.add(img);
+                }
+            }
+            catch (IOException ex) {
+                LOGGER.log(Level.FINE, () -> String.format("Failed to render %s page %d: %s", pdf.getName(), p, ex.getMessage()));
+            }
         }
         return out;
     }
@@ -1179,15 +1235,10 @@ public class LabelFinderUI extends JFrame {
         return out;
     }
     private void printCombined() {
-        List<BufferedImage> pages = new ArrayList<>();
-        if (labelPagesToPrint != null) pages.addAll(labelPagesToPrint);
-        if (slipPagesToPrint != null) pages.addAll(slipPagesToPrint);
+        List<BufferedImage> pages = snapshotPrintablePages();
         if (pages.isEmpty()) {
-            if (combinedPreview == null) {
-                setStatusMessage("Nothing to print.");
-                return;
-            }
-            pages.add(combinedPreview);
+            setStatusMessage("Nothing to print.");
+            return;
         }
         PrinterJob job = PrinterJob.getPrinterJob();
         job.setJobName("Shipping Label & Slip (4x6)");
@@ -1195,45 +1246,133 @@ public class LabelFinderUI extends JFrame {
         boolean landscape = first.getWidth() > first.getHeight();
         PageFormat pf = create4x6PageFormat(job, landscape);
         job.setPrintable(new MultiPagePrintable(pages), pf);
-        if (job.printDialog()) {
-            try {
-                job.print();
-                setStatusMessage("Print job sent.");
-            }
-            catch (PrinterException e) {
-                JOptionPane.showMessageDialog(this, "Could not print.\nError: " + e.getMessage(), "Print Error", JOptionPane.ERROR_MESSAGE);
-            }
-        }
-        else {
+        if (!job.printDialog()) {
             setStatusMessage("Print job canceled.");
+            return;
         }
-    }
-    private boolean printCombinedDirect() {
-        List<BufferedImage> pages = new ArrayList<>();
-        if (labelPagesToPrint != null) pages.addAll(labelPagesToPrint);
-        if (slipPagesToPrint != null) pages.addAll(slipPagesToPrint);
-        if (pages.isEmpty()) {
-            if (combinedPreview == null) {
-                setStatusMessage("Nothing to print.");
-                return false;
+        printButton.setEnabled(false);
+        setStatusMessage("Printing...");
+        submitPrintJob(job).whenComplete((success, throwable) -> SwingUtilities.invokeLater(() -> {
+            printButton.setEnabled(true);
+            if (throwable == null && Boolean.TRUE.equals(success)) {
+                setStatusMessage("Print job sent.");
+            } else {
+                String message = (throwable != null && throwable.getCause() != null)
+                    ? throwable.getCause().getMessage()
+                    : (throwable != null ? throwable.getMessage() : "Unknown error");
+                JOptionPane.showMessageDialog(this, "Could not print.\n" + message, "Print Error", JOptionPane.ERROR_MESSAGE);
+                setStatusMessage("Print failed.");
             }
+        }));
+    }
+
+    private List<BufferedImage> snapshotPrintablePages() {
+        List<BufferedImage> pages = new ArrayList<>();
+        if (labelPagesToPrint != null) {
+            pages.addAll(labelPagesToPrint);
+        }
+        if (slipPagesToPrint != null) {
+            pages.addAll(slipPagesToPrint);
+        }
+        if (pages.isEmpty() && combinedPreview != null) {
             pages.add(combinedPreview);
         }
+        return pages;
+    }
+
+    private CompletableFuture<Boolean> submitPrintJob(PrinterJob job) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                job.print();
+                return Boolean.TRUE;
+            } catch (PrinterException ex) {
+                throw new CompletionException(ex);
+            }
+        }, PRINT_EXECUTOR);
+    }
+
+    private void startAutoPrint(String orderId,
+                                ScanInput scanInput,
+                                boolean labelFound,
+                                boolean slipFound,
+                                int photoMatchCount,
+                                int designMatchCount,
+                                ScanUpdate scanUpdate,
+                                boolean expectationMissing,
+                                OrderScanState stateForOrder) {
+        List<BufferedImage> pages = snapshotPrintablePages();
+        if (pages.isEmpty()) {
+            setStatusMessage("Nothing to print.");
+            logScanEvent(orderId, scanInput, labelFound, slipFound, photoMatchCount, designMatchCount, scanUpdate, expectationMissing, false, "No printable content for scan.");
+            orderIdField.requestFocusInWindow();
+            orderIdField.selectAll();
+            return;
+        }
+
+        List<BufferedImage> pagesCopy = List.copyOf(pages);
         PrinterJob job = PrinterJob.getPrinterJob();
         job.setJobName("Shipping Label & Slip (4x6) - Direct");
-        BufferedImage first = pages.get(0);
+        BufferedImage first = pagesCopy.get(0);
         boolean landscape = first.getWidth() > first.getHeight();
         PageFormat pf = create4x6PageFormat(job, landscape);
-        job.setPrintable(new MultiPagePrintable(pages), pf);
-        try {
-            job.print();
-            setStatusMessage("Printed (direct).");
-            return true;
-        }
-        catch (PrinterException e) {
-            JOptionPane.showMessageDialog(this, "Direct print failed.\n" + e.getMessage(), "Print Error", JOptionPane.ERROR_MESSAGE);
-            return false;
-        }
+        job.setPrintable(new MultiPagePrintable(pagesCopy), pf);
+
+        setStatusMessage("Sending to printer...");
+        orderIdField.setText("");
+        orderIdField.requestFocusInWindow();
+        printButton.setEnabled(false);
+
+        submitPrintJob(job).whenComplete((result, throwable) -> SwingUtilities.invokeLater(() -> {
+            boolean printed = throwable == null && Boolean.TRUE.equals(result);
+            String completionMessage = null;
+            String errorMessage = null;
+            if (printed) {
+                if (scanUpdate != null && scanUpdate.completed) {
+                    markOrderComplete(orderId, stateForOrder);
+                    completionMessage = composeCompletionMessage(scanUpdate);
+                } else if (expectationMissing) {
+                    completionMessage = "Printed (no quantity data for order: " + orderId + ").";
+                }
+                String photoMessage = describePhotoOutcome(orderId);
+                String status = completionMessage;
+                if (photoMessage != null) {
+                    status = (status == null) ? photoMessage : status + ' ' + photoMessage;
+                }
+                if (status == null) {
+                    status = "Printed.";
+                }
+                setStatusMessage(status);
+            } else {
+                Throwable cause = (throwable != null && throwable.getCause() != null) ? throwable.getCause() : throwable;
+                errorMessage = (cause != null && cause.getMessage() != null) ? cause.getMessage() : "Unknown error";
+                JOptionPane.showMessageDialog(this, "Direct print failed.\n" + errorMessage, "Print Error", JOptionPane.ERROR_MESSAGE);
+                setStatusMessage("Print failed: " + errorMessage);
+            }
+
+            String finalStatusNote;
+            if (printed) {
+                finalStatusNote = (completionMessage != null) ? completionMessage : "Printed";
+            } else if (expectationMissing) {
+                finalStatusNote = "No quantity data for order.";
+            } else {
+                finalStatusNote = (errorMessage != null) ? "Print failed: " + errorMessage : "Print failed";
+            }
+
+            logScanEvent(orderId,
+                scanInput,
+                labelFound,
+                slipFound,
+                photoMatchCount,
+                designMatchCount,
+                scanUpdate,
+                expectationMissing,
+                printed,
+                finalStatusNote);
+
+            printButton.setEnabled(true);
+            orderIdField.requestFocusInWindow();
+            orderIdField.selectAll();
+        }));
     }
     private void cleanupAndExit() {
         dispose();
@@ -1453,6 +1592,7 @@ public class LabelFinderUI extends JFrame {
         bannerOrderId = null;
         updateProgressBanner(0, 0);
         renderCache.clear();
+        PAGE_RENDER_CACHE.clear();
         slipPageCache.clear();
         slipCandidates = new ArrayList<>();
     }

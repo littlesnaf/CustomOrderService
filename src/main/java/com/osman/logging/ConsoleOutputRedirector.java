@@ -10,7 +10,7 @@ import java.util.logging.Logger;
 
 /**
  * Redirects {@link System#out} and {@link System#err} to the shared JUL logger so
- * legacy console prints are persisted by {@link DatabaseLogHandler}.
+ * legacy console prints flow through the same logging infrastructure.
  */
 final class ConsoleOutputRedirector {
 

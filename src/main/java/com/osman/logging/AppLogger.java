@@ -48,16 +48,6 @@ public final class AppLogger {
         logger.addHandler(consoleHandler);
         logger.setLevel(Level.INFO);
 
-        try {
-            DatabaseLogHandler dbHandler = new DatabaseLogHandler();
-            dbHandler.setLevel(Level.INFO);
-            logger.addHandler(dbHandler);
-        } catch (IllegalStateException ex) {
-            logger.info("Central logging disabled: " + ex.getMessage());
-        } catch (Exception ex) {
-            logger.warning("Failed to initialize central logging: " + ex.getMessage());
-        }
-
         ConsoleOutputRedirector.redirect(logger);
         return logger;
     }

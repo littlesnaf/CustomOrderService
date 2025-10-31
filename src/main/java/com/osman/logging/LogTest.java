@@ -6,20 +6,11 @@ public class LogTest {
     public static void main(String[] args) {
         Logger logger = AppLogger.get();
 
-        logger.info("✅ INFO: Database logging test started");
+        logger.info("✅ INFO: Logger test started");
         logger.warning("⚠️ WARNING: This is a test warning message");
         logger.severe("❌ ERROR: Simulated error message");
 
-        System.out.println("Test log messages sent to database.");
-
-
-        try {
-            System.out.println("Waiting for logs to be written...");
-            Thread.sleep(3000);
-        } catch (InterruptedException e) {
-            e.printStackTrace();
-        }
-        System.out.println("Test finished.");
+        System.out.println("Test log messages emitted.");
 
     }
 }
