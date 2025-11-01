@@ -7,8 +7,6 @@ import com.osman.core.order.OrderContribution;
 import com.osman.core.order.OrderContributionReader;
 import com.osman.core.order.OrderQuantitiesManifest;
 import com.osman.logging.AppLogger;
-import org.apache.pdfbox.pdmodel.PDDocument;
-import org.apache.pdfbox.rendering.PDFRenderer;
 
 import javax.imageio.ImageIO;
 import javax.swing.*;
@@ -43,7 +41,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
@@ -77,7 +74,7 @@ public class LabelFinderUI extends JFrame {
     private static final Logger LOGGER = AppLogger.get();
     private static final Path SCAN_LOG_PATH = Paths.get("label-finder-scans.log");
     private static final Logger SCAN_LOGGER = createScanLogger();
-    private static final ExecutorService RENDER_EXECUTOR = Executors.newFixedThreadPool(
+    static final ExecutorService RENDER_EXECUTOR = Executors.newFixedThreadPool(
         Math.max(2, Runtime.getRuntime().availableProcessors()),
         r -> {
             Thread t = new Thread(r, "LabelFinder-RenderPool");
@@ -89,7 +86,6 @@ public class LabelFinderUI extends JFrame {
         t.setDaemon(true);
         return t;
     });
-    private static final ConcurrentHashMap<RenderCacheKey, CompletableFuture<BufferedImage>> PAGE_RENDER_CACHE = new ConcurrentHashMap<>();
 
     private static Logger createScanLogger() {
         Logger logger = Logger.getLogger("com.osman.labelfinder.scan");
@@ -112,70 +108,6 @@ public class LabelFinderUI extends JFrame {
         return logger;
     }
 
-    private static class LabelLocation {
-        final File pdfFile;
-        final int pageNumber;
-        LabelLocation(File pdfFile, int pageNumber) {
-            this.pdfFile = pdfFile;
-            this.pageNumber = pageNumber;
-        }
-    }
-    private static class PageGroup {
-        final File file;
-        final List<Integer> pages;
-        PageGroup(File file, List<Integer> pages) {
-            this.file = file;
-            this.pages = pages;
-        }
-    }
-
-    private record PageRenderSource(File file, int pageIndexZeroBased) {
-    }
-
-    private record RenderedOrder(List<BufferedImage> labelPages,
-                                 List<BufferedImage> slipPages,
-                                 BufferedImage combinedPreview,
-                                 LabelLocation labelLocation,
-                                 PageGroup labelSource,
-                                 PageGroup slipSource) {
-    }
-    private static final class RenderCacheKey {
-        private final String absolutePath;
-        private final int pageIndex;
-        private final int dpi;
-        RenderCacheKey(File pdfFile, int pageIndex, int dpi) {
-            this.absolutePath = (pdfFile == null) ? "" : pdfFile.getAbsolutePath();
-            this.pageIndex = pageIndex;
-            this.dpi = dpi;
-        }
-        @Override
-        public boolean equals(Object obj) {
-            if (this == obj) {
-                return true;
-            }
-            if (obj == null || getClass() != obj.getClass()) {
-                return false;
-            }
-            RenderCacheKey other = (RenderCacheKey) obj;
-            return pageIndex == other.pageIndex
-                && dpi == other.dpi
-                && Objects.equals(absolutePath, other.absolutePath);
-        }
-        @Override
-        public int hashCode() {
-            return Objects.hash(absolutePath, pageIndex, dpi);
-        }
-    }
-    private static final class MissingPackingSlipException extends Exception {
-        private final String orderId;
-        MissingPackingSlipException(String orderId) {
-            super("Missing packing slip for order " + orderId);
-            this.orderId = orderId;
-        }
-        String getOrderId() {
-            return orderId;
-        }
-    }
     private final JTextField orderIdField;
     private final JButton findButton;
     private final JButton refreshButton;
@@ -215,7 +147,7 @@ public class LabelFinderUI extends JFrame {
     private static final Pattern IMG_NAME = Pattern.compile("(?i).+\\s*(?:\\(\\d+\\))?\\s*\\.(png|jpe?g)$");
     private static final Pattern XN_READY_NAME = Pattern.compile("(?i)^x(?:\\(\\d+\\)|\\d+)-.+\\s*(?:\\(\\d+\\))?\\s*\\.(?:png|jpe?g)$");
     private static final int FIND_DELAY_MS = 500;
-    private static final int PREVIEW_DPI = 90;
+    private static final int PREVIEW_DPI = 100;
     private static final int PRINT_DPI = 150;
 
     private static final String PREF_WIN_BOUNDS       = "winBounds";        // x,y,w,h
@@ -746,7 +678,7 @@ public class LabelFinderUI extends JFrame {
             @Override
             protected RenderedOrder doInBackground() throws Exception {
                 CompletableFuture<List<BufferedImage>> labelFuture = CompletableFuture.supplyAsync(() ->
-                    renderPdfPagesList(labelGroup.file, labelGroup.pages, PREVIEW_DPI)
+                    PdfPageRenderCache.renderPages(labelGroup.file(), labelGroup.pages(), PREVIEW_DPI)
                 , RENDER_EXECUTOR);
                 CompletableFuture<PageGroup> slipGroupFuture = CompletableFuture.supplyAsync(() -> {
                     try {
@@ -787,22 +719,35 @@ public class LabelFinderUI extends JFrame {
                     }
                     throw new RuntimeException(cause);
                 }
-                if (slipGroupResolved == null || slipGroupResolved.pages == null || slipGroupResolved.pages.isEmpty()) {
+                if (slipGroupResolved == null || slipGroupResolved.pages() == null || slipGroupResolved.pages().isEmpty()) {
                     throw new MissingPackingSlipException(orderId);
                 }
                 slipFound = true;
                 if (isCancelled()) {
                     return null;
                 }
-                List<BufferedImage> slipPages = renderPdfPagesList(slipGroupResolved.file, slipGroupResolved.pages, PREVIEW_DPI);
+                List<BufferedImage> slipPages = PdfPageRenderCache.renderPages(slipGroupResolved.file(), slipGroupResolved.pages(), PREVIEW_DPI);
                 if (isCancelled()) {
                     return null;
                 }
-                BufferedImage labelImg = stackMany(withBorder(labelPages, Color.RED, 8), 12, Color.WHITE);
-                BufferedImage slipImg = stackMany(withBorder(slipPages, new Color(0,120,215), 8), 12, Color.WHITE);
-                BufferedImage combined = stackImagesVertically(labelImg, slipImg, 12, Color.WHITE);
-                Integer firstPage = (labelGroup.pages != null && !labelGroup.pages.isEmpty()) ? labelGroup.pages.get(0) : null;
-                LabelLocation location = (firstPage != null) ? new LabelLocation(labelGroup.file, firstPage) : null;
+                BufferedImage labelImg = ImageComposition.stackMany(
+                    ImageComposition.withBorder(labelPages, ImageComposition.LABEL_BORDER, 8),
+                    12,
+                    ImageComposition.COMBINED_BACKGROUND
+                );
+                BufferedImage slipImg = ImageComposition.stackMany(
+                    ImageComposition.withBorder(slipPages, ImageComposition.SLIP_BORDER, 8),
+                    12,
+                    ImageComposition.COMBINED_BACKGROUND
+                );
+                BufferedImage combined = ImageComposition.stackImagesVertically(
+                    labelImg,
+                    slipImg,
+                    12,
+                    ImageComposition.COMBINED_BACKGROUND
+                );
+                Integer firstPage = (labelGroup.pages() != null && !labelGroup.pages().isEmpty()) ? labelGroup.pages().get(0) : null;
+                LabelLocation location = (firstPage != null) ? new LabelLocation(labelGroup.file(), firstPage) : null;
                 PageGroup labelSnapshot = snapshotPageGroup(labelGroup);
                 PageGroup slipSnapshot = snapshotPageGroup(slipGroupResolved);
                 return new RenderedOrder(
@@ -869,7 +814,7 @@ public class LabelFinderUI extends JFrame {
     }
 
     private PageGroup resolveSlipGroup(String orderId, PageGroup cached) throws IOException {
-        if (cached != null && cached.pages != null && !cached.pages.isEmpty()) {
+        if (cached != null && cached.pages() != null && !cached.pages().isEmpty()) {
             return cached;
         }
         if (orderId == null || orderId.isBlank()) {
@@ -880,7 +825,7 @@ public class LabelFinderUI extends JFrame {
                 slipGroups = new HashMap<>();
             }
             PageGroup existing = slipGroups.get(orderId);
-            if (existing != null && existing.pages != null && !existing.pages.isEmpty()) {
+            if (existing != null && existing.pages() != null && !existing.pages().isEmpty()) {
                 return existing;
             }
             if (slipCandidates == null || slipCandidates.isEmpty()) {
@@ -902,7 +847,7 @@ public class LabelFinderUI extends JFrame {
                     slipGroups.putIfAbsent(entry.getKey(), new PageGroup(pdf, new ArrayList<>(entry.getValue())));
                 }
                 PageGroup resolved = slipGroups.get(orderId);
-                if (resolved != null && resolved.pages != null && !resolved.pages.isEmpty()) {
+                if (resolved != null && resolved.pages() != null && !resolved.pages().isEmpty()) {
                     return resolved;
                 }
             }
@@ -1057,7 +1002,7 @@ public class LabelFinderUI extends JFrame {
     }
 
     private boolean hasPages(PageGroup group) {
-        return group != null && group.pages != null && !group.pages.isEmpty() && group.file != null;
+        return group != null && group.pages() != null && !group.pages().isEmpty() && group.file() != null;
     }
     private void logScanEvent(String orderId,
                               ScanInput scanInput,
@@ -1127,117 +1072,6 @@ public class LabelFinderUI extends JFrame {
     public static void main(String[] args) {
         SwingUtilities.invokeLater(() -> new LabelFinderUI().setVisible(true));
     }
-    private BufferedImage getOrRenderPdfPage(File pdf, int pageIndexZeroBased, int dpi) throws IOException {
-        RenderCacheKey key = new RenderCacheKey(pdf, pageIndexZeroBased, dpi);
-        CompletableFuture<BufferedImage> future = PAGE_RENDER_CACHE.computeIfAbsent(key, k ->
-            CompletableFuture.supplyAsync(() -> {
-                try (PDDocument doc = PDDocument.load(pdf)) {
-                    PDFRenderer renderer = new PDFRenderer(doc);
-                    renderer.setSubsamplingAllowed(true);
-                    return renderer.renderImageWithDPI(pageIndexZeroBased, dpi);
-                }
-                catch (IOException ex) {
-                    throw new CompletionException(ex);
-                }
-            }, RENDER_EXECUTOR)
-        );
-        try {
-            return future.get();
-        }
-        catch (InterruptedException e) {
-            future.cancel(true);
-            PAGE_RENDER_CACHE.remove(key, future);
-            Thread.currentThread().interrupt();
-            throw new IOException("Interrupted while rendering PDF page", e);
-        }
-        catch (CancellationException e) {
-            PAGE_RENDER_CACHE.remove(key, future);
-            throw new IOException("Rendering cancelled", e);
-        }
-        catch (ExecutionException e) {
-            PAGE_RENDER_CACHE.remove(key, future);
-            Throwable cause = e.getCause();
-            if (cause instanceof CompletionException completion && completion.getCause() != null) {
-                cause = completion.getCause();
-            }
-            if (cause instanceof IOException io) {
-                throw io;
-            }
-            if (cause instanceof RuntimeException runtime) {
-                throw runtime;
-            }
-            throw new IOException("Failed to render PDF page", cause);
-        }
-    }
-    private List<BufferedImage> renderPdfPagesList(File pdf, List<Integer> pages1Based, int dpi) {
-        List<BufferedImage> out = new ArrayList<>();
-        if (pdf == null || pages1Based == null || pages1Based.isEmpty()) {
-            return out;
-        }
-        for (int p : pages1Based) {
-            int pageIndexZeroBased = p - 1;
-            if (pageIndexZeroBased < 0) {
-                continue;
-            }
-            try {
-                BufferedImage img = getOrRenderPdfPage(pdf, pageIndexZeroBased, dpi);
-                if (img != null) {
-                    out.add(img);
-                }
-            }
-            catch (IOException ex) {
-                LOGGER.log(Level.FINE, () -> String.format("Failed to render %s page %d: %s", pdf.getName(), p, ex.getMessage()));
-            }
-        }
-        return out;
-    }
-    private static BufferedImage stackMany(List<BufferedImage> images, int gap, Color bg) {
-        if (images == null || images.isEmpty()) return null;
-        int wMax = 0, totalH = 0, count = 0;
-        for (BufferedImage im : images) {
-            if (im == null) continue;
-            wMax = Math.max(wMax, im.getWidth());
-            totalH += im.getHeight();
-            count++;
-        }
-        if (wMax == 0 || totalH == 0) return null;
-        totalH += gap * Math.max(0, count - 1);
-        BufferedImage out = new BufferedImage(wMax, totalH, BufferedImage.TYPE_INT_RGB);
-        Graphics2D g = out.createGraphics();
-        g.setColor(bg);
-        g.fillRect(0, 0, wMax, totalH);
-        int y = 0;
-        for (BufferedImage im : images) {
-            if (im == null) continue;
-            g.drawImage(im, 0, y, null);
-            y += im.getHeight();
-        }
-        g.dispose();
-        return out;
-    }
-    private static List<BufferedImage> withBorder(List<BufferedImage> images, Color color, int size) {
-        List<BufferedImage> out = new ArrayList<>();
-        if (images == null) return out;
-        for (BufferedImage im : images) {
-            out.add(addBorder(im, color, size));
-        }
-        return out;
-    }
-    private static BufferedImage stackImagesVertically(BufferedImage top, BufferedImage bottom, int gap, Color bg) {
-        if (top == null && bottom == null) return null;
-        if (top == null) return bottom;
-        if (bottom == null) return top;
-        int w = Math.max(top.getWidth(), bottom.getWidth());
-        int h = top.getHeight() + gap + bottom.getHeight();
-        BufferedImage out = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
-        Graphics2D g = out.createGraphics();
-        g.setColor(bg);
-        g.fillRect(0, 0, w, h);
-        g.drawImage(top, 0, 0, null);
-        g.drawImage(bottom, 0, top.getHeight() + gap, null);
-        g.dispose();
-        return out;
-    }
     private void printCombined() {
         List<PageRenderSource> printSources = collectPrintPageSources();
         BufferedImage fallbackImage = printSources.isEmpty() ? combinedPreview : null;
@@ -1288,8 +1122,8 @@ public class LabelFinderUI extends JFrame {
         if (group == null) {
             return null;
         }
-        List<Integer> pagesCopy = (group.pages == null) ? List.of() : new ArrayList<>(group.pages);
-        return new PageGroup(group.file, pagesCopy);
+        List<Integer> pagesCopy = (group.pages() == null) ? List.of() : new ArrayList<>(group.pages());
+        return new PageGroup(group.file(), pagesCopy);
     }
 
     private List<PageRenderSource> collectPrintPageSources() {
@@ -1303,11 +1137,11 @@ public class LabelFinderUI extends JFrame {
         if (!hasPages(group)) {
             return;
         }
-        for (Integer page : group.pages) {
+        for (Integer page : group.pages()) {
             if (page == null || page <= 0) {
                 continue;
             }
-            target.add(new PageRenderSource(group.file, page - 1));
+            target.add(new PageRenderSource(group.file(), page - 1));
         }
     }
 
@@ -1625,7 +1459,7 @@ public class LabelFinderUI extends JFrame {
         bannerOrderId = null;
         updateProgressBanner(0, 0);
         renderCache.clear();
-        PAGE_RENDER_CACHE.clear();
+        PdfPageRenderCache.clear();
         slipPageCache.clear();
         slipCandidates = new ArrayList<>();
     }
@@ -2032,10 +1866,10 @@ public class LabelFinderUI extends JFrame {
             return "";
         }
         PageGroup group = labelGroups.get(orderId);
-        if (group == null || group.file == null) {
+        if (group == null || group.file() == null) {
             return "";
         }
-        File labelFile = group.file;
+        File labelFile = group.file();
         Path candidate = (labelFile.getParentFile() != null)
             ? labelFile.getParentFile().toPath()
             : labelFile.toPath();
@@ -2584,23 +2418,6 @@ public class LabelFinderUI extends JFrame {
             }
         });
     }
-    private static BufferedImage addBorder(BufferedImage src, Color color, int size) {
-        if (src == null) return null;
-        int w = src.getWidth() + size * 2;
-        int h = src.getHeight() + size * 2;
-        BufferedImage out = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
-        Graphics2D g = out.createGraphics();
-        g.setColor(Color.WHITE);
-        g.fillRect(0, 0, w, h);
-        g.setColor(color);
-        g.fillRect(0, 0, w, size);
-        g.fillRect(0, h - size, w, size);
-        g.fillRect(0, 0, size, h);
-        g.fillRect(w - size, 0, size, h);
-        g.drawImage(src, size, size, null);
-        g.dispose();
-        return out;
-    }
     /**
      * Simple panel that centers and renders a single buffered image.
      */
@@ -2687,55 +2504,6 @@ public class LabelFinderUI extends JFrame {
     /**
      * Printable implementation that streams buffered images as sequential pages.
      */
-    private class PdfAndImagePrintable implements Printable {
-        private final List<PageRenderSource> sources;
-        private final BufferedImage fallback;
-        private final int dpi;
-
-        PdfAndImagePrintable(List<PageRenderSource> sources, BufferedImage fallback, int dpi) {
-            this.sources = (sources == null) ? List.of() : List.copyOf(sources);
-            this.fallback = fallback;
-            this.dpi = dpi;
-        }
-
-        @Override
-        public int print(Graphics g, PageFormat pf, int pageIndex) throws PrinterException {
-            int extra = (fallback != null) ? 1 : 0;
-            int total = sources.size() + extra;
-            if (pageIndex < 0 || pageIndex >= total) {
-                return NO_SUCH_PAGE;
-            }
-
-            BufferedImage image;
-            if (pageIndex < sources.size()) {
-                PageRenderSource source = sources.get(pageIndex);
-                try {
-                    image = getOrRenderPdfPage(source.file(), source.pageIndexZeroBased(), dpi);
-                } catch (IOException ex) {
-                    throw new PrinterException("Failed to render page: " + ex.getMessage());
-                }
-            } else {
-                image = fallback;
-            }
-
-            if (image == null) {
-                return NO_SUCH_PAGE;
-            }
-
-            Graphics2D g2d = (Graphics2D) g;
-            g2d.translate(pf.getImageableX(), pf.getImageableY());
-            double pw = pf.getImageableWidth();
-            double ph = pf.getImageableHeight();
-            double scale = Math.min(pw / image.getWidth(), ph / image.getHeight());
-            int dw = (int) Math.floor(image.getWidth() * scale);
-            int dh = (int) Math.floor(image.getHeight() * scale);
-            int dx = (int) ((pw - dw) / 2.0);
-            int dy = (int) ((ph - dh) / 2.0);
-            g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
-            g2d.drawImage(image, dx, dy, dw, dh, null);
-            return PAGE_EXISTS;
-        }
-    }
     /**
      * Builds a 4x6 inch page format tailored for thermal shipping label printers.
      *

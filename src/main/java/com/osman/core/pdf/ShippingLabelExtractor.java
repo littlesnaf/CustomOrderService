@@ -53,14 +53,20 @@ public final class ShippingLabelExtractor {
     public static Map<String, List<Integer>> extractOrderIdToPages(PDDocument doc) throws IOException {
         Map<String, List<Integer>> map = new LinkedHashMap<>();
         int pageCount = doc.getNumberOfPages();
-        if (pageCount < 2) {
+        if (pageCount <= 0) {
+            return map;
+        }
+
+        PDFTextStripper stripper = new PDFTextStripper();
+        stripper.setSortByPosition(true);
+
+        if (pageCount == 1) {
+            String pageText = extractPageText(stripper, doc, 1);
+            collectOrderIdsFromPage(map, pageText, 1);
             return map;
         }
 
         int indexStartPage = -1;
-        PDFTextStripper stripper = new PDFTextStripper();
-        stripper.setSortByPosition(true);
-
         for (int p = pageCount; p >= 1; p--) {
             String pageText = extractPageText(stripper, doc, p);
             if (pageText == null) {
@@ -81,6 +87,10 @@ public final class ShippingLabelExtractor {
         }
 
         if (indexStartPage == -1) {
+            for (int p = 1; p <= pageCount; p++) {
+                String pageText = extractPageText(stripper, doc, p);
+                collectOrderIdsFromPage(map, pageText, p);
+            }
             return map;
         }
 
@@ -109,6 +119,20 @@ public final class ShippingLabelExtractor {
         }
 
         return map;
+    }
+
+    private static void collectOrderIdsFromPage(Map<String, List<Integer>> target, String pageText, int pageNumber) {
+        if (pageText == null || pageText.isBlank()) {
+            return;
+        }
+        Matcher matcher = ORDER_ID_PATTERN.matcher(pageText);
+        while (matcher.find()) {
+            String orderId = matcher.group();
+            List<Integer> pages = target.computeIfAbsent(orderId, key -> new ArrayList<>());
+            if (!pages.contains(pageNumber)) {
+                pages.add(pageNumber);
+            }
+        }
     }
 
     public static ScanResult scan(Path input) throws IOException {
