@@ -12,8 +12,8 @@ import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
-import java.util.Objects;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -102,12 +102,44 @@ class OrnamentSkuToolTest {
                     assertTrue(skus.contains("SKU1847-P.OR"), "Expected normalized SKU1847-P.OR");
                     assertTrue(skus.stream().noneMatch(s -> s != null && s.contains("OR_NEW")),
                         "Unexpected OR_NEW token present");
+                    assertTrue(skus.stream().noneMatch(s -> s != null && s.contains("SKU1847-.OR")),
+                        "Unexpected partial SKU token present");
                     assertEquals("Section 1", OrnamentSkuSections.resolveSection(skus));
                     break;
                 }
             }
 
             assertTrue(found, "Expected to find bundle containing SKU1847-P");
+        } finally {
+            deleteQuietly(debugDir);
+        }
+    }
+
+    @Test
+    void extractSkusMergesWrappedSku1847Tokens() throws Exception {
+        Method extractSkus = OrnamentSkuTool.class
+            .getDeclaredMethod("extractSkus", String.class, Pattern.class, OrnamentDebugLogger.class);
+        extractSkus.setAccessible(true);
+
+        String slip = """
+            Packing Slip
+            SKU1847-
+            P.OR NEW
+            Customizations:
+            Qty: 1
+            Grand Total: $20.25
+            """;
+
+        Path debugDir = Files.createTempDirectory("ornament-debug");
+        try (OrnamentDebugLogger debug = OrnamentDebugLogger.create(debugDir)) {
+            @SuppressWarnings("unchecked")
+            Set<String> skus = (Set<String>) extractSkus.invoke(null, slip, OrnamentSkuPatterns.ANY, debug);
+
+            assertTrue(skus.contains("SKU1847-P.OR"), "Expected normalized SKU1847-P.OR");
+            assertTrue(skus.stream().noneMatch(s -> s != null && s.contains("OR_NEW")),
+                "Unexpected OR_NEW token present");
+            assertTrue(skus.stream().noneMatch(s -> s != null && s.contains("SKU1847-.OR")),
+                "Unexpected partial SKU token present");
         } finally {
             deleteQuietly(debugDir);
         }

@@ -208,7 +208,10 @@ public class OrnamentSkuPanel extends JPanel {
                         String sku = e.getKey();
                         List<BundleRef> list = e.getValue();
                         Path skuOut = outDir.resolve(sanitize(sku) + ".pdf");
-                        OrnamentBundleMerger.merge(singlePagesPerDoc, list, skuOut);
+                        int totalUnits = calculateTotalUnitsForSku(sku, list);
+                        OrnamentBundleMerger.SummaryPage summary =
+                                new OrnamentBundleMerger.SummaryPage(sku, totalUnits);
+                        OrnamentBundleMerger.merge(singlePagesPerDoc, list, skuOut, summary);
                         appendLog("Wrote: " + skuOut.getFileName() + " (" + list.size() + " bundles)");
                     }
 
@@ -556,7 +559,9 @@ public class OrnamentSkuPanel extends JPanel {
                 continue;
             }
             String upper = key.toUpperCase(Locale.ROOT);
-            if (upper.contains("SKU1847-P.OR_NEW") || upper.contains("SKU1847-.OR")) {
+            if (upper.contains("SKU1847-P.OR_NEW")
+                    || upper.contains("SKU1847-P.ORNEW")
+                    || upper.contains("SKU1847-.OR")) {
                 qty += Math.max(0, entry.getValue());
                 it.remove();
             }

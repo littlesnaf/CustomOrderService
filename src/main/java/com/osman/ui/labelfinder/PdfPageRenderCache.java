@@ -3,6 +3,7 @@ package com.osman.ui.labelfinder;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.rendering.PDFRenderer;
 
+import java.awt.Graphics2D;
 import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.IOException;
@@ -26,18 +27,26 @@ final class PdfPageRenderCache {
     }
 
     static BufferedImage getOrRenderPage(File pdf, int pageIndexZeroBased, int dpi) throws IOException {
-        RenderCacheKey key = new RenderCacheKey(pdf, pageIndexZeroBased, dpi);
+        return getOrRenderPage(pdf, pageIndexZeroBased, dpi, false);
+    }
+
+    static BufferedImage getOrRenderPage(File pdf, int pageIndexZeroBased, int dpi, boolean grayscale) throws IOException {
+        RenderCacheKey key = new RenderCacheKey(pdf, pageIndexZeroBased, dpi, grayscale);
         CompletableFuture<BufferedImage> future = CACHE.computeIfAbsent(key, k ->
             CompletableFuture.supplyAsync(() -> {
                 try (PDDocument doc = PDDocument.load(pdf)) {
                     PDFRenderer renderer = new PDFRenderer(doc);
                     renderer.setSubsamplingAllowed(true);
-                    return renderer.renderImageWithDPI(pageIndexZeroBased, dpi);
+                    BufferedImage rendered = renderer.renderImageWithDPI(pageIndexZeroBased, dpi);
+                    if (grayscale && rendered != null) {
+                        return toGrayscale(rendered);
+                    }
+                    return rendered;
                 }
                 catch (IOException ex) {
                     throw new CompletionException(ex);
                 }
-            }, LabelFinderUI.RENDER_EXECUTOR)
+            }, LabelFinderPanel.RENDER_EXECUTOR)
         );
         try {
             return future.get();
@@ -69,6 +78,10 @@ final class PdfPageRenderCache {
     }
 
     static List<BufferedImage> renderPages(File pdf, List<Integer> pages1Based, int dpi) {
+        return renderPages(pdf, pages1Based, dpi, false);
+    }
+
+    static List<BufferedImage> renderPages(File pdf, List<Integer> pages1Based, int dpi, boolean grayscale) {
         List<BufferedImage> out = new ArrayList<>();
         if (pdf == null || pages1Based == null || pages1Based.isEmpty()) {
             return out;
@@ -79,7 +92,7 @@ final class PdfPageRenderCache {
                 continue;
             }
             try {
-                BufferedImage img = getOrRenderPage(pdf, pageIndexZeroBased, dpi);
+                BufferedImage img = getOrRenderPage(pdf, pageIndexZeroBased, dpi, grayscale);
                 if (img != null) {
                     out.add(img);
                 }
@@ -101,9 +114,20 @@ final class PdfPageRenderCache {
         CACHE.clear();
     }
 
-    private record RenderCacheKey(String path, int pageIndex, int dpi) {
-        RenderCacheKey(File pdfFile, int pageIndex, int dpi) {
-            this((pdfFile == null) ? "" : pdfFile.getAbsolutePath(), pageIndex, dpi);
+    private static BufferedImage toGrayscale(BufferedImage source) {
+        BufferedImage gray = new BufferedImage(source.getWidth(), source.getHeight(), BufferedImage.TYPE_BYTE_GRAY);
+        Graphics2D g2 = gray.createGraphics();
+        try {
+            g2.drawImage(source, 0, 0, null);
+        } finally {
+            g2.dispose();
+        }
+        return gray;
+    }
+
+    private record RenderCacheKey(String path, int pageIndex, int dpi, boolean grayscale) {
+        RenderCacheKey(File pdfFile, int pageIndex, int dpi, boolean grayscale) {
+            this((pdfFile == null) ? "" : pdfFile.getAbsolutePath(), pageIndex, dpi, grayscale);
         }
 
         @Override
@@ -114,12 +138,15 @@ final class PdfPageRenderCache {
             if (!(obj instanceof RenderCacheKey other)) {
                 return false;
             }
-            return pageIndex == other.pageIndex && dpi == other.dpi && Objects.equals(path, other.path);
+            return pageIndex == other.pageIndex
+                && dpi == other.dpi
+                && grayscale == other.grayscale
+                && Objects.equals(path, other.path);
         }
 
         @Override
         public int hashCode() {
-            return Objects.hash(path, pageIndex, dpi);
+            return Objects.hash(path, pageIndex, dpi, grayscale);
         }
     }
 }

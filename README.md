@@ -1,11 +1,11 @@
 # CustomAmazonOrderProcessor
 
-CustomAmazonOrderProcesso is a desktop toolkit for preparing custom Amazon order artwork, labels, and packing slips at scale. The project bundles several Swing utilities and a rendering pipeline that help production teams convert Amazon Custom exports into print-ready PNGs and review supporting documents side by side.
+CustomAmazonOrderProcessor is a desktop toolkit for preparing custom Amazon order artwork, shipping labels, and packing slips at scale. The project bundles several Swing utilities plus a rendering pipeline that help production teams convert Amazon Custom exports into print-ready PNGs and review supporting documents side by side.
 
 ## Contents
 
 - **MainUI** – bulk order processor that discovers order folders, extracts ZIPs, loads fonts, and invokes the rendering pipeline.
-- **LabelFinderUI** – quick search tool that matches shipping labels, packing slips, and product photos by Amazon Order ID (supports single or bulk browsing workflows).
+- **LabelFinder (App + Frame + Panel)** – quick search tool that matches shipping labels, packing slips, and product photos by Amazon Order ID. The viewer now renders previews at 100 DPI for snappy UI updates, caches pages per PDF, and regenerates 150 DPI artwork automatically when printing.
 - **OrnamentSkuUI** – splits merged ornament PDFs into per-SKU documents while preserving label + slip groupings.
 - **Rendering pipeline** – utilities in `com.osman` (e.g., `ImageProcessor`, `JsonDataReader`, `PdfLinker`, `PackSlipExtractor`) used by the UIs to parse JSON, sanitize SVGs, and produce final artwork.
 
@@ -25,11 +25,11 @@ Clone the repository and run:
 mvn clean package
 ```
 
-The build produces fat JARs in `target/` for each UI:
+The build produces fat JARs in `target/` for each UI (names follow the module):
 
-- `Mugeditor-MainUI.jar`
-- `Mugeditor-LabelFinder.jar`
-- `OrnamentSkuUI.jar`
+- `CustomOrderFlow-MainUI.jar`
+- `CustomOrderFlow-LabelFinder.jar`
+- `CustomOrderFlow-OrnamentSku.jar`
 
 If the Launch4J plugin is enabled on your platform, corresponding Windows executables (`*.exe`) are also placed in `target/`.
 
@@ -38,9 +38,9 @@ If the Launch4J plugin is enabled on your platform, corresponding Windows execut
 Each UI has its own entry point. Launch whichever tool you need:
 
 ```bash
-java -jar target/Mugeditor-MainUI.jar
-java -jar target/Mugeditor-LabelFinder.jar
-java -jar target/OrnamentSkuUI.jar
+java -jar target/CustomOrderFlow-MainUI.jar
+java -jar target/CustomOrderFlow-LabelFinder.jar
+java -jar target/CustomOrderFlow-OrnamentSku.jar
 ```
 
 ### MainUI workflow
@@ -51,10 +51,15 @@ java -jar target/OrnamentSkuUI.jar
 4. Output PNGs are saved under a `Ready Designs` folder inside each order/customer directory.
 5. A consolidated `order-quantities.json` is maintained at the batch root (two levels above the customer folders) so LabelFinder can load order and item quantities without walking every subdirectory.
 
-### LabelFinderUI workflow
+### LabelFinder workflow
 
-- **Single order mode**: select the base “Orders” directory, enter an Amazon Order ID, and press **Find**. The tool renders the matching shipping label + packing slip stacked vertically, finds order photos, and allows printing the combined image.
-- **Bulk mode**: toggle **Bulk Order (no matching)** to scan all PDF pages and photos under the base directory. Use the list on the left to browse pages, preview photos on the right, and optionally print.
+1. Select the base “Orders” directory (the UI persists the last choice).
+2. Enter an Amazon Order ID and press **Find**. The tool looks up cached renderings first, then:
+   - Renders shipping label and packing-slip previews at 100 DPI.
+   - Collects matching product photos and ready-design thumbnails.
+   - Displays combined artwork in the center preview.
+3. Printing (manual or auto-print) regenerates the required pages at 150 DPI so thermal output stays sharp while the UI remains responsive.
+4. Bulk browsing mode can still be toggled with **Bulk Order (no matching)** for manual PDF/photo exploration.
 
 ### OrnamentSkuUI workflow
 
@@ -70,12 +75,12 @@ java -jar target/OrnamentSkuUI.jar
 
 ## Development
 
-- The codebase is organized under `src/main/java/com/osman`.
-- UI classes live in the `com.osman.ui` package; headless helpers live at the package root.
-- Tests (if added) should go under `src/test/java`.
-- Follow the existing documentation style (concise Javadoc for public classes/methods).
+- Source lives under `src/main/java/com/osman`.
+- UI classes sit in `com.osman.ui`; shared helpers live beside them or in feature sub-packages (e.g., `com.osman.ui.labelfinder.render`).
+- Tests belong under `src/test/java`. Targeted examples include `com.osman.core.render.MugRendererTest` and `com.osman.ui.labelfinder.PdfPageRenderCacheTest`.
+- Use `mvn -DskipTests compile` for quick iteration, or `mvn test` to run the full suite (note: some UI-heavy tests require a graphical environment).
 
-To run a specific UI from your IDE, set the main class accordingly (e.g., `com.osman.ui.MainUI`).
+To run a specific UI from your IDE, set the main class accordingly (for example, `com.osman.ui.main.MainUIView` for the main processor).
 
 ## Packaging Tips
 

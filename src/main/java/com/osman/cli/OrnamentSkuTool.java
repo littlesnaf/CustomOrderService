@@ -60,46 +60,66 @@ public final class OrnamentSkuTool {
                 }
             }
 
-            Map<String, List<BundleRef>> skuIndex = new LinkedHashMap<>();
-            List<BundleRef> mixBundles = new ArrayList<>();
+            Map<String, Integer> rawTotals = new LinkedHashMap<>();
 
-            for (int docId = 0; docId < bundlesPerDoc.size(); docId++) {
-                for (Bundle b : bundlesPerDoc.get(docId)) {
-                    BundleRef ref = new BundleRef(docId, b);
-                    if (b.skus.size() == 1) {
-                        String sku = b.skus.iterator().next();
-                        skuIndex.computeIfAbsent(sku, k -> new ArrayList<>()).add(ref);
-                    } else {
-                        mixBundles.add(ref);
+            for (List<Bundle> docBundles : bundlesPerDoc) {
+                for (Bundle b : docBundles) {
+                    LinkedHashSet<String> canonical = new LinkedHashSet<>(OrnamentSkuNormalizer.canonicalizeTokens(b.skus));
+                    b.skus.clear();
+                    b.skus.addAll(canonical);
+                    for (String sku : canonical) {
+                        rawTotals.merge(sku, 1, Integer::sum);
                     }
                 }
             }
 
-            List<BundleRef> lowQtyBundles = new ArrayList<>();
-            Map<String, List<BundleRef>> finalSkuIndex = new LinkedHashMap<>();
+            Map<String, Integer> skuTotals = OrnamentSkuNormalizer.canonicalizeTotals(rawTotals);
+            LinkedHashSet<String> bigSkus = new LinkedHashSet<>();
+            for (Map.Entry<String, Integer> e : skuTotals.entrySet()) {
+                Integer qty = e.getValue();
+                if (qty != null && qty >= 3) {
+                    bigSkus.add(e.getKey());
+                }
+            }
 
-            for (Map.Entry<String, List<BundleRef>> entry : skuIndex.entrySet()) {
-                if (entry.getValue().size() < 3) {
-                    lowQtyBundles.addAll(entry.getValue());
-                } else {
-                    finalSkuIndex.put(entry.getKey(), entry.getValue());
+            Map<String, List<BundleRef>> finalSkuIndex = new LinkedHashMap<>();
+            List<BundleRef> mixedOutput = new ArrayList<>();
+
+            for (int docId = 0; docId < bundlesPerDoc.size(); docId++) {
+                for (Bundle b : bundlesPerDoc.get(docId)) {
+                    BundleRef ref = new BundleRef(docId, b);
+                    LinkedHashSet<String> matchedBig = new LinkedHashSet<>();
+                    for (String sku : b.skus) {
+                        if (bigSkus.contains(sku)) {
+                            matchedBig.add(sku);
+                        }
+                    }
+                    if (matchedBig.size() == 1) {
+                        String targetSku = matchedBig.iterator().next();
+                        finalSkuIndex.computeIfAbsent(targetSku, k -> new ArrayList<>()).add(ref);
+                    } else {
+                        mixedOutput.add(ref);
+                    }
                 }
             }
 
             for (Map.Entry<String, List<BundleRef>> entry : finalSkuIndex.entrySet()) {
                 String sku = entry.getKey();
                 List<BundleRef> list = entry.getValue();
-                Path skuOut = outDir.resolve(sanitize(sku) + ".pdf");
-                OrnamentBundleMerger.merge(singlePagesPerDoc, list, skuOut);
+                if (!list.isEmpty()) {
+                    Path skuOut = outDir.resolve(sanitize(sku) + ".pdf");
+                    Integer total = skuTotals.get(sku);
+                    int qty = total == null ? list.size() : total;
+                    OrnamentBundleMerger.SummaryPage summary =
+                            new OrnamentBundleMerger.SummaryPage(sku, qty);
+                    OrnamentBundleMerger.merge(singlePagesPerDoc, list, skuOut, summary);
+                }
             }
-
-            List<BundleRef> mixedOutput = new ArrayList<>(mixBundles.size() + lowQtyBundles.size());
-            mixedOutput.addAll(mixBundles);
-            mixedOutput.addAll(lowQtyBundles);
 
             if (!mixedOutput.isEmpty()) {
                 writeMixedSectionBundles(outDir, singlePagesPerDoc, mixedOutput);
             }
+
         } finally {
             cleanDir(tmpRoot);
         }
@@ -278,9 +298,20 @@ public final class OrnamentSkuTool {
         if (!SKU1847_EXCEPTION_PATTERN.matcher(text).find()) {
             return;
         }
+
+        String canonical = SKU1847_EXCEPTION_TOKEN.toUpperCase(Locale.ROOT);
+
         debug.logToken("SKU1847-P.OR_NEW override", SKU1847_EXCEPTION_TOKEN);
         out.add(SKU1847_EXCEPTION_TOKEN);
-        out.removeIf(token -> token != null && token.toUpperCase(Locale.ROOT).contains("SKU1847-P.OR_NEW"));
+
+        out.removeIf(token -> {
+            if (token == null) {
+                return false;
+            }
+            String upper = token.toUpperCase(Locale.ROOT);
+
+            return upper.contains("SKU1847") && !upper.equals(canonical);
+        });
     }
 
     private static String safe(String text) { return text == null ? "" : text; }

@@ -54,23 +54,9 @@ import java.util.logging.Logger;
 import java.util.logging.FileHandler;
 import java.util.logging.SimpleFormatter;
 import java.util.regex.Pattern;
-import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-/**
- * Swing UI for locating shipping labels, packing slips, and matching order photos across one or more base folders.
- * <p>
- * Key capabilities:
- * <ul>
- *   <li>Interactive lookup by order ID with bulk/auto mode toggles.</li>
- *   <li>Workspace management (remembered base directories, window bounds, split positions).</li>
- *   <li>Combined label + slip previews, photo gallery, and single-click printing via {@link #printCombined()}.</li>
- *   <li>Drag-and-drop support for quickly loading PDFs or photo directories straight into the UI.</li>
- *   <li>Background scanning and indexing with status updates so large datasets remain responsive.</li>
- * </ul>
- * The class is intentionally self-contained so it can be launched both stand-alone and from other desktop flows.
- */
-public class LabelFinderUI extends JFrame {
+public class LabelFinderPanel extends JPanel {
     private static final Logger LOGGER = AppLogger.get();
     private static final Path SCAN_LOG_PATH = Paths.get("label-finder-scans.log");
     private static final Logger SCAN_LOGGER = createScanLogger();
@@ -124,12 +110,8 @@ public class LabelFinderUI extends JFrame {
     private final Map<String, OrderExpectation> expectationIndex;
     private final Map<String, OrderQuantitiesManifest.OrderSummary> manifestOrderSummaries;
     private final Map<String, OrderScanState> scanProgress;
-    private final List<File> baseFolders;
-    private final Set<String> photoRefreshInFlight;
-    private final Object photoIndexLock = new Object();
+    private final LabelFinderWorkflow workflow;
     private volatile String activeOrderId;
-    private List<PhotoIndexEntry> photoIndex;
-    private Set<Path> photoIndexPaths;
     private int bannerScanned;
     private int bannerExpected;
     private String bannerOrderId;
@@ -144,14 +126,13 @@ public class LabelFinderUI extends JFrame {
     private List<BufferedImage> slipPreviewPages;
     private PageGroup labelPrintSource;
     private PageGroup slipPrintSource;
-    private static final Pattern IMG_NAME = Pattern.compile("(?i).+\\s*(?:\\(\\d+\\))?\\s*\\.(png|jpe?g)$");
-    private static final Pattern XN_READY_NAME = Pattern.compile("(?i)^x(?:\\(\\d+\\)|\\d+)-.+\\s*(?:\\(\\d+\\))?\\s*\\.(?:png|jpe?g)$");
     private static final int FIND_DELAY_MS = 500;
-    private static final int PREVIEW_DPI = 100;
+    private static final int PREVIEW_DPI = 75;
     private static final int PRINT_DPI = 150;
 
     private static final String PREF_WIN_BOUNDS       = "winBounds";        // x,y,w,h
     private static final String PREF_DIVIDER_LOCATION = "dividerLocation";  // JSplitPane divider
+    private static final String PREF_BASE_DIRS = "baseDirs";
     private final PreferencesStore prefs = PreferencesStore.global();
     private JSplitPane mainSplit;
     private static final int MAX_SCAN_HISTORY = 500;
@@ -161,14 +142,14 @@ public class LabelFinderUI extends JFrame {
     private SwingWorker<RenderedOrder, Void> activeRenderWorker;
     private final Timer findDelayTimer;
 
+    private final LabelFinderFrame frame;
+
     /**
-     * Constructs the UI, wires listeners, and prepares the initial application state.
+     * Constructs the UI panel, wires listeners, and prepares the initial application state.
      */
-    public LabelFinderUI() {
-        setTitle("Label & Photo Viewer");
-        setDefaultCloseOperation(JFrame.DO_NOTHING_ON_CLOSE);
-        setSize(1600, 900);
-        setLocationRelativeTo(null);
+    public LabelFinderPanel(LabelFinderFrame frame) {
+        this.frame = frame;
+        this.workflow = new LabelFinderWorkflow();
         orderIdField = new JTextField(20);
         findButton = new JButton("Find");
         refreshButton = new JButton("↻");
@@ -228,15 +209,11 @@ public class LabelFinderUI extends JFrame {
         expectationIndex = new ConcurrentHashMap<>();
         manifestOrderSummaries = new ConcurrentHashMap<>();
         scanProgress = new ConcurrentHashMap<>();
-        baseFolders = new ArrayList<>();
-        photoRefreshInFlight = Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
         slipCandidates = new ArrayList<>();
         slipPageCache = new ConcurrentHashMap<>();
         renderCache = new ConcurrentHashMap<>();
         activeRenderWorker = null;
         activeOrderId = null;
-        photoIndex = new ArrayList<>();
-        photoIndexPaths = new LinkedHashSet<>();
         JScrollPane photoViewScroll = new JScrollPane(photoView);
         mainSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, leftPanel, photoViewScroll);
 
@@ -269,31 +246,6 @@ public class LabelFinderUI extends JFrame {
                 }
             }
         });
-        addWindowListener(new WindowAdapter() {
-            @Override
-            public void windowClosing(WindowEvent e) {
-                savePreferences();
-                cleanupAndExit();
-            }
-            @Override
-            public void windowOpened(WindowEvent e) {
-                orderIdField.requestFocusInWindow();
-            }
-            @Override
-            public void windowActivated(WindowEvent e) {
-                orderIdField.requestFocusInWindow();
-            }
-        });
-        addComponentListener(new ComponentAdapter() {
-            @Override
-            public void componentMoved(ComponentEvent e) {
-                savePreferences();
-            }
-            @Override
-            public void componentResized(ComponentEvent e) {
-                savePreferences();
-            }
-        });
         orderIdField.addFocusListener(new FocusAdapter() {
             @Override
             public void focusGained(FocusEvent e) {
@@ -302,9 +254,6 @@ public class LabelFinderUI extends JFrame {
 
         });
         addPrintShortcut(getRootPane());
-
-        restorePreferences();
-
     }
     private void clearAllViews() {
         activeOrderId = null;
@@ -319,6 +268,28 @@ public class LabelFinderUI extends JFrame {
         labelPrintSource = null;
         slipPrintSource = null;
     }
+
+    private void releaseRenderedOrder(String orderId, boolean preserveActiveView) {
+        if (orderId == null || orderId.isBlank()) {
+            return;
+        }
+        renderCache.remove(orderId);
+        if (!orderId.equals(activeOrderId)) {
+            return;
+        }
+        if (preserveActiveView) {
+            labelPreviewPages = new ArrayList<>();
+            slipPreviewPages = new ArrayList<>();
+            return;
+        }
+        combinedPreview = null;
+        combinedPanel.setImage(null);
+        labelPreviewPages = new ArrayList<>();
+        slipPreviewPages = new ArrayList<>();
+        labelPrintSource = null;
+        slipPrintSource = null;
+        currentLabelLocation = null;
+    }
     private void cancelActiveRenderWorker() {
         SwingWorker<RenderedOrder, Void> worker = activeRenderWorker;
         if (worker != null && !worker.isDone()) {
@@ -327,63 +298,13 @@ public class LabelFinderUI extends JFrame {
         activeRenderWorker = null;
     }
     private File getPrimaryBaseFolder() {
-        return baseFolders.isEmpty() ? null : baseFolders.get(0);
+        return workflow.primaryBaseFolder();
     }
     private boolean hasBaseFolders() {
-        return !baseFolders.isEmpty();
+        return workflow.hasBaseFolders();
     }
     private List<File> normaliseRoots(Collection<File> inputs) {
-        LinkedHashSet<File> dedup = new LinkedHashSet<>();
-        if (inputs != null) {
-            for (File f : inputs) {
-                if (f == null) {
-                    continue;
-                }
-                File candidate = f.isDirectory() ? f : f.getParentFile();
-                if (candidate == null) {
-                    continue;
-                }
-                File abs = candidate.getAbsoluteFile();
-                if (abs.isDirectory()) {
-                    expandCandidate(abs, dedup);
-                }
-            }
-        }
-        return new ArrayList<>(dedup);
-    }
-
-    private void expandCandidate(File folder, Set<File> dedup) {
-        if (folder == null || !folder.isDirectory()) {
-            return;
-        }
-        if (!dedup.add(folder)) {
-            return;
-        }
-
-        if (isShippingContainer(folder)) {
-            File[] children = folder.listFiles(File::isDirectory);
-            if (children != null) {
-                for (File child : children) {
-                    expandCandidate(child, dedup);
-                }
-            }
-        }
-    }
-
-    private boolean isShippingContainer(File folder) {
-        if (folder == null || !folder.isDirectory()) {
-            return false;
-        }
-        String name = folder.getName();
-        if (name == null || name.isBlank()) {
-            return false;
-        }
-        String lower = name.toLowerCase(Locale.ROOT);
-        if (lower.equals("standard") || lower.equals("expedited") || lower.equals("automated") || lower.equals("manual")) {
-            return true;
-        }
-        boolean digitsOnly = name.chars().allMatch(Character::isDigit);
-        return digitsOnly;
+        return workflow.normaliseRoots(inputs);
     }
     private void loadBaseFolders(List<File> folders) {
         loadBaseFolders(folders, false);
@@ -395,8 +316,8 @@ public class LabelFinderUI extends JFrame {
             setStatusMessage("Please select folder(s) containing your orders.");
             return;
         }
-        baseFolders.clear();
-        baseFolders.addAll(normalized);
+        workflow.setBaseFolders(normalized);
+        savePreferences();
         baseDir = getPrimaryBaseFolder();
         refreshBaseFolders(preserveScanProgress);
 
@@ -410,24 +331,20 @@ public class LabelFinderUI extends JFrame {
         ProgressSnapshot snapshot = preserveProgress ? snapshotProgressCaches() : null;
         cancelActiveRenderWorker();
         clearAllViews();
-        synchronized (photoIndexLock) {
-            photoIndex = new ArrayList<>();
-            photoIndexPaths = new LinkedHashSet<>();
-        }
-        photoRefreshInFlight.clear();
+        workflow.clearPhotoIndex();
         clearProgressCaches();
         if (snapshot != null && !snapshot.isEmpty()) {
             bannerOrderId = snapshot.bannerOrderId();
             updateProgressBanner(snapshot.bannerScanned(), snapshot.bannerExpected());
         }
         setUIEnabled(false);
-        String scanningMessage = (baseFolders.size() == 1) ? "Scanning folder..." : "Scanning folders...";
+        String scanningMessage = (workflow.baseFolders().size() == 1) ? "Scanning folder..." : "Scanning folders...";
         setStatusMessage(scanningMessage);
         final ProgressSnapshot progressSnapshot = snapshot;
         SwingWorker<Void, Void> worker = new SwingWorker<>() {
             @Override
             protected Void doInBackground() throws Exception {
-                rebuildPhotoIndex();
+                workflow.rebuildPhotoIndex();
                 buildLabelAndSlipIndices();
                 rebuildExpectations();
                 return null;
@@ -436,13 +353,13 @@ public class LabelFinderUI extends JFrame {
             protected void done() {
                 try {
                     get();
-                    int photoCount = (photoIndex == null) ? 0 : photoIndex.size();
+                    int photoCount = workflow.photoIndexSize();
                     setStatusMessage("Indexed " + labelGroups.size() + " labels, " + slipGroups.size() + " packing slips, " + photoCount + " photos.");
                 }
                 catch (Exception e) {
                     Throwable cause = e.getCause() != null ? e.getCause() : e;
                     setStatusMessage("Error: " + cause.getMessage());
-                    JOptionPane.showMessageDialog(LabelFinderUI.this, "Error while scanning:\n" + cause.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+                    JOptionPane.showMessageDialog(frame, "Error while scanning:\n" + cause.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
                 }
                 finally {
                     restoreProgressSnapshot(progressSnapshot);
@@ -481,7 +398,7 @@ public class LabelFinderUI extends JFrame {
             setStatusMessage("Select a base folder first.");
             return;
         }
-        loadBaseFolders(new ArrayList<>(baseFolders), true);
+        loadBaseFolders(new ArrayList<>(workflow.baseFolders()), true);
     }
     private void openSelectedPhoto() {
         List<Path> selected = photosList.getSelectedValuesList();
@@ -520,38 +437,6 @@ public class LabelFinderUI extends JFrame {
         showUnscannedButton.setEnabled(enabled);
         photosList.setEnabled(enabled);
     }
-    private void rebuildPhotoIndex() throws IOException {
-        if (!hasBaseFolders()) {
-            synchronized (photoIndexLock) {
-                photoIndex = new ArrayList<>();
-                photoIndexPaths = new LinkedHashSet<>();
-            }
-            return;
-        }
-        LinkedHashSet<Path> seen = new LinkedHashSet<>();
-        for (File root : baseFolders) {
-            if (root == null || !root.isDirectory()) {
-                continue;
-            }
-            try (Stream<Path> stream = Files.walk(root.toPath())) {
-                stream.filter(Files::isRegularFile).filter(p -> IMG_NAME.matcher(p.getFileName().toString()).matches()).forEach(p -> seen.add(p.toAbsolutePath().normalize()));
-            }
-        }
-        List<PhotoIndexEntry> indexed = new ArrayList<>(seen.size());
-        LinkedHashSet<Path> pathSet = new LinkedHashSet<>(seen.size());
-        for (Path path : seen) {
-            Path normalized = path.toAbsolutePath().normalize();
-            if (pathSet.add(normalized)) {
-                String lower = normalized.getFileName().toString().toLowerCase(Locale.ROOT);
-                indexed.add(new PhotoIndexEntry(normalized, lower));
-            }
-        }
-        indexed.sort(Comparator.comparing(PhotoIndexEntry::lowerName));
-        synchronized (photoIndexLock) {
-            photoIndex = indexed;
-            photoIndexPaths = pathSet;
-        }
-    }
     private void buildLabelAndSlipIndices() {
         labelGroups = new HashMap<>();
         slipGroups = new HashMap<>();
@@ -561,7 +446,7 @@ public class LabelFinderUI extends JFrame {
             return;
         }
         LinkedHashSet<File> pdfs = new LinkedHashSet<>();
-        for (File root : baseFolders) {
+        for (File root : workflow.baseFolders()) {
             if (root == null || !root.isDirectory()) {
                 continue;
             }
@@ -603,7 +488,7 @@ public class LabelFinderUI extends JFrame {
                 }
             }
         }
-        int photoCount = (photoIndex == null) ? 0 : photoIndex.size();
+        int photoCount = workflow.photoIndexSize();
         setStatusMessage("Indexed " + labelGroups.size() + " labels, " + slipGroups.size() + " packing slips, " + photoCount + " photos.");
     }
     private void onFind() {
@@ -646,7 +531,7 @@ public class LabelFinderUI extends JFrame {
         PageGroup cachedSlipGroup = (slipGroups != null) ? slipGroups.get(orderId) : null;
 
         photoView.setImages(null, null);
-        List<Path> photoMatches = collectPhotosFromIndex(orderId);
+        List<Path> photoMatches = workflow.collectPhotosFromIndex(orderId);
         int photoMatchCount = photoMatches.size();
         displayPhotosForOrder(orderId, photoMatches, false);
 
@@ -678,7 +563,7 @@ public class LabelFinderUI extends JFrame {
             @Override
             protected RenderedOrder doInBackground() throws Exception {
                 CompletableFuture<List<BufferedImage>> labelFuture = CompletableFuture.supplyAsync(() ->
-                    PdfPageRenderCache.renderPages(labelGroup.file(), labelGroup.pages(), PREVIEW_DPI)
+                    PdfPageRenderCache.renderPages(labelGroup.file(), labelGroup.pages(), PREVIEW_DPI, true)
                 , RENDER_EXECUTOR);
                 CompletableFuture<PageGroup> slipGroupFuture = CompletableFuture.supplyAsync(() -> {
                     try {
@@ -726,7 +611,7 @@ public class LabelFinderUI extends JFrame {
                 if (isCancelled()) {
                     return null;
                 }
-                List<BufferedImage> slipPages = PdfPageRenderCache.renderPages(slipGroupResolved.file(), slipGroupResolved.pages(), PREVIEW_DPI);
+                List<BufferedImage> slipPages = PdfPageRenderCache.renderPages(slipGroupResolved.file(), slipGroupResolved.pages(), PREVIEW_DPI, true);
                 if (isCancelled()) {
                     return null;
                 }
@@ -876,7 +761,7 @@ public class LabelFinderUI extends JFrame {
         boolean hasPrintableContent = hasPrintableMaterial();
         printButton.setEnabled(hasPrintableContent);
 
-        List<Path> designMatches = collectReadyDesignPhotos(orderId);
+        List<Path> designMatches = workflow.collectReadyDesignPhotos(orderId);
         int designMatchCount = designMatches.size();
         if (designMatchCount == 0) {
             setStatusMessage("No ready design found for: " + orderId);
@@ -1064,14 +949,6 @@ public class LabelFinderUI extends JFrame {
         );
         SCAN_LOGGER.info(logMessage);
     }
-    /**
-     * Launches the application on the Swing event thread.
-     *
-     * @param args command line arguments (ignored)
-     */
-    public static void main(String[] args) {
-        SwingUtilities.invokeLater(() -> new LabelFinderUI().setVisible(true));
-    }
     private void printCombined() {
         List<PageRenderSource> printSources = collectPrintPageSources();
         BufferedImage fallbackImage = printSources.isEmpty() ? combinedPreview : null;
@@ -1093,10 +970,12 @@ public class LabelFinderUI extends JFrame {
 
         printButton.setEnabled(false);
         setStatusMessage("Printing...");
+        final String orderId = activeOrderId;
         submitPrintJob(job).whenComplete((success, throwable) -> SwingUtilities.invokeLater(() -> {
-            printButton.setEnabled(true);
-            if (throwable == null && Boolean.TRUE.equals(success)) {
+            boolean printed = throwable == null && Boolean.TRUE.equals(success);
+            if (printed) {
                 setStatusMessage("Print job sent.");
+                releaseRenderedOrder(orderId, true);
             } else {
                 String message = (throwable != null && throwable.getCause() != null)
                     ? throwable.getCause().getMessage()
@@ -1104,6 +983,7 @@ public class LabelFinderUI extends JFrame {
                 JOptionPane.showMessageDialog(this, "Could not print.\n" + message, "Print Error", JOptionPane.ERROR_MESSAGE);
                 setStatusMessage("Print failed.");
             }
+            printButton.setEnabled(hasPrintableMaterial());
         }));
     }
 
@@ -1209,6 +1089,7 @@ public class LabelFinderUI extends JFrame {
                     status = "Printed.";
                 }
                 setStatusMessage(status);
+                releaseRenderedOrder(orderId, true);
             } else {
                 Throwable cause = (throwable != null && throwable.getCause() != null) ? throwable.getCause() : throwable;
                 errorMessage = (cause != null && cause.getMessage() != null) ? cause.getMessage() : "Unknown error";
@@ -1236,14 +1117,13 @@ public class LabelFinderUI extends JFrame {
                 printed,
                 finalStatusNote);
 
-            printButton.setEnabled(true);
+            printButton.setEnabled(hasPrintableMaterial());
             orderIdField.requestFocusInWindow();
             orderIdField.selectAll();
         }));
     }
-    private void cleanupAndExit() {
-        dispose();
-        System.exit(0);
+    void cleanup() {
+        cancelActiveRenderWorker();
     }
     private void renderSelectedPhotos() {
         List<Path> selected = photosList.getSelectedValuesList();
@@ -1261,36 +1141,6 @@ public class LabelFinderUI extends JFrame {
         }
         catch (IOException ex) {
             photoView.setImages(null, null);
-        }
-    }
-    private List<Path> collectPhotosFromIndex(String orderId) {
-        if (orderId == null || orderId.isBlank()) {
-            return new ArrayList<>();
-        }
-        String needle = orderId.toLowerCase(Locale.ROOT);
-        synchronized (photoIndexLock) {
-            if (photoIndex == null || photoIndex.isEmpty()) {
-                return new ArrayList<>();
-            }
-            List<Path> matches = new ArrayList<>();
-            for (PhotoIndexEntry entry : photoIndex) {
-                if (entry.lowerName().contains(needle)) {
-                    matches.add(entry.path());
-                }
-            }
-            return matches;
-        }
-    }
-    private List<Path> collectAllPhotosFromIndex() {
-        synchronized (photoIndexLock) {
-            if (photoIndex == null || photoIndex.isEmpty()) {
-                return new ArrayList<>();
-            }
-            List<Path> out = new ArrayList<>(photoIndex.size());
-            for (PhotoIndexEntry entry : photoIndex) {
-                out.add(entry.path());
-            }
-            return out;
         }
     }
     private void displayPhotosForOrder(String orderId, List<Path> matches, boolean preserveSelection) {
@@ -1326,14 +1176,14 @@ public class LabelFinderUI extends JFrame {
         if (orderId == null || orderId.isBlank() || !hasBaseFolders()) {
             return;
         }
-        if (!photoRefreshInFlight.add(orderId)) {
+        if (!workflow.tryMarkPhotoRefresh(orderId)) {
             return;
         }
         SwingWorker<List<Path>, Void> worker = new SwingWorker<>() {
             @Override
             protected List<Path> doInBackground() {
                 try {
-                    return scanPhotosFromDisk(orderId);
+                    return workflow.scanPhotosFromDisk(orderId);
                 }
                 catch (IOException ignored) {
                     return Collections.emptyList();
@@ -1343,11 +1193,11 @@ public class LabelFinderUI extends JFrame {
             protected void done() {
                 try {
                     List<Path> diskMatches = get();
-                    List<Path> newEntries = addPhotosToIndex(diskMatches);
+                    List<Path> newEntries = workflow.addPhotosToIndex(diskMatches);
                     if (orderId.equals(activeOrderId)) {
-                        List<Path> refreshed = collectPhotosFromIndex(orderId);
+                        List<Path> refreshed = workflow.collectPhotosFromIndex(orderId);
                         displayPhotosForOrder(orderId, refreshed, true);
-                        List<Path> designMatches = collectReadyDesignPhotos(orderId);
+                        List<Path> designMatches = workflow.collectReadyDesignPhotos(orderId);
                         if (designMatches.isEmpty()) {
                             setStatusMessage("No ready design found for: " + orderId);
                         } else {
@@ -1358,62 +1208,11 @@ public class LabelFinderUI extends JFrame {
                 catch (Exception ignored) {
                 }
                 finally {
-                    photoRefreshInFlight.remove(orderId);
+                    workflow.clearPhotoRefresh(orderId);
                 }
             }
         };
         worker.execute();
-    }
-    private List<Path> addPhotosToIndex(List<Path> candidates) {
-        if (candidates == null || candidates.isEmpty()) {
-            return Collections.emptyList();
-        }
-        List<Path> newEntries = new ArrayList<>();
-        synchronized (photoIndexLock) {
-            if (photoIndex == null) {
-                photoIndex = new ArrayList<>();
-            }
-            if (photoIndexPaths == null) {
-                photoIndexPaths = new LinkedHashSet<>();
-            }
-            for (Path candidate : candidates) {
-                if (candidate == null) {
-                    continue;
-                }
-                Path normalized = candidate.toAbsolutePath().normalize();
-                if (photoIndexPaths.add(normalized)) {
-                    photoIndex.add(new PhotoIndexEntry(normalized, normalized.getFileName().toString().toLowerCase(Locale.ROOT)));
-                    newEntries.add(normalized);
-                }
-            }
-            if (!newEntries.isEmpty()) {
-                photoIndex.sort(Comparator.comparing(PhotoIndexEntry::lowerName));
-            }
-        }
-        return newEntries;
-    }
-    private List<Path> scanPhotosFromDisk(String orderId) throws IOException {
-        if (orderId == null || orderId.isBlank() || !hasBaseFolders()) {
-            return Collections.emptyList();
-        }
-        String needle = orderId.toLowerCase(Locale.ROOT);
-        LinkedHashSet<Path> results = new LinkedHashSet<>();
-        for (File root : baseFolders) {
-            if (root == null || !root.isDirectory()) {
-                continue;
-            }
-            try (Stream<Path> stream = Files.walk(root.toPath(), 10)) {
-                stream.filter(Files::isRegularFile).forEach(p -> {
-                    String fileName = p.getFileName().toString();
-                    if (IMG_NAME.matcher(fileName).matches() && fileName.toLowerCase(Locale.ROOT).contains(needle)) {
-                        results.add(p.toAbsolutePath().normalize());
-                    }
-                });
-            }
-        }
-        List<Path> sorted = new ArrayList<>(results);
-        sorted.sort(Comparator.comparing(p -> p.getFileName().toString(), String.CASE_INSENSITIVE_ORDER));
-        return sorted;
     }
     /**
      * Enables drag-and-drop of folders so operators can quickly switch data sources.
@@ -1568,16 +1367,16 @@ public class LabelFinderUI extends JFrame {
             return;
         }
         Set<String> manifestOrders = new LinkedHashSet<>();
-        for (File root : baseFolders) {
+        for (File root : workflow.baseFolders()) {
             manifestOrders.addAll(loadManifestOrders(root));
         }
-        for (File root : baseFolders) {
+        for (File root : workflow.baseFolders()) {
             if (root == null || !root.isDirectory()) {
                 continue;
             }
             try (Stream<Path> stream = Files.walk(root.toPath(), 8)) {
                 stream.filter(Files::isRegularFile)
-                    .filter(LabelFinderUI::isPotentialOrderJson)
+                    .filter(LabelFinderPanel::isPotentialOrderJson)
                     .forEach(path -> {
                         OrderContribution contribution = OrderContributionReader.readFromFile(path.toFile());
                         if (contribution == null) {
@@ -1623,13 +1422,13 @@ public class LabelFinderUI extends JFrame {
             return null;
         }
         OrderExpectation expectation = new OrderExpectation(orderId);
-        for (File root : baseFolders) {
+        for (File root : workflow.baseFolders()) {
             if (root == null || !root.isDirectory()) {
                 continue;
             }
             try (Stream<Path> stream = Files.walk(root.toPath(), 8)) {
                 stream.filter(Files::isRegularFile)
-                    .filter(LabelFinderUI::isPotentialOrderJson)
+                    .filter(LabelFinderPanel::isPotentialOrderJson)
                     .forEach(path -> {
                         OrderContribution contribution = OrderContributionReader.readFromFile(path.toFile());
                         if (contribution == null) {
@@ -1881,7 +1680,7 @@ public class LabelFinderUI extends JFrame {
             return "";
         }
         Path normalized = path.toAbsolutePath().normalize();
-        for (File base : baseFolders) {
+        for (File base : workflow.baseFolders()) {
             if (base == null) {
                 continue;
             }
@@ -2408,6 +2207,9 @@ public class LabelFinderUI extends JFrame {
         }
     }
     private void addPrintShortcut(JRootPane rootPane) {
+        if (rootPane == null) {
+            return;
+        }
         int mask = Toolkit.getDefaultToolkit().getMenuShortcutKeyMaskEx();
         KeyStroke ks = KeyStroke.getKeyStroke(KeyEvent.VK_P, mask);
         rootPane.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(ks, "printCombinedAction");
@@ -2499,8 +2301,6 @@ public class LabelFinderUI extends JFrame {
             g2.drawImage(img, dx, dy, dw, dh, null);
         }
     }
-    private record PhotoIndexEntry(Path path, String lowerName) {
-    }
     /**
      * Printable implementation that streams buffered images as sequential pages.
      */
@@ -2510,7 +2310,7 @@ public class LabelFinderUI extends JFrame {
      *
      * @return configured page format
      */
-    private void restorePreferences() {
+    void restorePreferences() {
         // Window bounds
         prefs.getString(PREF_WIN_BOUNDS).ifPresent(s -> {
             String[] parts = s.split(",");
@@ -2520,7 +2320,9 @@ public class LabelFinderUI extends JFrame {
                     int y = Integer.parseInt(parts[1]);
                     int w = Integer.parseInt(parts[2]);
                     int h = Integer.parseInt(parts[3]);
-                    setBounds(x, y, w, h);
+                    if (frame != null) {
+                        frame.setBounds(x, y, w, h);
+                    }
                 } catch (NumberFormatException ignored) { /* geçersizse yoksay */ }
             }
         });
@@ -2533,40 +2335,43 @@ public class LabelFinderUI extends JFrame {
                 SwingUtilities.invokeLater(() -> mainSplit.setDividerLocation(loc));
             } catch (NumberFormatException ignored) { }
         });
-    }
-
-    private void savePreferences() {
-        // Window bounds
-        Rectangle r = getBounds();
-        String win = r.x + "," + r.y + "," + r.width + "," + r.height;
-        prefs.putString(PREF_WIN_BOUNDS, win);
-
-        // Divider
-        prefs.putString(PREF_DIVIDER_LOCATION, String.valueOf(((JSplitPane) getContentPane()
-                .getComponents()[1]).getDividerLocation())); // ama biz zaten mainSplit değişkenini tutuyoruz:
-
-    }
-
-    private static String serializeBaseDirs(Collection<File> dirs) {
-        if (dirs == null || dirs.isEmpty()) return "";
-        return dirs.stream()
-                .filter(f -> f != null)
-                .map(f -> f.getAbsolutePath())
-                .collect(Collectors.joining("|"));
-    }
-
-    private static List<File> deserializeBaseDirs(String serialized) {
-        List<File> list = new ArrayList<>();
-        if (serialized == null || serialized.isBlank()) return list;
-        for (String s : serialized.split("\\|")) {
-            if (s == null || s.isBlank()) continue;
-            File f = new File(s.trim());
-            if (f.exists() && f.isDirectory()) {
-                list.add(f.getAbsoluteFile());
+        prefs.getString(PREF_BASE_DIRS).ifPresent(serialized -> {
+            List<File> restored = LabelFinderWorkflow.deserializeBaseDirs(serialized);
+            if (!restored.isEmpty()) {
+                loadBaseFolders(restored, false);
             }
-        }
-        return list;
+        });
     }
+
+    void onWindowOpened() {
+        orderIdField.requestFocusInWindow();
+    }
+
+    void onWindowActivated() {
+        orderIdField.requestFocusInWindow();
+    }
+
+    void onWindowMovedOrResized() {
+        savePreferences();
+    }
+
+    void onWindowClosing() {
+        savePreferences();
+        cleanup();
+    }
+
+    void savePreferences() {
+        if (frame != null) {
+            Rectangle r = frame.getBounds();
+            String win = r.x + "," + r.y + "," + r.width + "," + r.height;
+            prefs.putString(PREF_WIN_BOUNDS, win);
+        }
+        if (mainSplit != null) {
+            prefs.putString(PREF_DIVIDER_LOCATION, String.valueOf(mainSplit.getDividerLocation()));
+        }
+        prefs.putString(PREF_BASE_DIRS, LabelFinderWorkflow.serializeBaseDirs(workflow.baseFolders()));
+    }
+
     private static PageFormat create4x6PageFormat(PrinterJob job, boolean landscape) {
         PageFormat pf = job.defaultPage();
         Paper paper = new Paper();
@@ -2595,51 +2400,5 @@ public class LabelFinderUI extends JFrame {
         photosList.clearSelection();
         photosList.setSelectionInterval(0, last);
         renderSelectedPhotos();
-    }
-    private List<Path> collectReadyDesignPhotos(String orderId) {
-        if (orderId == null || orderId.isBlank()) {
-            return new ArrayList<>();
-        }
-        String needle = "(" + orderId.toLowerCase(Locale.ROOT) + ")";
-        synchronized (photoIndexLock) {
-            if (photoIndex == null || photoIndex.isEmpty()) {
-                return new ArrayList<>();
-            }
-            List<Path> out = new ArrayList<>();
-            for (PhotoIndexEntry entry : photoIndex) {
-                if (!entry.lowerName().contains(needle)) {
-                    continue;
-                }
-                Path path = entry.path();
-                String fileName = path.getFileName().toString();
-                boolean isXn = XN_READY_NAME.matcher(fileName).matches();
-                boolean inReadyDir = isReadyDesignPath(path);
-                if (isXn || inReadyDir) {
-                    out.add(path);
-                }
-            }
-            return out;
-        }
-    }
-
-    private static boolean isReadyDesignPath(Path path) {
-        if (path == null) {
-            return false;
-        }
-        Path current = path;
-        while (current != null) {
-            Path fileName = current.getFileName();
-            if (fileName != null) {
-                String lower = fileName.toString().toLowerCase(Locale.ROOT);
-                if (lower.contains("ready design")) {
-                    return true;
-                }
-                if (lower.startsWith("ready-") && lower.contains("_p")) {
-                    return true;
-                }
-            }
-            current = current.getParent();
-        }
-        return false;
     }
 }
