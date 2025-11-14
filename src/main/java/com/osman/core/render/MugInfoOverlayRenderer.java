@@ -74,7 +74,7 @@ final class MugInfoOverlayRenderer {
         Color barcodeBackgroundColor = Color.WHITE;
         BufferedImage barcode = generateBarcodeWithText(
             barcodePayload,
-            1200,
+            1000,
             120,
             barcodeColor,
             barcodeBackgroundColor);
