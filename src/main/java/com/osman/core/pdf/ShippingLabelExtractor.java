@@ -24,7 +24,9 @@ import java.util.regex.Pattern;
  */
 public final class ShippingLabelExtractor {
 
-    private static final Pattern ORDER_ID_PATTERN = Pattern.compile("\\b\\d{3}-\\d{7}-\\d{7}\\b");
+    private static final String DASH_CHAR_CLASS = "\\-\\u2010\\u2011\\u2012\\u2013\\u2014\\u2015\\u2212";
+    private static final Pattern ORDER_ID_PATTERN =
+        Pattern.compile("\\b\\d{3}[" + DASH_CHAR_CLASS + "]\\d{7}[" + DASH_CHAR_CLASS + "]\\d{7}\\b");
     private static final Pattern PACKING_SLIP_PATTERN =
         Pattern.compile("(?i)(?:^(?:\\d{2}[PRWB]|mix)(\\s*\\(\\d+\\))?\\.pdf$)|(?:^amazon.*\\.pdf$)");
     private static final Pattern PACKING_SLIP_FOLDER_PATTERN =
@@ -61,8 +63,7 @@ public final class ShippingLabelExtractor {
         stripper.setSortByPosition(true);
 
         if (pageCount == 1) {
-            String pageText = extractPageText(stripper, doc, 1);
-            collectOrderIdsFromPage(map, pageText, 1);
+            collectOrderIdsFromAllPages(stripper, doc, map);
             return map;
         }
 
@@ -87,10 +88,7 @@ public final class ShippingLabelExtractor {
         }
 
         if (indexStartPage == -1) {
-            for (int p = 1; p <= pageCount; p++) {
-                String pageText = extractPageText(stripper, doc, p);
-                collectOrderIdsFromPage(map, pageText, p);
-            }
+            collectOrderIdsFromAllPages(stripper, doc, map);
             return map;
         }
 
@@ -116,8 +114,12 @@ public final class ShippingLabelExtractor {
                 int pageNum = i + 1;
                 map.computeIfAbsent(orderId, k -> new ArrayList<>()).add(pageNum);
             }
+            if (!map.isEmpty()) {
+                return map;
+            }
         }
 
+        collectOrderIdsFromAllPages(stripper, doc, map);
         return map;
     }
 
@@ -127,12 +129,29 @@ public final class ShippingLabelExtractor {
         }
         Matcher matcher = ORDER_ID_PATTERN.matcher(pageText);
         while (matcher.find()) {
-            String orderId = matcher.group();
+            String orderId = normalizeOrderId(matcher.group());
             List<Integer> pages = target.computeIfAbsent(orderId, key -> new ArrayList<>());
             if (!pages.contains(pageNumber)) {
                 pages.add(pageNumber);
             }
         }
+    }
+
+    private static void collectOrderIdsFromAllPages(PDFTextStripper stripper,
+                                                   PDDocument doc,
+                                                   Map<String, List<Integer>> target) throws IOException {
+        int totalPages = doc.getNumberOfPages();
+        for (int p = 1; p <= totalPages; p++) {
+            String pageText = extractPageText(stripper, doc, p);
+            collectOrderIdsFromPage(target, pageText, p);
+        }
+    }
+
+    private static String normalizeOrderId(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return raw;
+        }
+        return raw.replaceAll("[" + DASH_CHAR_CLASS + "]", "-");
     }
 
     public static ScanResult scan(Path input) throws IOException {

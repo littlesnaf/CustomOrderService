@@ -759,7 +759,7 @@ public class MainUIView {
             return false;
         }
         String lower = name.toLowerCase(Locale.ROOT);
-        if (lower.equals("standard") || lower.equals("expedited")) {
+        if (lower.equals("standard") || lower.equals("expedited") || lower.equals("automated") || lower.equals("manual")) {
             return true;
         }
         boolean digitsOnly = name.chars().allMatch(Character::isDigit);

@@ -371,7 +371,12 @@ public final class OrnamentSkuTool {
                 suffix++;
             }
             Path sectionFile = mixDir.resolve(candidate + ".pdf");
-            OrnamentBundleMerger.merge(singlePagesPerDoc, refs, sectionFile);
+            String summaryLabel = sectionFile.getFileName().toString();
+            if (summaryLabel.toLowerCase(Locale.ROOT).endsWith(".pdf")) {
+                summaryLabel = summaryLabel.substring(0, summaryLabel.length() - 4);
+            }
+            OrnamentBundleMerger.SummaryPage summary = new OrnamentBundleMerger.SummaryPage(summaryLabel);
+            OrnamentBundleMerger.merge(singlePagesPerDoc, refs, sectionFile, summary);
         }
     }
 

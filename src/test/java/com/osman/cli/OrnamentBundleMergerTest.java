@@ -37,13 +37,13 @@ class OrnamentBundleMergerTest {
             OrnamentBundleMerger.merge(singlePages, List.of(bundle), outFile, summary);
 
             try (PDDocument doc = PDDocument.load(outFile.toFile())) {
-                assertEquals(3, doc.getNumberOfPages(), "Summary page should add one extra page");
-                var lastPage = doc.getPage(2);
+                assertEquals(4, doc.getNumberOfPages(), "Summary + spacer should add two pages");
+                var lastPage = doc.getPage(3);
                 assertEquals(4 * 72, lastPage.getMediaBox().getWidth(), 0.1, "Summary width should be 4\"");
                 assertEquals(6 * 72, lastPage.getMediaBox().getHeight(), 0.1, "Summary height should be 6\"");
                 PDFTextStripper stripper = new PDFTextStripper();
-                stripper.setStartPage(3);
-                stripper.setEndPage(3);
+                stripper.setStartPage(4);
+                stripper.setEndPage(4);
                 String text = stripper.getText(doc);
                 assertTrue(text.contains("SKU-TEST"));
                 assertTrue(text.contains("Qty: 5"));

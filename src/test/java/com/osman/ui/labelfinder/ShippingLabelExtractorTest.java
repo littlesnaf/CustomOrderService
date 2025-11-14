@@ -124,6 +124,20 @@ class ShippingLabelExtractorTest {
     }
 
     @Test
+    void detectsOrderIdsWithUnicodeDashes() throws Exception {
+        Path pdf = tempDir.resolve("unicode-dash.pdf");
+        try (PDDocument doc = new PDDocument()) {
+            addPageWithText(doc, "Ship - Order 555–6666666—7777777 ready");
+            doc.save(pdf.toFile());
+        }
+
+        Map<String, List<Integer>> map = ShippingLabelExtractor.extractOrderIdToPages(pdf);
+
+        assertEquals(List.of(1), map.get("555-6666666-7777777"),
+                "Unicode dash variants should normalize to ASCII hyphen");
+    }
+
+    @Test
     void invalidPathThrowsIOException() {
         Path missing = tempDir.resolve("missing.pdf");
         IOException ex = assertThrows(IOException.class,

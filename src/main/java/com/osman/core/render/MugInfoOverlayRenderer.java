@@ -1,11 +1,13 @@
 package com.osman.core.render;
 
 import com.google.zxing.BarcodeFormat;
+import com.google.zxing.client.j2se.MatrixToImageConfig;
 import com.google.zxing.client.j2se.MatrixToImageWriter;
 import com.google.zxing.common.BitMatrix;
 import com.google.zxing.oned.Code128Writer;
 import com.osman.core.model.OrderInfo;
 import com.osman.core.render.TemplateRegistry.MugTemplate;
+import org.apache.xmlgraphics.image.codec.png.PNGEncodeParam;
 
 import java.awt.Color;
 import java.awt.Font;
@@ -27,8 +29,8 @@ final class MugInfoOverlayRenderer {
                                    int totalOrderQuantity) {
         Color labelColor = pickTextColor(orderInfo.getLabel());
         Font infoFont = new Font("Arial", Font.BOLD, 48);
-        Font orderIdFont = infoFont.deriveFont(infoFont.getSize2D() * 1.3f);
-        g2d.setColor(Color.BLACK);
+        Font orderIdFont = infoFont.deriveFont(infoFont.getSize2D() * 1.1f);
+        g2d.setColor(new Color(0x95ACD1));
 
         int baseOffset = template.finalHeight >= 1500 ? 160 : 190;
         int infoBoxY = template.finalHeight - baseOffset + 30;
@@ -67,7 +69,15 @@ final class MugInfoOverlayRenderer {
         drawMirroredString(g2d, orderInfo.getLabel(), rightEdge, yRightLine2, infoFont, true, labelColor);
 
         String barcodePayload = buildBarcodePayload(orderInfo);
-        BufferedImage barcode = generateBarcodeWithText(barcodePayload, 1000, 120);
+        float barcodeOpacity = 1.0f; // 0 (transparent) -> 1 (opaque)
+        Color barcodeColor = withOpacity(new Color(0x4f4f4f), barcodeOpacity);
+        Color barcodeBackgroundColor = Color.WHITE;
+        BufferedImage barcode = generateBarcodeWithText(
+            barcodePayload,
+            1200,
+            120,
+            barcodeColor,
+            barcodeBackgroundColor);
         int barcodeX = infoBoxX + (infoBoxWidth - barcode.getWidth()) / 2;
         int barcodeCenterY = infoBoxY + infoBoxHeight / 2-20;
         int barcodeY = barcodeCenterY - barcode.getHeight() / 2;
@@ -80,7 +90,7 @@ final class MugInfoOverlayRenderer {
         }
         String lowered = label.toLowerCase(Locale.ROOT);
         if (lowered.contains("black")) {
-            return Color.BLACK;
+            return Color.GRAY;
 
         }
         if (lowered.contains("white")) {
@@ -151,20 +161,24 @@ final class MugInfoOverlayRenderer {
     }
 
     private static BufferedImage generateBarcodeWithText(String text, int width, int height) {
+        return generateBarcodeWithText(text, width, height, Color.BLACK, Color.WHITE);
+    }
+
+    private static BufferedImage generateBarcodeWithText(String text,
+                                                         int width,
+                                                         int height,
+                                                         Color barColor,
+                                                         Color backgroundColor) {
         try {
             Code128Writer writer = new Code128Writer();
             BitMatrix matrix = writer.encode(text, BarcodeFormat.CODE_128, width, height);
-            BufferedImage code = MatrixToImageWriter.toBufferedImage(matrix);
-
-            BufferedImage out = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
-            Graphics2D g = out.createGraphics();
-            g.setColor(Color.WHITE);
-            g.fillRect(0, 0, width, height);
-            g.setColor(Color.BLACK);
-
-            g.drawImage(code, 0, 0, null);
-            g.dispose();
-            return out;
+            Color resolvedBarColor = barColor == null ? Color.BLACK : barColor;
+            Color resolvedBackground = backgroundColor == null ? Color.WHITE : backgroundColor;
+            MatrixToImageConfig config = new MatrixToImageConfig(
+                resolvedBarColor.getRGB(),
+                resolvedBackground.getRGB()
+            );
+            return MatrixToImageWriter.toBufferedImage(matrix, config);
         } catch (Exception e) {
             BufferedImage err = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
             Graphics2D g = err.createGraphics();
@@ -175,5 +189,12 @@ final class MugInfoOverlayRenderer {
             g.dispose();
             return err;
         }
+    }
+
+    private static Color withOpacity(Color color, float opacity) {
+        Color base = color == null ? Color.BLACK : color;
+        float clamped = Math.max(0f, Math.min(1f, opacity));
+        int alpha = Math.round(255 * clamped);
+        return new Color(base.getRed(), base.getGreen(), base.getBlue(), alpha);
     }
 }
