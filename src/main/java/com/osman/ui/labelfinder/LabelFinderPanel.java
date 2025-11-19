@@ -228,7 +228,10 @@ public class LabelFinderPanel extends JPanel {
         add(statusLabel, BorderLayout.SOUTH);
         setStatusMessage(initialStatus);
         updateProgressBanner(0, 0);
-        getRootPane().setTransferHandler(new BaseFolderTransferHandler());
+        JRootPane rootPane = frame != null ? frame.getRootPane() : null;
+        if (rootPane != null) {
+            rootPane.setTransferHandler(new BaseFolderTransferHandler());
+        }
         chooseBaseBtn.addActionListener(e -> chooseBaseFolder());
         findButton.addActionListener(e -> onFind());
         refreshButton.addActionListener(e -> onRefreshBaseFolders());
@@ -253,7 +256,9 @@ public class LabelFinderPanel extends JPanel {
             }
 
         });
-        addPrintShortcut(getRootPane());
+        if (rootPane != null) {
+            addPrintShortcut(rootPane);
+        }
     }
     private void clearAllViews() {
         activeOrderId = null;
