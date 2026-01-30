@@ -13,7 +13,7 @@ I built this project to practice production-style workflows and desktop tooling.
 - **Performance-minded design**: DPI-based preview vs. print output, caching, and batch-oriented processing to keep UI snappy.
 - **Modular architecture**: shared rendering utilities across several UIs (e.g., `ImageProcessor`, `PdfLinker`, `PackSlipExtractor`).
 
-If you are reviewing for an internship, I am happy to walk through design decisions, trade-offs, and how I tested performance and correctness.
+
 
 ## Contents
 
@@ -79,7 +79,7 @@ java -jar target/CustomOrderFlow-OrnamentSku.jar
 ### LabelFinder workflow
 
 1. Select the base “Orders” directory (the UI persists the last choice).
-2. Enter an Amazon Order ID and press **Find**. The tool looks up cached renderings first, then:
+2. Enter or scan barcode of  Amazon Order ID and press **Find**. The tool looks up cached renderings first, then:
    - Renders shipping label and packing-slip previews at 100 DPI.
    - Collects matching product photos and ready-design thumbnails.
    - Displays combined artwork in the center preview.
