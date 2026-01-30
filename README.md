@@ -2,7 +2,7 @@
 
 CustomAmazonOrderProcessor is a desktop toolkit for preparing custom Amazon order artwork, shipping labels, and packing slips at scale. The project bundles several Swing utilities plus a rendering pipeline that help production teams convert Amazon Custom exports into print-ready PNGs and review supporting documents side by side.
 
-## Portfolio Highlights 
+## Highlights 
 
 I built this project to practice production-style workflows and desktop tooling. It showcases:
 
@@ -10,8 +10,7 @@ I built this project to practice production-style workflows and desktop tooling.
 - **End-to-end Amazon order handling**: downloads Amazon custom assets, categorizes orders, and prepares them for production.
 - **File/asset processing pipelines**: parsing Amazon exports (TXT/JSON/SVG), sanitizing assets, and rendering print-ready PNGs.
 - **PDF processing at scale**: splitting, caching, and regenerating pages for fast UI previews and high-quality printing.
-- **Performance-minded des<img width="1252" height="684" alt="Demo2" src="https://github.com/user-attachments/assets/b2b49d73-9036-4c45-adfc-685bed3db9fb" />
-ign**: DPI-based preview vs. print output, caching, and batch-oriented processing to keep UI snappy.
+- **Performance-minded design**: DPI-based preview vs. print output, caching, and batch-oriented processing to keep UI snappy.
 - **Modular architecture**: shared rendering utilities across several UIs (e.g., `ImageProcessor`, `PdfLinker`, `PackSlipExtractor`).
 
 If you are reviewing for an internship, I am happy to walk through design decisions, trade-offs, and how I tested performance and correctness.
