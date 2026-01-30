@@ -10,7 +10,8 @@ I built this project to practice production-style workflows and desktop tooling.
 - **End-to-end Amazon order handling**: downloads Amazon custom assets, categorizes orders, and prepares them for production.
 - **File/asset processing pipelines**: parsing Amazon exports (TXT/JSON/SVG), sanitizing assets, and rendering print-ready PNGs.
 - **PDF processing at scale**: splitting, caching, and regenerating pages for fast UI previews and high-quality printing.
-- **Performance-minded design**: DPI-based preview vs. print output, caching, and batch-oriented processing to keep UI snappy.
+- **Performance-minded des<img width="1252" height="684" alt="Demo2" src="https://github.com/user-attachments/assets/b2b49d73-9036-4c45-adfc-685bed3db9fb" />
+ign**: DPI-based preview vs. print output, caching, and batch-oriented processing to keep UI snappy.
 - **Modular architecture**: shared rendering utilities across several UIs (e.g., `ImageProcessor`, `PdfLinker`, `PackSlipExtractor`).
 
 If you are reviewing for an internship, I am happy to walk through design decisions, trade-offs, and how I tested performance and correctness.
@@ -100,6 +101,8 @@ java -jar target/CustomOrderFlow-OrnamentSku.jar
 
 ## Development
 
+
+
 - Source lives under `src/main/java/com/osman`.
 - UI classes sit in `com.osman.ui`; shared helpers live beside them or in feature sub-packages (e.g., `com.osman.ui.labelfinder.render`).
 - Tests belong under `src/test/java`. Targeted examples include `com.osman.core.render.MugRendererTest` and `com.osman.ui.labelfinder.PdfPageRenderCacheTest`.
@@ -114,6 +117,7 @@ To run a specific UI from your IDE, set the main class accordingly (for example,
 - For macOS distribution, you can wrap the shaded JARs with Automator or use the provided `.command` launchers in the repo root.
 <img width="972" height="753" alt="Screenshot 2026-01-29 at 10 21 34 PM" src="https://github.com/user-attachments/assets/15562b62-bcc5-4452-904c-9823a5240439" />
 <img width="2580" height="1440" alt="Demo" src="https://github.com/user-attachments/assets/a5993833-ae4c-48ac-881e-50de6f92846f" />
+<img width="1252" height="684" alt="Demo2" src="https://github.com/user-attachments/assets/4524a0a9-afb6-4327-adf1-fec0d51664b2" />
 
 ## License
 
